@@ -1,0 +1,14 @@
+{
+  "name": "pbi-mcp-marketplace",
+  "owner": {
+    "name": "Hesham Eissa"
+  },
+  "description": "Local marketplace hosting the pbi-mcp-ts plugin during development.",
+  "plugins": [
+    {
+      "name": "pbi-mcp-ts",
+      "source": ".",
+      "description": "Power BI report (PBIR) authoring for Claude Code — native TypeScript MCP server + skills + subagents + hooks. Pairs with @microsoft/powerbi-modeling-mcp."
+    }
+  ]
+}
