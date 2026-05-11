@@ -1,0 +1,24 @@
+{
+  "name": "pbi-mcp-ts",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Power BI report (PBIR) authoring for Claude Code — native TypeScript MCP server + skills + subagents + hooks.",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "pnpm -r build",
+    "test": "pnpm -r test",
+    "lint": "biome check .",
+    "format": "biome format --write ."
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.4",
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  },
+  "packageManager": "pnpm@9.15.0"
+}

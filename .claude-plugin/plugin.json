@@ -1,0 +1,7 @@
+{
+  "name": "pbi-mcp-ts",
+  "version": "0.1.0",
+  "description": "Power BI report (PBIR) authoring for Claude Code — native TypeScript MCP server + skills + subagents + hooks. Pairs with @microsoft/powerbi-modeling-mcp for full Power BI capability across modeling and report layers.",
+  "author": "Hesham Eissa",
+  "license": "MIT"
+}

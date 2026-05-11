@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "pbi-report": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/packages/mcp/dist/server.js"]
+    },
+    "powerbi-modeling": {
+      "command": "npx",
+      "args": ["-y", "@microsoft/powerbi-modeling-mcp@latest", "--start"]
+    }
+  }
+}

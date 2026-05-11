@@ -1,0 +1,22 @@
+{
+  "name": "pbi-report-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "description": "MCP server exposing pbi-core's PBIR operations to any MCP-capable agent.",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "pbi-report-mcp": "./dist/server.js"
+  },
+  "files": ["dist", "src"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.4",
+    "pbi-core": "workspace:*",
+    "zod": "^3.23.8"
+  }
+}
