@@ -18,6 +18,12 @@ import {
   reportInfo,
   resolveReportPath,
   validateReportFull,
+  visualAdd,
+  visualDelete,
+  visualGet,
+  visualList,
+  visualSetContainer,
+  visualUpdate,
 } from 'pbi-core';
 
 const program = new Command();
@@ -164,6 +170,148 @@ page
     }
     out(pageSetVisibility(resolveReportPath(opts.path), name, opts.hidden));
   });
+
+// -- visual ----------------------------------------------------------------
+
+const visual = program.command('visual').description('Visual CRUD');
+
+visual
+  .command('list')
+  .description('List all visuals on a page')
+  .requiredOption('--page <name>', 'Page name (e.g. overview)')
+  .option('-p, --path <path>', 'Path to the .Report folder')
+  .action((opts: { page: string; path?: string }) => {
+    out(visualList(resolveReportPath(opts.path), opts.page));
+  });
+
+visual
+  .command('add')
+  .description('Add a new visual to a page')
+  .requiredOption('--page <name>', 'Page name')
+  .requiredOption(
+    '--type <type>',
+    'Visual type alias or canonical name (e.g. bar, card, pivotTable)',
+  )
+  .option('-p, --path <path>', 'Path to the .Report folder')
+  .option('-n, --name <name>', 'Explicit visual id (auto-generated if omitted)')
+  .option('--x <px>', 'X position')
+  .option('--y <px>', 'Y position')
+  .option('--width <px>', 'Width in pixels')
+  .option('--height <px>', 'Height in pixels')
+  .action(
+    (opts: {
+      page: string;
+      type: string;
+      path?: string;
+      name?: string;
+      x?: string;
+      y?: string;
+      width?: string;
+      height?: string;
+    }) => {
+      out(
+        visualAdd(resolveReportPath(opts.path), opts.page, {
+          visualType: opts.type,
+          name: opts.name,
+          x: opts.x !== undefined ? Number.parseFloat(opts.x) : undefined,
+          y: opts.y !== undefined ? Number.parseFloat(opts.y) : undefined,
+          width: opts.width !== undefined ? Number.parseFloat(opts.width) : undefined,
+          height: opts.height !== undefined ? Number.parseFloat(opts.height) : undefined,
+        }),
+      );
+    },
+  );
+
+visual
+  .command('get <name>')
+  .description('Show details for a visual')
+  .requiredOption('--page <name>', 'Page name')
+  .option('-p, --path <path>', 'Path to the .Report folder')
+  .action((name: string, opts: { page: string; path?: string }) => {
+    out(visualGet(resolveReportPath(opts.path), opts.page, name));
+  });
+
+visual
+  .command('update <name>')
+  .description('Update a visual position / size / visibility')
+  .requiredOption('--page <name>', 'Page name')
+  .option('-p, --path <path>', 'Path to the .Report folder')
+  .option('--x <px>', 'New X position')
+  .option('--y <px>', 'New Y position')
+  .option('--width <px>', 'New width')
+  .option('--height <px>', 'New height')
+  .option('--hidden', 'Hide the visual')
+  .option('--visible', 'Show the visual')
+  .action(
+    (
+      name: string,
+      opts: {
+        page: string;
+        path?: string;
+        x?: string;
+        y?: string;
+        width?: string;
+        height?: string;
+        hidden?: boolean;
+        visible?: boolean;
+      },
+    ) => {
+      if (opts.hidden && opts.visible) {
+        process.stderr.write('Error: cannot specify both --hidden and --visible\n');
+        process.exit(2);
+      }
+      const hidden = opts.hidden ? true : opts.visible ? false : undefined;
+      out(
+        visualUpdate(resolveReportPath(opts.path), opts.page, name, {
+          x: opts.x !== undefined ? Number.parseFloat(opts.x) : undefined,
+          y: opts.y !== undefined ? Number.parseFloat(opts.y) : undefined,
+          width: opts.width !== undefined ? Number.parseFloat(opts.width) : undefined,
+          height: opts.height !== undefined ? Number.parseFloat(opts.height) : undefined,
+          hidden,
+        }),
+      );
+    },
+  );
+
+visual
+  .command('delete <name>')
+  .description('Delete a visual')
+  .requiredOption('--page <name>', 'Page name')
+  .option('-p, --path <path>', 'Path to the .Report folder')
+  .action((name: string, opts: { page: string; path?: string }) => {
+    out(visualDelete(resolveReportPath(opts.path), opts.page, name));
+  });
+
+visual
+  .command('set-container <name>')
+  .description('Set visual container chrome (border, background, title)')
+  .requiredOption('--page <name>', 'Page name')
+  .option('-p, --path <path>', 'Path to the .Report folder')
+  .option('--title <text>', 'Visual title')
+  .option('--border', 'Show border')
+  .option('--no-border', 'Hide border')
+  .option('--background', 'Show background')
+  .option('--no-background', 'Hide background')
+  .action(
+    (
+      name: string,
+      opts: {
+        page: string;
+        path?: string;
+        title?: string;
+        border?: boolean;
+        background?: boolean;
+      },
+    ) => {
+      out(
+        visualSetContainer(resolveReportPath(opts.path), opts.page, name, {
+          title: opts.title,
+          borderShow: opts.border,
+          backgroundShow: opts.background,
+        }),
+      );
+    },
+  );
 
 program.parseAsync(process.argv).catch((err: unknown) => {
   const msg = err instanceof Error ? err.message : String(err);
