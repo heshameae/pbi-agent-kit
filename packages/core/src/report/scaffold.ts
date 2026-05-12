@@ -1,22 +1,31 @@
 // Report scaffolding — builds a complete .pbip + .Report + (optional)
 // .SemanticModel project from scratch.
 //
-// Ported from pbi-cli's report_backend.py `report_create` and
-// `_scaffold_blank_semantic_model` (lines 100-217, 739-777).
+// File shapes mirror what Power BI Desktop 2.152 (March 2026) produces
+// when saving a brand-new empty report with the "enhanced report format
+// (PBIR)" preview feature enabled. Verified against a Desktop-saved
+// reference project (`dashboard/Truth.pbip` in this repo, kept around
+// as a regression fixture).
+//
+// Previous versions of this scaffold mirrored pbi-cli's (older) output,
+// which March 2026 Desktop rejects with:
+//   ReportDefinition: Required artifact is missing in definition.pbir.
 
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { copyFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { writeJson } from '../pbir/io.js';
 import {
   DEFAULT_BASE_THEME,
-  SCHEMA_DEFINITION_PROPERTIES,
   SCHEMA_PAGES_METADATA,
+  SCHEMA_PLATFORM,
   SCHEMA_REPORT,
   SCHEMA_VERSION,
 } from '../pbir/schemas.js';
 
-const PLATFORM_SCHEMA =
-  'https://developer.microsoft.com/json-schemas/fabric/gitIntegration/platformProperties/2.0.0/schema.json';
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const REPORT_TEMPLATES_DIR = path.join(__dirname, 'templates');
 
 export interface ReportCreateOptions {
   /** Directory under which `<name>.Report` will be created. */
@@ -39,17 +48,17 @@ export interface ReportCreateResult {
 }
 
 /**
- * Scaffold a new PBIR report project structure.
+ * Scaffold a new PBIR report project.
  *
- * Produces:
- *   <targetPath>/<name>.pbip                                — project file
- *   <targetPath>/<name>.Report/.platform                    — Fabric metadata
- *   <targetPath>/<name>.Report/definition.pbir              — datasetReference
- *   <targetPath>/<name>.Report/definition/report.json       — top-level config
- *   <targetPath>/<name>.Report/definition/version.json      — version stamp
- *   <targetPath>/<name>.Report/definition/pages/pages.json  — empty page index
- *   (optional, when datasetPath is omitted):
- *   <targetPath>/<name>.SemanticModel/...                   — blank TMDL stub
+ * File layout (matches Desktop output):
+ *   <targetPath>/<name>.pbip
+ *   <targetPath>/<name>.Report/.platform
+ *   <targetPath>/<name>.Report/definition.pbir
+ *   <targetPath>/<name>.Report/definition/report.json
+ *   <targetPath>/<name>.Report/definition/version.json
+ *   <targetPath>/<name>.Report/definition/pages/pages.json
+ *   <targetPath>/<name>.Report/StaticResources/SharedResources/BaseThemes/CY26SU02.json
+ *   <targetPath>/<name>.SemanticModel/...   (when datasetPath omitted)
  */
 export function reportCreate(opts: ReportCreateOptions): ReportCreateResult {
   const targetPath = path.resolve(opts.targetPath);
@@ -58,76 +67,102 @@ export function reportCreate(opts: ReportCreateOptions): ReportCreateResult {
   const pagesDir = path.join(definitionDir, 'pages');
   mkdirSync(pagesDir, { recursive: true });
 
-  // version.json
+  // -- definition/version.json
   writeJson(path.join(definitionDir, 'version.json'), {
     $schema: SCHEMA_VERSION,
     version: '2.0.0',
   });
 
-  // report.json — matches Desktop defaults verbatim.
+  // -- definition/report.json — matches Desktop's default for a new report.
   writeJson(path.join(definitionDir, 'report.json'), {
     $schema: SCHEMA_REPORT,
     themeCollection: {
       baseTheme: { ...DEFAULT_BASE_THEME },
     },
-    layoutOptimization: 'None',
+    objects: {
+      section: [
+        {
+          properties: {
+            verticalAlignment: { expr: { Literal: { Value: "'Top'" } } },
+          },
+        },
+      ],
+    },
+    resourcePackages: [
+      {
+        name: 'SharedResources',
+        type: 'SharedResources',
+        items: [
+          {
+            name: DEFAULT_BASE_THEME.name,
+            path: `BaseThemes/${DEFAULT_BASE_THEME.name}.json`,
+            type: 'BaseTheme',
+          },
+        ],
+      },
+    ],
     settings: {
       useStylableVisualContainerHeader: true,
+      exportDataMode: 'AllowSummarized',
       defaultDrillFilterOtherVisuals: true,
       allowChangeFilterTypes: true,
       useEnhancedTooltips: true,
       useDefaultAggregateDisplayName: true,
     },
-    slowDataSourceSettings: {
-      isCrossHighlightingDisabled: false,
-      isSlicerSelectionsButtonEnabled: false,
-      isFilterSelectionsButtonEnabled: false,
-      isFieldWellButtonEnabled: false,
-      isApplyAllButtonEnabled: false,
-    },
   });
 
-  // pages.json — empty page order.
+  // -- definition/pages/pages.json — empty page order.
   writeJson(path.join(pagesDir, 'pages.json'), {
     $schema: SCHEMA_PAGES_METADATA,
     pageOrder: [],
   });
 
-  // Resolve dataset path, scaffolding a blank semantic model if needed.
+  // -- StaticResources/SharedResources/BaseThemes/<theme>.json — required
+  // because report.json's resourcePackages references it. Copy verbatim
+  // from our bundled template (Desktop's exact theme JSON).
+  const themeDestDir = path.join(reportFolder, 'StaticResources', 'SharedResources', 'BaseThemes');
+  mkdirSync(themeDestDir, { recursive: true });
+  copyFileSync(
+    path.join(REPORT_TEMPLATES_DIR, `${DEFAULT_BASE_THEME.name}.json`),
+    path.join(themeDestDir, `${DEFAULT_BASE_THEME.name}.json`),
+  );
+
+  // -- Resolve dataset path; scaffold a blank semantic model if needed.
   let datasetPath = opts.datasetPath;
   if (!datasetPath) {
     datasetPath = `../${opts.name}.SemanticModel`;
     scaffoldBlankSemanticModel(targetPath, opts.name);
   }
 
-  // definition.pbir — datasetReference is REQUIRED by Desktop. The $schema
-  // field is required by Desktop's March 2026 validator (omitting it surfaces
-  // as `ReportDefinition: Required artifact is missing in definition.pbir`).
+  // -- definition.pbir — NO $schema field (Desktop doesn't write one).
   writeJson(path.join(reportFolder, 'definition.pbir'), {
-    $schema: SCHEMA_DEFINITION_PROPERTIES,
     version: '4.0',
     datasetReference: {
       byPath: { path: datasetPath },
     },
   });
 
-  // .platform — Fabric git-integration metadata.
+  // -- .platform — Fabric git-integration metadata. logicalId is a real
+  // UUID (Desktop generates one; all-zero may trigger validator quirks).
   writeJson(path.join(reportFolder, '.platform'), {
-    $schema: PLATFORM_SCHEMA,
+    $schema: SCHEMA_PLATFORM,
     metadata: {
       type: 'Report',
       displayName: opts.name,
     },
     config: {
       version: '2.0',
-      logicalId: '00000000-0000-0000-0000-000000000000',
+      logicalId: randomUUID(),
     },
   });
 
-  // .pbip — top-level project file.
+  // -- <name>.pbip — top-level project file.
   writeJson(path.join(targetPath, `${opts.name}.pbip`), {
     version: '1.0',
     artifacts: [{ report: { path: `${opts.name}.Report` } }],
+    settings: {
+      enableAutoRecovery: true,
+    },
   });
 
   return {
@@ -139,39 +174,91 @@ export function reportCreate(opts: ReportCreateOptions): ReportCreateResult {
 }
 
 /**
- * Create a minimal TMDL semantic model so Desktop can open the report.
+ * Create a blank TMDL semantic model that Desktop accepts.
  *
- * Mirrors pbi-cli's `_scaffold_blank_semantic_model`. The TMDL is written as
- * plain text (not JSON), so it does not go through writeJson.
+ * Matches Desktop's output for a new empty model:
+ *   <name>.SemanticModel/.platform
+ *   <name>.SemanticModel/definition.pbism
+ *   <name>.SemanticModel/diagramLayout.json
+ *   <name>.SemanticModel/definition/model.tmdl
+ *   <name>.SemanticModel/definition/database.tmdl
+ *   <name>.SemanticModel/definition/cultures/en-US.tmdl
  */
 export function scaffoldBlankSemanticModel(targetPath: string, name: string): void {
   const modelDir = path.join(targetPath, `${name}.SemanticModel`);
   const defnDir = path.join(modelDir, 'definition');
-  mkdirSync(defnDir, { recursive: true });
+  const culturesDir = path.join(defnDir, 'cultures');
+  mkdirSync(culturesDir, { recursive: true });
 
-  // model.tmdl — minimal valid TMDL.
+  // -- definition/model.tmdl — full Desktop-style scaffold.
   writeFileSync(
     path.join(defnDir, 'model.tmdl'),
-    'model Model\n  culture: en-US\n  defaultPowerBIDataSourceVersion: powerBI_V3\n',
+    [
+      'model Model',
+      '\tculture: en-US',
+      '\tdefaultPowerBIDataSourceVersion: powerBI_V3',
+      '\tsourceQueryCulture: en-US',
+      '\tdataAccessOptions',
+      '\t\tlegacyRedirects',
+      '\t\treturnErrorValuesAsNull',
+      '',
+      'annotation __PBI_TimeIntelligenceEnabled = 1',
+      '',
+      'annotation PBI_ProTooling = ["DevMode"]',
+      '',
+      'ref cultureInfo en-US',
+      '',
+      '',
+    ].join('\n'),
     'utf-8',
   );
 
-  // .platform — required by Desktop.
+  // -- definition/database.tmdl
+  writeFileSync(
+    path.join(defnDir, 'database.tmdl'),
+    'database\n\tcompatibilityLevel: 1600\n\n',
+    'utf-8',
+  );
+
+  // -- definition/cultures/en-US.tmdl
+  writeFileSync(path.join(culturesDir, 'en-US.tmdl'), 'cultureInfo en-US\n\n', 'utf-8');
+
+  // -- diagramLayout.json (Desktop writes a default empty diagram)
+  writeJson(path.join(modelDir, 'diagramLayout.json'), {
+    version: '1.1.0',
+    diagrams: [
+      {
+        ordinal: 0,
+        scrollPosition: { x: 0, y: 0 },
+        nodes: [],
+        name: 'All tables',
+        zoomValue: 100,
+        pinKeyFieldsToTop: false,
+        showExtraHeaderInfo: false,
+        hideKeyFieldsWhenCollapsed: false,
+        tablesLocked: false,
+      },
+    ],
+    selectedDiagram: 'All tables',
+    defaultDiagram: 'All tables',
+  });
+
+  // -- .platform
   writeJson(path.join(modelDir, '.platform'), {
-    $schema: PLATFORM_SCHEMA,
+    $schema: SCHEMA_PLATFORM,
     metadata: {
       type: 'SemanticModel',
       displayName: name,
     },
     config: {
       version: '2.0',
-      logicalId: '00000000-0000-0000-0000-000000000000',
+      logicalId: randomUUID(),
     },
   });
 
-  // definition.pbism — matches Desktop format.
+  // -- definition.pbism — Desktop currently writes version 4.2.
   writeJson(path.join(modelDir, 'definition.pbism'), {
-    version: '4.1',
+    version: '4.2',
     settings: {},
   });
 }

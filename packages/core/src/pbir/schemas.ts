@@ -6,8 +6,11 @@
 
 // -- Schema URLs ------------------------------------------------------------
 
+// Power BI Desktop (March 2026, build 2.152) writes report/3.2.0.
+// Earlier pbi-cli versions used 1.2.0 — that's now rejected by Desktop's
+// validator when the report has visuals.
 export const SCHEMA_REPORT =
-  'https://developer.microsoft.com/json-schemas/fabric/item/report/definition/report/1.2.0/schema.json';
+  'https://developer.microsoft.com/json-schemas/fabric/item/report/definition/report/3.2.0/schema.json';
 
 export const SCHEMA_PAGE =
   'https://developer.microsoft.com/json-schemas/fabric/item/report/definition/page/2.1.0/schema.json';
@@ -27,11 +30,10 @@ export const SCHEMA_BOOKMARKS_METADATA =
 export const SCHEMA_BOOKMARK =
   'https://developer.microsoft.com/json-schemas/fabric/item/report/definition/bookmark/2.1.0/schema.json';
 
-// Required by Desktop's March 2026 validator on `<name>.Report/definition.pbir`
-// — earlier Desktop builds were more lenient. Omitting this causes
-// `ReportDefinition: Required artifact is missing in definition.pbir`.
-export const SCHEMA_DEFINITION_PROPERTIES =
-  'https://developer.microsoft.com/json-schemas/fabric/item/report/definitionProperties/2.0.0/schema.json';
+// Fabric git-integration .platform file schema (used in <name>.Report/.platform
+// and <name>.SemanticModel/.platform).
+export const SCHEMA_PLATFORM =
+  'https://developer.microsoft.com/json-schemas/fabric/gitIntegration/platformProperties/2.0.0/schema.json';
 
 // -- Supported visual types (32) -------------------------------------------
 
@@ -159,9 +161,16 @@ export function resolveVisualType(input: string): VisualType | null {
 
 // -- Default base theme ----------------------------------------------------
 
+// Base theme shipped with Power BI Desktop (March 2026, build 2.152).
+// The reportVersionAtImport field changed from a string to an object in
+// recent Desktop builds — older `"5.55"` is no longer accepted.
 export const DEFAULT_BASE_THEME = {
-  name: 'CY24SU06',
-  reportVersionAtImport: '5.55',
+  name: 'CY26SU02',
+  reportVersionAtImport: {
+    visual: '2.6.0',
+    report: '3.1.0',
+    page: '2.3.0',
+  },
   type: 'SharedResources',
 } as const;
 

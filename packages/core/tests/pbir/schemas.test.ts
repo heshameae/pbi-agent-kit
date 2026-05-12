@@ -22,8 +22,8 @@ describe('schemas: URL versions (pinned, do not bump without verifying in Deskto
   it('page → 2.1.0', () => {
     expect(SCHEMA_PAGE).toMatch(/page\/2\.1\.0\/schema\.json$/);
   });
-  it('report → 1.2.0', () => {
-    expect(SCHEMA_REPORT).toMatch(/report\/1\.2\.0\/schema\.json$/);
+  it('report → 3.2.0 (matches Desktop Mar 2026)', () => {
+    expect(SCHEMA_REPORT).toMatch(/report\/3\.2\.0\/schema\.json$/);
   });
   it('pagesMetadata → 1.0.0', () => {
     expect(SCHEMA_PAGES_METADATA).toMatch(/pagesMetadata\/1\.0\.0\/schema\.json$/);
@@ -118,10 +118,14 @@ describe('schemas: alias resolution', () => {
 });
 
 describe('schemas: DEFAULT_BASE_THEME', () => {
-  it('uses CY24SU06 / 5.55 / SharedResources', () => {
+  it('uses CY26SU02 / object versions / SharedResources (Desktop Mar 2026)', () => {
     expect(DEFAULT_BASE_THEME).toEqual({
-      name: 'CY24SU06',
-      reportVersionAtImport: '5.55',
+      name: 'CY26SU02',
+      reportVersionAtImport: {
+        visual: '2.6.0',
+        report: '3.1.0',
+        page: '2.3.0',
+      },
       type: 'SharedResources',
     });
   });

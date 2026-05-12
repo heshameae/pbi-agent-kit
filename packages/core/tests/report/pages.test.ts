@@ -190,7 +190,7 @@ describe('reportInfo after pages added', () => {
     const info = reportInfo(defn);
     expect(info.pageCount).toBe(2);
     expect(info.totalVisuals).toBe(0);
-    expect(info.theme).toBe('CY24SU06');
+    expect(info.theme).toBe('CY26SU02');
     expect(info.pages.map((p) => p.name).sort()).toEqual(['p1', 'p2']);
   });
 });

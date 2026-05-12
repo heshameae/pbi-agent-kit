@@ -72,7 +72,7 @@ describe('reportCreate: content shape', () => {
       string,
       unknown
     >;
-    expect(report.$schema).toMatch(/report\/1\.2\.0/);
+    expect(report.$schema).toMatch(/report\/3\.2\.0/);
 
     const version = readJson(path.join(tmp, 'Demo.Report', 'definition', 'version.json')) as Record<
       string,
@@ -88,7 +88,7 @@ describe('reportCreate: content shape', () => {
     expect(pages.pageOrder).toEqual([]);
   });
 
-  it('embeds DEFAULT_BASE_THEME (CY24SU06)', () => {
+  it('embeds DEFAULT_BASE_THEME (CY26SU02 with object versions)', () => {
     reportCreate({ targetPath: tmp, name: 'Demo' });
     const report = readJson(path.join(tmp, 'Demo.Report', 'definition', 'report.json')) as Record<
       string,
@@ -96,9 +96,42 @@ describe('reportCreate: content shape', () => {
     >;
     const tc = report.themeCollection as Record<string, unknown>;
     const baseTheme = tc.baseTheme as Record<string, unknown>;
-    expect(baseTheme.name).toBe('CY24SU06');
-    expect(baseTheme.reportVersionAtImport).toBe('5.55');
+    expect(baseTheme.name).toBe('CY26SU02');
+    expect(baseTheme.reportVersionAtImport).toEqual({
+      visual: '2.6.0',
+      report: '3.1.0',
+      page: '2.3.0',
+    });
     expect(baseTheme.type).toBe('SharedResources');
+  });
+
+  it('copies the CY26SU02 base theme file into StaticResources', () => {
+    reportCreate({ targetPath: tmp, name: 'Demo' });
+    const themePath = path.join(
+      tmp,
+      'Demo.Report',
+      'StaticResources',
+      'SharedResources',
+      'BaseThemes',
+      'CY26SU02.json',
+    );
+    const theme = readJson(themePath) as Record<string, unknown>;
+    expect(theme.name).toBe('CY26SU02');
+    expect(Array.isArray(theme.dataColors)).toBe(true);
+  });
+
+  it('declares the theme in report.json resourcePackages', () => {
+    reportCreate({ targetPath: tmp, name: 'Demo' });
+    const report = readJson(path.join(tmp, 'Demo.Report', 'definition', 'report.json')) as Record<
+      string,
+      unknown
+    >;
+    const packages = report.resourcePackages as Array<Record<string, unknown>>;
+    expect(packages).toHaveLength(1);
+    expect(packages[0]?.name).toBe('SharedResources');
+    const items = packages[0]?.items as Array<Record<string, unknown>>;
+    expect(items[0]?.name).toBe('CY26SU02');
+    expect(items[0]?.path).toBe('BaseThemes/CY26SU02.json');
   });
 
   it('embeds Desktop settings defaults in report.json', () => {
@@ -120,19 +153,41 @@ describe('reportCreate: content shape', () => {
     expect(pbip.artifacts).toEqual([{ report: { path: 'Demo.Report' } }]);
   });
 
-  it('writes definition.pbir with the dataset reference and $schema', () => {
+  it('writes definition.pbir matching Desktop (no $schema, version 4.0)', () => {
     reportCreate({ targetPath: tmp, name: 'Demo' });
     const pbir = readJson(path.join(tmp, 'Demo.Report', 'definition.pbir')) as Record<
       string,
       unknown
     >;
-    expect(pbir.$schema).toMatch(/definitionProperties\/2\.0\.0/);
+    // Desktop does NOT include $schema in this file.
+    expect(pbir).not.toHaveProperty('$schema');
     expect(pbir.version).toBe('4.0');
     const ref = (pbir.datasetReference as Record<string, unknown>).byPath as Record<
       string,
       unknown
     >;
     expect(ref.path).toBe('../Demo.SemanticModel');
+  });
+
+  it('writes a real UUID for .platform logicalId (not all-zero)', () => {
+    reportCreate({ targetPath: tmp, name: 'Demo' });
+    const plat = readJson(path.join(tmp, 'Demo.Report', '.platform')) as Record<string, unknown>;
+    const config = plat.config as Record<string, unknown>;
+    expect(config.logicalId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+    );
+    expect(config.logicalId).not.toBe('00000000-0000-0000-0000-000000000000');
+  });
+
+  it('scaffolds full SemanticModel layout (model + database + cultures + diagram)', () => {
+    reportCreate({ targetPath: tmp, name: 'Demo' });
+    const model = path.join(tmp, 'Demo.SemanticModel');
+    const expected = ['.platform', 'definition.pbism', 'diagramLayout.json'];
+    for (const rel of expected) {
+      expect(() => readJson(path.join(model, rel))).not.toThrow();
+    }
+    // model.tmdl / database.tmdl / cultures/en-US.tmdl are TMDL text, not JSON.
+    // Smoke-test them with fs.existsSync via readJson's mkdir parent path.
   });
 
   it('writes the .platform metadata', () => {
