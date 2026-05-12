@@ -19,6 +19,10 @@ import {
   resolveReportPath,
   validateReportFull,
   visualAdd,
+  visualBind,
+  visualCalcAdd,
+  visualCalcDelete,
+  visualCalcList,
   visualDelete,
   visualGet,
   visualList,
@@ -312,6 +316,86 @@ visual
       );
     },
   );
+
+visual
+  .command('bind <name>')
+  .description('Bind data fields to visual roles. Repeat --role/--field pairs in matching order.')
+  .requiredOption('--page <name>', 'Page name')
+  .option('-p, --path <path>', 'Path to the .Report folder')
+  .option('--role <role...>', 'Role name (can repeat). Aliases like "category", "value" supported.')
+  .option('--field <ref...>', 'Field reference in Table[Column] notation (can repeat).')
+  .option('--measure', 'Force-treat all bindings as Measures', false)
+  .action(
+    (
+      name: string,
+      opts: {
+        page: string;
+        path?: string;
+        role?: string[];
+        field?: string[];
+        measure: boolean;
+      },
+    ) => {
+      const roles = opts.role ?? [];
+      const fields = opts.field ?? [];
+      if (roles.length === 0 || roles.length !== fields.length) {
+        process.stderr.write(
+          'Error: pass --role and --field in matching pairs (e.g. --role Y --field "Sales[Revenue]")\n',
+        );
+        process.exit(2);
+      }
+      const bindings = roles.map((role, i) => ({
+        role,
+        field: fields[i] as string,
+        measure: opts.measure || undefined,
+      }));
+      out(visualBind(resolveReportPath(opts.path), opts.page, name, bindings));
+    },
+  );
+
+visual
+  .command('calc-add <visual> <calcName> <expression>')
+  .description('Add (or replace) a visual calculation')
+  .requiredOption('--page <name>', 'Page name')
+  .option('-p, --path <path>', 'Path to the .Report folder')
+  .option('--role <role>', 'Role to attach the calc to', 'Y')
+  .action(
+    (
+      visual: string,
+      calcName: string,
+      expression: string,
+      opts: { page: string; path?: string; role: string },
+    ) => {
+      out(
+        visualCalcAdd(
+          resolveReportPath(opts.path),
+          opts.page,
+          visual,
+          calcName,
+          expression,
+          opts.role,
+        ),
+      );
+    },
+  );
+
+visual
+  .command('calc-list <visual>')
+  .description('List all visual calculations')
+  .requiredOption('--page <name>', 'Page name')
+  .option('-p, --path <path>', 'Path to the .Report folder')
+  .action((visual: string, opts: { page: string; path?: string }) => {
+    out(visualCalcList(resolveReportPath(opts.path), opts.page, visual));
+  });
+
+visual
+  .command('calc-delete <visual> <calcName>')
+  .description('Delete a visual calculation by name')
+  .requiredOption('--page <name>', 'Page name')
+  .option('-p, --path <path>', 'Path to the .Report folder')
+  .action((visual: string, calcName: string, opts: { page: string; path?: string }) => {
+    out(visualCalcDelete(resolveReportPath(opts.path), opts.page, visual, calcName));
+  });
 
 program.parseAsync(process.argv).catch((err: unknown) => {
   const msg = err instanceof Error ? err.message : String(err);

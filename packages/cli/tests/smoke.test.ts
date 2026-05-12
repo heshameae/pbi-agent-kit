@@ -48,7 +48,7 @@ describe('pbi-ts report create / info', () => {
 
     const info = JSON.parse(run(['report', 'info', '--path', path.join(tmp, 'Demo.Report')]));
     expect(info.pageCount).toBe(0);
-    expect(info.theme).toBe('CY24SU06');
+    expect(info.theme).toBe('CY26SU02');
   });
 
   it('validates a fresh scaffold as valid', () => {
