@@ -9,6 +9,7 @@ import path from 'node:path';
 import { writeJson } from '../pbir/io.js';
 import {
   DEFAULT_BASE_THEME,
+  SCHEMA_DEFINITION_PROPERTIES,
   SCHEMA_PAGES_METADATA,
   SCHEMA_REPORT,
   SCHEMA_VERSION,
@@ -99,8 +100,11 @@ export function reportCreate(opts: ReportCreateOptions): ReportCreateResult {
     scaffoldBlankSemanticModel(targetPath, opts.name);
   }
 
-  // definition.pbir — datasetReference is REQUIRED by Desktop.
+  // definition.pbir — datasetReference is REQUIRED by Desktop. The $schema
+  // field is required by Desktop's March 2026 validator (omitting it surfaces
+  // as `ReportDefinition: Required artifact is missing in definition.pbir`).
   writeJson(path.join(reportFolder, 'definition.pbir'), {
+    $schema: SCHEMA_DEFINITION_PROPERTIES,
     version: '4.0',
     datasetReference: {
       byPath: { path: datasetPath },

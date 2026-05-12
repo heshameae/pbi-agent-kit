@@ -27,6 +27,12 @@ export const SCHEMA_BOOKMARKS_METADATA =
 export const SCHEMA_BOOKMARK =
   'https://developer.microsoft.com/json-schemas/fabric/item/report/definition/bookmark/2.1.0/schema.json';
 
+// Required by Desktop's March 2026 validator on `<name>.Report/definition.pbir`
+// — earlier Desktop builds were more lenient. Omitting this causes
+// `ReportDefinition: Required artifact is missing in definition.pbir`.
+export const SCHEMA_DEFINITION_PROPERTIES =
+  'https://developer.microsoft.com/json-schemas/fabric/item/report/definitionProperties/2.0.0/schema.json';
+
 // -- Supported visual types (32) -------------------------------------------
 
 export const SUPPORTED_VISUAL_TYPES = [

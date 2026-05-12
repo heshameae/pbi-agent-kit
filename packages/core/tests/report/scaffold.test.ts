@@ -120,12 +120,13 @@ describe('reportCreate: content shape', () => {
     expect(pbip.artifacts).toEqual([{ report: { path: 'Demo.Report' } }]);
   });
 
-  it('writes definition.pbir with the dataset reference', () => {
+  it('writes definition.pbir with the dataset reference and $schema', () => {
     reportCreate({ targetPath: tmp, name: 'Demo' });
     const pbir = readJson(path.join(tmp, 'Demo.Report', 'definition.pbir')) as Record<
       string,
       unknown
     >;
+    expect(pbir.$schema).toMatch(/definitionProperties\/2\.0\.0/);
     expect(pbir.version).toBe('4.0');
     const ref = (pbir.datasetReference as Record<string, unknown>).byPath as Record<
       string,
