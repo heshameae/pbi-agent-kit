@@ -8,7 +8,8 @@
     {
       "name": "pbi-mcp-ts",
       "source": ".",
-      "description": "Power BI report (PBIR) authoring for Claude Code — native TypeScript MCP server + skills + subagents + hooks. Pairs with @microsoft/powerbi-modeling-mcp."
+      "version": "0.2.0",
+      "description": "Power BI report (PBIR) authoring for Claude Code — 39-tool MCP server + 10 skills + 4 subagents + validation hook. Pairs with @microsoft/powerbi-modeling-mcp."
     }
   ]
 }

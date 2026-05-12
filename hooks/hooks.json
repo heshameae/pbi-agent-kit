@@ -1,0 +1,17 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "mcp__pbi-report__pbi_(page|visual|filter|bookmark|format)_(add|update|delete|bind|set_.*|clear|bulk_.*|calc_.*)",
+        "hooks": [
+          {
+            "type": "agent",
+            "agent": "pbi-report-validator",
+            "statusMessage": "Validating PBIR after write…",
+            "once": false
+          }
+        ]
+      }
+    ]
+  }
+}
