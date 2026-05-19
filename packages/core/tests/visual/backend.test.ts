@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -17,6 +17,7 @@ import {
   visualList,
   visualSetContainer,
   visualUpdate,
+  writeJson,
 } from '../../src/index.js';
 
 let tmp: string;
@@ -25,7 +26,7 @@ const page = 'p1';
 
 beforeEach(() => {
   tmp = realpathSync(mkdtempSync(path.join(tmpdir(), 'pbi-vis-')));
-  const r = reportCreate({ targetPath: tmp, name: 'Demo' });
+  const r = reportCreate({ targetPath: tmp, name: 'MyReport' });
   defn = r.definitionPath;
   pageAdd(defn, { displayName: 'Overview', name: page });
 });
@@ -129,6 +130,26 @@ describe('visualList', () => {
     expect(list[0]?.visualType).toBe('barChart');
     expect(list[1]?.visualType).toBe('card');
   });
+
+  it('tags visualGroup containers as visualType="group" with zero dimensions', () => {
+    // Hand-write a visualGroup container — pbi-cli has no API to create
+    // these (they're nested by Desktop interactively) but visualList must
+    // surface them correctly.
+    const groupDir = path.join(defn, 'pages', page, 'visuals', 'g1');
+    mkdirSync(groupDir, { recursive: true });
+    writeJson(path.join(groupDir, 'visual.json'), {
+      $schema: 'https://x',
+      name: 'g1',
+      visualGroup: { displayName: 'My Group' },
+    });
+    const list = visualList(defn, page);
+    const group = list.find((v) => v.name === 'g1');
+    expect(group?.visualType).toBe('group');
+    expect(group?.x).toBe(0);
+    expect(group?.y).toBe(0);
+    expect(group?.width).toBe(0);
+    expect(group?.height).toBe(0);
+  });
 });
 
 describe('visualGet', () => {
@@ -179,7 +200,7 @@ describe('visualSetContainer', () => {
   it('sets title, border, background in one call', () => {
     visualAdd(defn, page, { visualType: 'card', name: 'v1' });
     visualSetContainer(defn, page, 'v1', {
-      title: 'Revenue',
+      title: 'MyTitle',
       borderShow: true,
       backgroundShow: false,
     });

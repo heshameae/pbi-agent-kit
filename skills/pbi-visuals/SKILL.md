@@ -20,19 +20,19 @@ Two-step sequence — always.
 2. **Bind data**:
    ```
    pbi_visual_bind(page: <pageId>, name: <visualId>, bindings: [
-     { role: "Category", field: "Geography[Region]" },
-     { role: "Y",        field: "Sales[Revenue]"   },
+     { role: "Category", field: "<Table>[<Column>]" },
+     { role: "Y",        field: "<Table>[<Measure>]" },
    ])
    ```
 
 Without step 2, the visual appears in Desktop as an empty placeholder.
 
-### "Add a card showing total revenue"
+### "Add a card showing a measure"
 
 ```
 pbi_visual_add(page, visualType: "card")  → name=<id>
 pbi_visual_bind(page, name, bindings: [
-  { role: "Values", field: "Sales[Revenue]" }
+  { role: "Values", field: "<Table>[<Measure>]" }
 ])
 ```
 
@@ -61,9 +61,9 @@ All 32 PBIR types are supported — see the full list in `pbir/schemas.ts:SUPPOR
 
 Format: `Table[Column]` — single brackets, table name on the left, column/measure name on the right.
 
-- `Sales[Revenue]` ← measure or column on Sales
-- `Geography[Region]` ← column on Geography
-- `Sample - Superstore_Orders[Sales]` ← table names with spaces/dashes are fine
+- `MyTable[MyMeasure]` ← measure or column on a table
+- `MyOtherTable[MyColumn]` ← column on another table
+- `My Table With Spaces[MyColumn]` ← table names with spaces/dashes/special chars are fine
 
 ## Roles and Measure-vs-Column
 
@@ -86,7 +86,7 @@ Each visual type has a set of roles (Category, Y, Legend, Values, Rows, Columns,
 
 ```
 pbi_visual_set_container(page, name, {
-  title: "Revenue by Region",
+  title: "<your title>",
   borderShow: true,
   backgroundShow: false
 })
@@ -97,9 +97,9 @@ pbi_visual_set_container(page, name, {
 DAX expressions that run inside a visual's scope (rolling totals, % of total, etc.):
 
 ```
-pbi_visual_calc_add(page, name, calcName: "RunningTotal", expression: "RUNNINGSUM([Revenue])")
+pbi_visual_calc_add(page, name, calcName: "<calc>", expression: "<DAX>")
 pbi_visual_calc_list(page, name)
-pbi_visual_calc_delete(page, name, calcName: "RunningTotal")
+pbi_visual_calc_delete(page, name, calcName: "<calc>")
 ```
 
 Idempotent — re-adding with the same `calcName` replaces.

@@ -33,3 +33,13 @@ export class PbirValidationError extends PbiCoreError {
     this.errors = errors;
   }
 }
+
+export class VisualBindValidationError extends PbiCoreError {
+  readonly report: unknown;
+
+  constructor(report: { findings?: readonly { reason?: string }[] }) {
+    const firstReason = report.findings?.find((finding) => finding.reason)?.reason;
+    super(firstReason ?? 'Visual binding validation blocked the write.');
+    this.report = report;
+  }
+}

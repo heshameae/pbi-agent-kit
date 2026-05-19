@@ -21,7 +21,7 @@ const PAGE = 'p1';
 
 beforeEach(() => {
   tmp = realpathSync(mkdtempSync(path.join(tmpdir(), 'pbi-format-')));
-  const r = reportCreate({ targetPath: tmp, name: 'Demo' });
+  const r = reportCreate({ targetPath: tmp, name: 'MyReport' });
   defn = r.definitionPath;
   pageAdd(defn, { displayName: 'P', name: PAGE });
   visualAdd(defn, PAGE, { visualType: 'tableEx', name: 'v1' });
@@ -42,26 +42,26 @@ function readValues(): Record<string, unknown>[] {
 describe('formatBackgroundGradient', () => {
   it('adds a values entry with FillRule.linearGradient2', () => {
     formatBackgroundGradient(defn, PAGE, 'v1', {
-      inputTable: 'Sales',
-      inputColumn: 'Profit',
-      fieldQueryRef: 'Sum(Sales.Profit)',
+      inputTable: 'MyTable',
+      inputColumn: 'MyColumn',
+      fieldQueryRef: 'Sum(MyTable.MyColumn)',
     });
     const [entry] = readValues();
     expect(entry).toBeDefined();
     const selector = entry?.selector as Record<string, unknown>;
-    expect(selector.metadata).toBe('Sum(Sales.Profit)');
+    expect(selector.metadata).toBe('Sum(MyTable.MyColumn)');
   });
 
   it('replaces an entry with same fieldQueryRef instead of appending', () => {
     formatBackgroundGradient(defn, PAGE, 'v1', {
-      inputTable: 'Sales',
-      inputColumn: 'Profit',
-      fieldQueryRef: 'Sum(Sales.Profit)',
+      inputTable: 'MyTable',
+      inputColumn: 'MyColumn',
+      fieldQueryRef: 'Sum(MyTable.MyColumn)',
     });
     formatBackgroundGradient(defn, PAGE, 'v1', {
-      inputTable: 'Sales',
-      inputColumn: 'Profit',
-      fieldQueryRef: 'Sum(Sales.Profit)',
+      inputTable: 'MyTable',
+      inputColumn: 'MyColumn',
+      fieldQueryRef: 'Sum(MyTable.MyColumn)',
       minColor: '#FF0000',
     });
     expect(readValues()).toHaveLength(1);
@@ -71,8 +71,8 @@ describe('formatBackgroundGradient', () => {
 describe('formatBackgroundConditional', () => {
   it('encodes ComparisonKind=2 for gt and threshold with D suffix', () => {
     formatBackgroundConditional(defn, PAGE, 'v1', {
-      inputTable: 'Sales',
-      inputColumn: 'Profit',
+      inputTable: 'MyTable',
+      inputColumn: 'MyColumn',
       threshold: 1000,
       colorHex: '#00FF00',
     });
@@ -109,9 +109,9 @@ describe('formatBackgroundConditional', () => {
 describe('formatBackgroundMeasure', () => {
   it('wraps the color in a Measure expression', () => {
     formatBackgroundMeasure(defn, PAGE, 'v1', {
-      measureTable: 'Sales',
+      measureTable: 'MyTable',
       measureProperty: 'ColorMeasure',
-      fieldQueryRef: 'Sum(Sales.Profit)',
+      fieldQueryRef: 'Sum(MyTable.MyColumn)',
     });
     const [entry] = readValues();
     const props = entry?.properties as Record<string, unknown>;

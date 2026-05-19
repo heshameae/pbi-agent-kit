@@ -9,6 +9,8 @@
 // `@microsoft/powerbi-modeling-mcp` (which covers the modeling layer
 // side-by-side).
 
+import { existsSync, readdirSync, statSync } from 'node:fs';
+import path from 'node:path';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import {
@@ -29,16 +31,25 @@ import {
   formatBackgroundMeasure,
   formatClear,
   formatGet,
+  layoutColumn,
+  layoutGrid,
+  layoutRow,
+  modelDoctorFromFolder,
   pageAdd,
   pageDelete,
   pageGet,
   pageList,
   pageSetBackground,
   pageSetVisibility,
+  reportConvert,
   reportCreate,
   reportInfo,
   resolveReportPath,
+  themeDiff,
+  themeGet,
+  themeSet,
   validateReportFull,
+  validateVisualBindingPlan,
   visualAdd,
   visualBind,
   visualBulkBind,
@@ -95,9 +106,18 @@ function tool<TShape extends z.ZodRawShape>(
       };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      const report =
+        err !== null && typeof err === 'object' && 'report' in err
+          ? (err as { report?: unknown }).report
+          : undefined;
+      const structured =
+        report !== undefined && report !== null && typeof report === 'object'
+          ? { error: msg, ...(report as Record<string, unknown>) }
+          : { error: msg };
       return {
         isError: true,
         content: [{ type: 'text' as const, text: `Error: ${msg}` }],
+        structuredContent: structured,
       };
     }
   };
@@ -124,6 +144,47 @@ const VISUAL_FIELD = z.string().describe('Visual name/id within the page.');
 
 function resolvePath(p?: string): string {
   return resolveReportPath(p);
+}
+
+function resolveSemanticModelDefinition(input?: string): string {
+  const start = input ? path.resolve(input) : process.cwd();
+  const candidates: string[] = [];
+
+  if (existsSync(start) && statSync(start).isDirectory()) {
+    if (path.basename(start) === 'definition') candidates.push(start);
+    candidates.push(path.join(start, 'definition'));
+    if (start.endsWith('.SemanticModel')) {
+      candidates.push(path.join(start, 'definition'));
+    }
+    const parent = path.dirname(start);
+    if (existsSync(parent)) {
+      for (const entry of readdirSync(parent)) {
+        if (entry.endsWith('.SemanticModel')) {
+          candidates.push(path.join(parent, entry, 'definition'));
+        }
+      }
+    }
+    for (const entry of readdirSync(start)) {
+      if (entry.endsWith('.SemanticModel')) {
+        candidates.push(path.join(start, entry, 'definition'));
+      }
+    }
+  } else if (existsSync(start) && start.endsWith('.pbip')) {
+    const dir = path.dirname(start);
+    for (const entry of readdirSync(dir)) {
+      if (entry.endsWith('.SemanticModel')) {
+        candidates.push(path.join(dir, entry, 'definition'));
+      }
+    }
+  }
+
+  for (const c of candidates) {
+    if (existsSync(c) && statSync(c).isDirectory()) return c;
+  }
+
+  throw new Error(
+    `Could not locate a .SemanticModel/definition folder from "${input ?? process.cwd()}". Pass an explicit modelPath.`,
+  );
 }
 
 // =========================================================================
@@ -169,6 +230,100 @@ tool(
   { path: PATH_FIELD },
   { readOnlyHint: true, idempotentHint: true },
   (input) => validateReportFull(resolvePath(input.path)),
+);
+
+tool(
+  'pbi_model_check',
+  'Model Doctor — TMDL Validators',
+  'Run offline modeling validators against a .SemanticModel/definition folder: grain inference, BPA-style DAX/modeling/formatting rules, and relationship pre-flight (missing keys, type mismatch, ambiguous paths, cycles). Pass bridgeIntent { fromTable, toTable, axes? } to also compute bridge_covers / bridge_uncovered / bridge_blocked_axes for a TREATAS cross-fact analysis. Read-only; no live DAX execution.',
+  {
+    modelPath: z
+      .string()
+      .optional()
+      .describe(
+        'Path to a .SemanticModel folder, its definition/ folder, a .pbip file, or a directory that contains a sibling .SemanticModel. Auto-detected from cwd if omitted.',
+      ),
+    bridgeIntent: z
+      .object({
+        fromTable: z.string().describe('Actuals (many-side) fact table.'),
+        toTable: z.string().describe('Targets / lookup fact table.'),
+        axes: z
+          .array(z.string())
+          .optional()
+          .describe(
+            'Visual axes the user intends to slice by. Any axis not in bridge_covers ends up in bridge_uncovered.',
+          ),
+      })
+      .optional()
+      .describe(
+        'Optional TREATAS bridge intent. When provided, the report includes a bridge analysis identifying which axes the bridge covers and which are structurally blocked.',
+      ),
+  },
+  { readOnlyHint: true, idempotentHint: true },
+  (input) => {
+    const definitionPath = resolveSemanticModelDefinition(input.modelPath);
+    return modelDoctorFromFolder(definitionPath, {
+      bridgeIntent: input.bridgeIntent,
+    });
+  },
+);
+
+tool(
+  'pbi_report_convert',
+  'Convert .Report Folder to .pbip',
+  'Wrap a bare `.Report/` folder into a complete `.pbip` project. Writes `<name>.pbip` and a `.gitignore` (if missing). Does NOT convert .pbix files.',
+  {
+    sourcePath: z.string().describe('Path to a `.Report` folder OR a directory that contains one.'),
+    outputPath: z
+      .string()
+      .optional()
+      .describe("Where to write the .pbip + .gitignore. Defaults to sourcePath's parent."),
+    force: z.boolean().optional().describe('Overwrite an existing .pbip if one is there.'),
+  },
+  { destructiveHint: false, idempotentHint: false },
+  (input) =>
+    reportConvert({
+      sourcePath: input.sourcePath,
+      outputPath: input.outputPath,
+      force: input.force,
+    }),
+);
+
+// =========================================================================
+// THEMES
+// =========================================================================
+
+tool(
+  'pbi_theme_get',
+  'Get Current Theme',
+  'Read the current base + custom theme. Returns the full custom theme JSON if reachable in StaticResources/RegisteredResources.',
+  { path: PATH_FIELD },
+  { readOnlyHint: true, idempotentHint: true },
+  (input) => themeGet(resolvePath(input.path)),
+);
+
+tool(
+  'pbi_theme_set',
+  'Apply Custom Theme',
+  "Copy a theme JSON into the report's StaticResources/RegisteredResources, set themeCollection.customTheme, and update resourcePackages[].",
+  {
+    path: PATH_FIELD,
+    themePath: z.string().describe('Path to the theme JSON file to apply.'),
+  },
+  { destructiveHint: false, idempotentHint: true },
+  (input) => themeSet(resolvePath(input.path), input.themePath),
+);
+
+tool(
+  'pbi_theme_diff',
+  'Diff Theme Against Current',
+  'Compare a proposed theme JSON against the currently applied custom theme. Returns added/removed/changed key paths in dot-notation.',
+  {
+    path: PATH_FIELD,
+    themePath: z.string().describe('Path to the proposed theme JSON file.'),
+  },
+  { readOnlyHint: true, idempotentHint: true },
+  (input) => themeDiff(resolvePath(input.path), input.themePath),
 );
 
 // =========================================================================
@@ -369,6 +524,12 @@ tool(
   'Bind semantic-model fields to the visual\'s data roles. Roles can be canonical (Y, Category, Values) or aliases (value, category, field). Field reference format: "Table[Column]". Measure-vs-Column auto-detected by role; pass `measure:true` to override. Multiple bindings in one call append; bindings on the same role accumulate.',
   {
     path: PATH_FIELD,
+    modelPath: z
+      .string()
+      .optional()
+      .describe(
+        'Optional path to the linked .SemanticModel/definition folder. If omitted, the sibling model is auto-detected. If no populated model exists, PBIR-only binding behavior is preserved.',
+      ),
     page: PAGE_FIELD,
     name: VISUAL_FIELD,
     bindings: z
@@ -377,17 +538,74 @@ tool(
           role: z.string().describe('Data role name (e.g. "Y", "Category", "value", "category").'),
           field: z
             .string()
-            .describe('Field reference like "Sales[Revenue]" or "Geography[Region]".'),
+            .describe(
+              'Field reference in `Table[Column]` notation (column or measure name on the right).',
+            ),
           measure: z
             .boolean()
             .optional()
             .describe('Force-treat as Measure (default: inferred from role).'),
+          aggregation: z
+            .enum(['sum', 'avg', 'count', 'min', 'max'])
+            .optional()
+            .describe(
+              "Wrap a column in an aggregation function. REQUIRED when binding a column with summarizeBy != 'None' to a measure-style role (Values, Y, Indicator, Size) — otherwise Desktop renders 'Something\\'s wrong with one or more fields'. Use 'sum' for the default summable column. Ignored when measure:true.",
+            ),
         }),
       )
       .min(1),
   },
   { destructiveHint: false, idempotentHint: false },
-  (input) => visualBind(resolvePath(input.path), input.page, input.name, input.bindings),
+  (input) =>
+    visualBind(resolvePath(input.path), input.page, input.name, input.bindings, {
+      modelPath: input.modelPath,
+    }),
+);
+
+tool(
+  'pbi_visual_bind_check',
+  'Check Visual Binding Plan',
+  'Read-only model-aware validation for a visual binding plan. Checks existing projections plus optional proposed bindings against the semantic model before any write would occur.',
+  {
+    path: PATH_FIELD,
+    modelPath: z
+      .string()
+      .optional()
+      .describe(
+        'Optional path to the linked .SemanticModel/definition folder. If omitted, the sibling model is auto-detected.',
+      ),
+    page: PAGE_FIELD,
+    name: VISUAL_FIELD,
+    bindings: z
+      .array(
+        z.object({
+          role: z.string().describe('Data role name (e.g. "Y", "Category", "value", "category").'),
+          field: z
+            .string()
+            .describe(
+              'Field reference in `Table[Column]` notation (column or measure name on the right).',
+            ),
+          measure: z
+            .boolean()
+            .optional()
+            .describe('Force-treat as Measure (default: inferred from role).'),
+          aggregation: z.enum(['sum', 'avg', 'count', 'min', 'max']).optional(),
+        }),
+      )
+      .optional()
+      .describe(
+        'Optional proposed bindings. If omitted, only existing visual projections are checked.',
+      ),
+  },
+  { readOnlyHint: true, idempotentHint: true },
+  (input) =>
+    validateVisualBindingPlan(
+      resolvePath(input.path),
+      input.page,
+      input.name,
+      input.bindings ?? [],
+      { modelPath: input.modelPath },
+    ),
 );
 
 tool(
@@ -399,7 +617,7 @@ tool(
     page: PAGE_FIELD,
     name: VISUAL_FIELD,
     calcName: z.string(),
-    expression: z.string().describe('DAX expression, e.g. "RUNNINGSUM([Revenue])".'),
+    expression: z.string().describe('DAX expression (e.g. a running total, ratio, or other calc).'),
     role: z.string().default('Y').describe('Role to attach the calc to (default Y).'),
   },
   { destructiveHint: false, idempotentHint: true },
@@ -481,7 +699,7 @@ tool(
 tool(
   'pbi_filter_add_topn',
   'Add TopN Filter',
-  'Add a "top N by measure" filter. `direction` is Top (descending) or Bottom (ascending).',
+  'Add a "top N by measure-or-column" filter. `direction` is Top (descending) or Bottom (ascending). **Set `orderByMeasure: true` when `orderByColumn` names a DAX Measure** (e.g. a `measure X = SUM(...)` definition in TMDL); omitting it wraps the field in implicit SUM aggregation, which Desktop silently rejects for measure references. Discover whether a name is a measure vs a column via the semantic model — never assume.',
   {
     path: PATH_FIELD,
     page: PAGE_FIELD,
@@ -491,6 +709,10 @@ tool(
     n: z.number().int().positive(),
     orderByTable: z.string(),
     orderByColumn: z.string(),
+    orderByMeasure: z
+      .boolean()
+      .optional()
+      .describe('Set true when orderByColumn names a Measure (vs a raw column).'),
     direction: z.enum(['Top', 'Bottom']).default('Top'),
     name: z.string().optional(),
   },
@@ -504,6 +726,7 @@ tool(
       n: input.n,
       orderByTable: input.orderByTable,
       orderByColumn: input.orderByColumn,
+      orderByMeasure: input.orderByMeasure,
       direction: input.direction,
       name: input.name,
     }),
@@ -726,6 +949,92 @@ tool(
 );
 
 // =========================================================================
+// LAYOUT  (composition / arrangement of existing visuals + named scaffolds)
+// =========================================================================
+
+tool(
+  'pbi_layout_grid',
+  'Arrange Visuals in a Grid',
+  'Position existing visuals into a `rows × cols` grid (row-major fill). Each cell gets equal width/height. Use when the user wants a uniform grid of cards, charts, etc.',
+  {
+    path: PATH_FIELD,
+    page: PAGE_FIELD,
+    visuals: z.array(z.string()).min(1).describe('Visual names to position, in row-major order.'),
+    rows: z.number().int().positive(),
+    cols: z.number().int().positive(),
+    x: z.number().optional().describe('Top-left x of the grid area. Defaults to 0.'),
+    y: z.number().optional().describe('Top-left y of the grid area. Defaults to 0.'),
+    width: z.number().optional().describe('Total grid width. Defaults to page width minus x.'),
+    height: z.number().optional().describe('Total grid height. Defaults to page height minus y.'),
+    gap: z.number().optional().describe('Pixel gap between cells. Defaults to 8.'),
+  },
+  { destructiveHint: false, idempotentHint: true },
+  (input) =>
+    layoutGrid(resolvePath(input.path), input.page, {
+      visuals: input.visuals,
+      rows: input.rows,
+      cols: input.cols,
+      x: input.x,
+      y: input.y,
+      width: input.width,
+      height: input.height,
+      gap: input.gap,
+    }),
+);
+
+tool(
+  'pbi_layout_row',
+  'Arrange Visuals in a Row',
+  'Position existing visuals horizontally in a single row at a given y. Each visual gets equal width.',
+  {
+    path: PATH_FIELD,
+    page: PAGE_FIELD,
+    visuals: z.array(z.string()).min(1),
+    y: z.number().optional(),
+    height: z.number().optional(),
+    x: z.number().optional(),
+    width: z.number().optional(),
+    gap: z.number().optional(),
+  },
+  { destructiveHint: false, idempotentHint: true },
+  (input) =>
+    layoutRow(resolvePath(input.path), input.page, {
+      visuals: input.visuals,
+      y: input.y,
+      height: input.height,
+      x: input.x,
+      width: input.width,
+      gap: input.gap,
+    }),
+);
+
+tool(
+  'pbi_layout_column',
+  'Arrange Visuals in a Column',
+  'Position existing visuals vertically in a single column at a given x. Each visual gets equal height.',
+  {
+    path: PATH_FIELD,
+    page: PAGE_FIELD,
+    visuals: z.array(z.string()).min(1),
+    x: z.number().optional(),
+    width: z.number().optional(),
+    y: z.number().optional(),
+    height: z.number().optional(),
+    gap: z.number().optional(),
+  },
+  { destructiveHint: false, idempotentHint: true },
+  (input) =>
+    layoutColumn(resolvePath(input.path), input.page, {
+      visuals: input.visuals,
+      x: input.x,
+      width: input.width,
+      y: input.y,
+      height: input.height,
+      gap: input.gap,
+    }),
+);
+
+// =========================================================================
 // BULK
 // =========================================================================
 
@@ -761,6 +1070,12 @@ tool(
   'Apply the same bindings to every visual of a given type (optionally filtered by name pattern).',
   {
     path: PATH_FIELD,
+    modelPath: z
+      .string()
+      .optional()
+      .describe(
+        'Optional path to the linked .SemanticModel/definition folder. If omitted, the sibling model is auto-detected. Bulk bind validates every target before writing any target.',
+      ),
     page: PAGE_FIELD,
     visualType: VISUAL_TYPE_FIELD,
     namePattern: z.string().optional(),
@@ -770,6 +1085,7 @@ tool(
           role: z.string(),
           field: z.string(),
           measure: z.boolean().optional(),
+          aggregation: z.enum(['sum', 'avg', 'count', 'min', 'max']).optional(),
         }),
       )
       .min(1),
@@ -780,6 +1096,7 @@ tool(
       visualType: input.visualType,
       namePattern: input.namePattern,
       bindings: input.bindings,
+      modelPath: input.modelPath,
     }),
 );
 

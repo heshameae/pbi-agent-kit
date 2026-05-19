@@ -1,0 +1,482 @@
+import { existsSync, readdirSync, statSync } from 'node:fs';
+import path from 'node:path';
+import { parseTMDLFolder } from './tmdl-parser.js';
+import type { TMDLColumn, TMDLMeasure, TMDLModel, TMDLRelationship } from './types.js';
+
+export type ModelFieldKind = 'column' | 'measure';
+
+export interface ModelColumnField {
+  readonly kind: 'column';
+  readonly table: string;
+  readonly name: string;
+  readonly dataType: string;
+  readonly summarizeBy?: string;
+  readonly isHidden: boolean;
+  readonly isKey: boolean;
+}
+
+export interface ModelMeasureField {
+  readonly kind: 'measure';
+  readonly table: string;
+  readonly name: string;
+  readonly expression: string;
+  readonly formatString?: string;
+  readonly isHidden: boolean;
+  readonly description?: string;
+}
+
+export type ModelField = ModelColumnField | ModelMeasureField;
+
+export interface ModelFieldIndexTable {
+  readonly name: string;
+  readonly isHidden: boolean;
+  readonly isCalculated: boolean;
+  readonly isAutoDateTable: boolean;
+  readonly columns: Readonly<Record<string, ModelColumnField>>;
+  readonly measures: Readonly<Record<string, ModelMeasureField>>;
+}
+
+export interface ModelRelationshipLink {
+  readonly relationshipId: string;
+  readonly fromTable: string;
+  readonly fromColumn: string;
+  readonly toTable: string;
+  readonly toColumn: string;
+  readonly isActive: boolean;
+  readonly crossFilteringBehavior: 'single' | 'both';
+}
+
+export interface TreatasBridgeMeasure {
+  readonly measure: ModelMeasureField;
+  readonly fromTable: string;
+  readonly toTable: string;
+  readonly fromTables: readonly string[];
+  readonly toTables: readonly string[];
+  readonly coveredAxes: readonly string[];
+  readonly blockedAxes: readonly string[];
+}
+
+export interface ModelFieldIndex {
+  readonly modelPath: string;
+  readonly modelFingerprint: string;
+  readonly model: TMDLModel;
+  readonly tables: Readonly<Record<string, ModelFieldIndexTable>>;
+  readonly relationships: readonly TMDLRelationship[];
+  readonly relationshipGraph: Readonly<Record<string, readonly ModelRelationshipLink[]>>;
+  readonly treatasBridgeMeasures: Readonly<Record<string, TreatasBridgeMeasure>>;
+}
+
+export function buildModelFieldIndex(modelPath: string): ModelFieldIndex {
+  return buildModelFieldIndexFromModel(parseTMDLFolder(modelPath));
+}
+
+export function buildModelFieldIndexFromModel(model: TMDLModel): ModelFieldIndex {
+  const tables: Record<string, ModelFieldIndexTable> = {};
+
+  for (const table of model.tables) {
+    const columns: Record<string, ModelColumnField> = {};
+    const measures: Record<string, ModelMeasureField> = {};
+
+    for (const column of table.columns) {
+      columns[column.name] = columnField(column);
+    }
+
+    for (const measure of table.measures) {
+      measures[measure.name] = measureField(measure);
+    }
+
+    tables[table.name] = {
+      name: table.name,
+      isHidden: table.isHidden,
+      isCalculated: table.isCalculated,
+      isAutoDateTable: table.isAutoDateTable,
+      columns,
+      measures,
+    };
+  }
+
+  const relationshipGraph = buildRelationshipGraph(model.relationships);
+  const indexWithoutBridges: Omit<ModelFieldIndex, 'treatasBridgeMeasures'> = {
+    modelPath: model.modelPath,
+    modelFingerprint: fingerprintDefinitionFolder(model.modelPath),
+    model,
+    tables,
+    relationships: model.relationships,
+    relationshipGraph,
+  };
+
+  return {
+    ...indexWithoutBridges,
+    treatasBridgeMeasures: buildTreatasBridgeMeasures(indexWithoutBridges),
+  };
+}
+
+export function findModelField(
+  index: ModelFieldIndex,
+  tableName: string,
+  fieldName: string,
+): ModelField | null {
+  const table = index.tables[tableName];
+  if (!table) return null;
+  return table.measures[fieldName] ?? table.columns[fieldName] ?? null;
+}
+
+export function findColumn(
+  index: ModelFieldIndex,
+  tableName: string,
+  columnName: string,
+): ModelColumnField | null {
+  return index.tables[tableName]?.columns[columnName] ?? null;
+}
+
+export function findMeasure(
+  index: ModelFieldIndex,
+  tableName: string,
+  measureName: string,
+): ModelMeasureField | null {
+  return index.tables[tableName]?.measures[measureName] ?? null;
+}
+
+export function hasActiveRelationshipPath(
+  index: ModelFieldIndex,
+  fromTable: string,
+  toTable: string,
+): boolean {
+  return hasDirectedFilterPath(index, fromTable, toTable);
+}
+
+export function hasDirectedFilterPath(
+  index: ModelFieldIndex,
+  filterTable: string,
+  targetTable: string,
+): boolean {
+  if (filterTable === targetTable) return true;
+  if (!index.tables[filterTable] || !index.tables[targetTable]) return false;
+
+  const visited = new Set<string>();
+  const queue = [filterTable];
+
+  while (queue.length > 0) {
+    const table = queue.shift();
+    if (table === undefined) break;
+    if (table === targetTable) return true;
+    if (visited.has(table)) continue;
+    visited.add(table);
+
+    for (const link of outgoingFilterLinks(index, table)) {
+      if (!visited.has(link)) queue.push(link);
+    }
+  }
+
+  return false;
+}
+
+export function hasUndirectedRelationshipPath(
+  index: ModelFieldIndex,
+  fromTable: string,
+  toTable: string,
+): boolean {
+  if (fromTable === toTable) return true;
+  if (!index.tables[fromTable] || !index.tables[toTable]) return false;
+
+  const visited = new Set<string>();
+  const queue = [fromTable];
+
+  while (queue.length > 0) {
+    const table = queue.shift();
+    if (table === undefined) break;
+    if (table === toTable) return true;
+    if (visited.has(table)) continue;
+    visited.add(table);
+
+    for (const link of index.relationshipGraph[table] ?? []) {
+      if (!link.isActive) continue;
+      const next = link.fromTable === table ? link.toTable : link.fromTable;
+      if (!visited.has(next)) queue.push(next);
+    }
+  }
+
+  return false;
+}
+
+export function isSummarizableColumn(column: ModelColumnField): boolean {
+  return (
+    column.summarizeBy !== undefined &&
+    column.summarizeBy.toLowerCase() !== 'none' &&
+    isNumericDataType(column.dataType)
+  );
+}
+
+export function defaultAggregationForColumn(
+  column: ModelColumnField,
+): 'sum' | 'avg' | 'count' | 'min' | 'max' | null {
+  const summarizeBy = column.summarizeBy?.toLowerCase();
+  if (summarizeBy === 'sum') return 'sum';
+  if (summarizeBy === 'average') return 'avg';
+  if (summarizeBy === 'count') return 'count';
+  if (summarizeBy === 'min') return 'min';
+  if (summarizeBy === 'max') return 'max';
+  return null;
+}
+
+function columnField(column: TMDLColumn): ModelColumnField {
+  return {
+    kind: 'column',
+    table: column.table,
+    name: column.name,
+    dataType: column.dataType,
+    summarizeBy: column.summarizeBy,
+    isHidden: column.isHidden,
+    isKey: column.isKey,
+  };
+}
+
+function measureField(measure: TMDLMeasure): ModelMeasureField {
+  return {
+    kind: 'measure',
+    table: measure.table,
+    name: measure.name,
+    expression: measure.expression,
+    formatString: measure.formatString,
+    isHidden: measure.isHidden,
+    description: measure.description,
+  };
+}
+
+function buildRelationshipGraph(
+  relationships: readonly TMDLRelationship[],
+): Record<string, ModelRelationshipLink[]> {
+  const graph: Record<string, ModelRelationshipLink[]> = {};
+
+  for (const relationship of relationships) {
+    const link: ModelRelationshipLink = {
+      relationshipId: relationship.id,
+      fromTable: relationship.fromTable,
+      fromColumn: relationship.fromColumn,
+      toTable: relationship.toTable,
+      toColumn: relationship.toColumn,
+      isActive: relationship.isActive,
+      crossFilteringBehavior: relationship.crossFilteringBehavior,
+    };
+
+    const fromLinks = graph[relationship.fromTable] ?? [];
+    fromLinks.push(link);
+    graph[relationship.fromTable] = fromLinks;
+
+    const toLinks = graph[relationship.toTable] ?? [];
+    toLinks.push(link);
+    graph[relationship.toTable] = toLinks;
+  }
+
+  return graph;
+}
+
+function buildTreatasBridgeMeasures(
+  index: Omit<ModelFieldIndex, 'treatasBridgeMeasures'>,
+): Record<string, TreatasBridgeMeasure> {
+  const out: Record<string, TreatasBridgeMeasure> = {};
+
+  for (const table of Object.values(index.tables)) {
+    for (const measure of Object.values(table.measures)) {
+      const pairs = parseTreatasPairs(measure.expression);
+      if (pairs.length === 0) continue;
+
+      const first = pairs[0];
+      if (!first) continue;
+      const fromTable = first.fromTable;
+      const toTable = first.toTable;
+      const sameBridgePairs = pairs.filter(
+        (pair) => pair.fromTable === fromTable && pair.toTable === toTable,
+      );
+      const coveredAxes = unique(sameBridgePairs.map((pair) => pair.fromColumn));
+      const from = index.tables[fromTable];
+      if (!from) continue;
+      const blockedAxes = Object.values(from.columns)
+        .filter((column) => !column.isHidden && !isSummarizableColumn(column))
+        .map((column) => column.name)
+        .filter((name) => !coveredAxes.includes(name));
+
+      out[`${measure.table}[${measure.name}]`] = {
+        measure,
+        fromTable,
+        toTable,
+        fromTables: [fromTable],
+        toTables: [toTable],
+        coveredAxes,
+        blockedAxes,
+      };
+    }
+  }
+
+  propagateBridgeMeasureScopes(index, out);
+
+  return out;
+}
+
+function propagateBridgeMeasureScopes(
+  index: Omit<ModelFieldIndex, 'treatasBridgeMeasures'>,
+  bridges: Record<string, TreatasBridgeMeasure>,
+): void {
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const table of Object.values(index.tables)) {
+      for (const measure of Object.values(table.measures)) {
+        const key = `${measure.table}[${measure.name}]`;
+        if (bridges[key]) continue;
+
+        const inherited = measureDependencies(index, measure)
+          .map((dep) => bridges[dep])
+          .filter((bridge): bridge is TreatasBridgeMeasure => bridge !== undefined);
+        if (inherited.length === 0) continue;
+
+        const first = inherited[0];
+        if (!first) continue;
+        bridges[key] = {
+          measure,
+          fromTable: first.fromTable,
+          toTable: first.toTable,
+          fromTables: unique(inherited.flatMap((bridge) => bridge.fromTables)),
+          toTables: unique(inherited.flatMap((bridge) => bridge.toTables)),
+          coveredAxes: intersection(inherited.map((bridge) => bridge.coveredAxes)),
+          blockedAxes: unique(inherited.flatMap((bridge) => bridge.blockedAxes)),
+        };
+        changed = true;
+      }
+    }
+  }
+}
+
+interface TreatasPair {
+  readonly fromTable: string;
+  readonly fromColumn: string;
+  readonly toTable: string;
+  readonly toColumn: string;
+}
+
+function parseTreatasPairs(expression: string): TreatasPair[] {
+  const pairs: TreatasPair[] = [];
+  const re =
+    /TREATAS\s*\(\s*VALUES\s*\(\s*('([^']+)'|([A-Za-z_][\w .-]*))\[([^\]]+)\]\s*\)\s*,\s*('([^']+)'|([A-Za-z_][\w .-]*))\[([^\]]+)\]\s*\)/gi;
+
+  for (const match of expression.matchAll(re)) {
+    const fromTable = match[2] ?? match[3];
+    const fromColumn = match[4];
+    const toTable = match[6] ?? match[7];
+    const toColumn = match[8];
+    if (!fromTable || !fromColumn || !toTable || !toColumn) continue;
+    pairs.push({ fromTable, fromColumn, toTable, toColumn });
+  }
+
+  return pairs;
+}
+
+function isNumericDataType(dataType: string): boolean {
+  return ['int64', 'decimal', 'double'].includes(dataType);
+}
+
+function unique(values: readonly string[]): string[] {
+  return [...new Set(values)];
+}
+
+function intersection(groups: readonly (readonly string[])[]): string[] {
+  const [first, ...rest] = groups;
+  if (!first) return [];
+  return first.filter((value) => rest.every((group) => group.includes(value)));
+}
+
+function outgoingFilterLinks(index: ModelFieldIndex, table: string): string[] {
+  const out: string[] = [];
+  for (const link of index.relationshipGraph[table] ?? []) {
+    if (!link.isActive) continue;
+    if (link.crossFilteringBehavior === 'both') {
+      out.push(link.fromTable === table ? link.toTable : link.fromTable);
+      continue;
+    }
+    // For relationships created as fact[from FK] -> dim[to key], single
+    // direction means filters flow from the dimension side to the fact side.
+    if (link.toTable === table) out.push(link.fromTable);
+  }
+  return out;
+}
+
+function measureDependencies(
+  index: Omit<ModelFieldIndex, 'treatasBridgeMeasures'>,
+  measure: ModelMeasureField,
+): string[] {
+  const deps = new Set<string>();
+  const expression = measure.expression;
+  const qualifiedRe = /('([^']+)'|([A-Za-z_][\w .-]*))\[([^\]]+)\]/g;
+  let expressionWithoutQualifiedRefs = expression;
+
+  for (const match of expression.matchAll(qualifiedRe)) {
+    const table = match[2] ?? match[3];
+    const name = match[4];
+    if (!table || !name) continue;
+    if (index.tables[table]?.measures[name]) deps.add(`${table}[${name}]`);
+    expressionWithoutQualifiedRefs = expressionWithoutQualifiedRefs.replace(match[0], ' ');
+  }
+
+  const measureNameCounts = measureNameCountsByName(index);
+  for (const match of expressionWithoutQualifiedRefs.matchAll(/\[([^\]]+)\]/g)) {
+    const name = match[1];
+    if (!name) continue;
+    const sameTable = index.tables[measure.table]?.measures[name];
+    if (sameTable) {
+      deps.add(`${measure.table}[${name}]`);
+      continue;
+    }
+    if (measureNameCounts.get(name) !== 1) continue;
+    for (const table of Object.values(index.tables)) {
+      if (table.measures[name]) deps.add(`${table.name}[${name}]`);
+    }
+  }
+
+  deps.delete(`${measure.table}[${measure.name}]`);
+  return [...deps];
+}
+
+function measureNameCountsByName(
+  index: Omit<ModelFieldIndex, 'treatasBridgeMeasures'>,
+): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const table of Object.values(index.tables)) {
+    for (const measure of Object.values(table.measures)) {
+      counts.set(measure.name, (counts.get(measure.name) ?? 0) + 1);
+    }
+  }
+  return counts;
+}
+
+function fingerprintDefinitionFolder(definitionPath: string): string {
+  if (!existsSync(definitionPath)) return 'missing';
+
+  let fileCount = 0;
+  let totalSize = 0;
+  let latestMtime = 0;
+
+  for (const file of listTmdlFiles(definitionPath)) {
+    const stat = statSync(file);
+    fileCount++;
+    totalSize += stat.size;
+    latestMtime = Math.max(latestMtime, stat.mtimeMs);
+  }
+
+  return `${fileCount}:${totalSize}:${Math.round(latestMtime)}`;
+}
+
+function listTmdlFiles(root: string): string[] {
+  const out: string[] = [];
+  if (!existsSync(root)) return out;
+
+  for (const entry of readdirSync(root)) {
+    const full = path.join(root, entry);
+    if (statSync(full).isDirectory()) {
+      out.push(...listTmdlFiles(full));
+    } else if (entry.endsWith('.tmdl')) {
+      out.push(full);
+    }
+  }
+
+  return out;
+}

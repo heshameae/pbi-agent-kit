@@ -3,9 +3,14 @@
 // Ported from pbi-cli's core/bulk_backend.py. Uses fnmatch-style globs
 // (translated to regex) for name patterns.
 
-import { VisualTypeError } from '../errors.js';
+import { VisualBindValidationError, VisualTypeError } from '../errors.js';
 import { resolveVisualType } from '../pbir/schemas.js';
 import { type VisualListItem, visualDelete, visualList, visualUpdate } from '../visual/backend.js';
+import {
+  type BindingValidationFinding,
+  type VisualBindingValidationReport,
+  validateVisualBindingPlan,
+} from '../visual/bind-validator.js';
 import { type VisualBinding, visualBind } from '../visual/bind.js';
 
 // -- Filtering -------------------------------------------------------------
@@ -61,6 +66,7 @@ export interface VisualBulkBindOptions {
   readonly visualType: string;
   readonly bindings: readonly VisualBinding[];
   readonly namePattern?: string;
+  readonly modelPath?: string;
 }
 
 /** Apply the same bindings to every visual matching type + name-pattern. */
@@ -74,6 +80,10 @@ export function visualBulkBind(
   type: string;
   visuals: string[];
   bindings: readonly VisualBinding[];
+  validation: {
+    readonly status: 'valid' | 'skipped';
+    readonly checked: number;
+  };
 } {
   const resolvedType = resolveVisualType(opts.visualType);
   if (resolvedType === null) throw new VisualTypeError(opts.visualType);
@@ -83,11 +93,23 @@ export function visualBulkBind(
     namePattern: opts.namePattern,
   });
 
+  const validations = matching.map((v) =>
+    validateVisualBindingPlan(definitionPath, pageName, v.name, opts.bindings, {
+      modelPath: opts.modelPath,
+    }),
+  );
+  const blocked = validations.filter((validation) => validation.blockedWrite);
+  if (blocked.length > 0) {
+    throw new VisualBindValidationError(bulkValidationReport(pageName, resolvedType, blocked));
+  }
+
   const bound: string[] = [];
   for (const v of matching) {
-    visualBind(definitionPath, pageName, v.name, opts.bindings);
+    visualBind(definitionPath, pageName, v.name, opts.bindings, { modelPath: opts.modelPath });
     bound.push(v.name);
   }
+
+  const anyModelSkipped = validations.some((validation) => validation.status === 'skipped');
 
   return {
     bound: bound.length,
@@ -95,6 +117,44 @@ export function visualBulkBind(
     type: resolvedType,
     visuals: bound,
     bindings: opts.bindings,
+    validation: {
+      status: anyModelSkipped ? 'skipped' : 'valid',
+      checked: validations.length,
+    },
+  };
+}
+
+function bulkValidationReport(
+  page: string,
+  visualType: string,
+  blocked: readonly VisualBindingValidationReport[],
+): Record<string, unknown> & { findings: readonly BindingValidationFinding[] } {
+  const findings = blocked.flatMap((validation) =>
+    validation.findings
+      .filter((finding) => finding.severity === 'error')
+      .map((finding) => ({
+        ...finding,
+        reason: `Visual '${validation.visual}' failed because ${finding.reason}`,
+      })),
+  );
+  const codes: Record<string, number> = {};
+  for (const finding of findings) {
+    codes[finding.code] = (codes[finding.code] ?? 0) + 1;
+  }
+
+  return {
+    status: 'blocked',
+    blockedWrite: true,
+    page,
+    visual: '*',
+    visualType,
+    findings,
+    telemetry: {
+      refusalCount: blocked.length,
+      errorCount: findings.length,
+      warningCount: 0,
+      codes,
+    },
   };
 }
 

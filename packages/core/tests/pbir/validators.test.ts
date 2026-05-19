@@ -15,7 +15,7 @@ let defn: string;
 
 beforeEach(() => {
   tmp = realpathSync(mkdtempSync(path.join(tmpdir(), 'pbi-val-')));
-  defn = path.join(tmp, 'Demo.Report', 'definition');
+  defn = path.join(tmp, 'MyReport.Report', 'definition');
   mkdirSync(path.join(defn, 'pages'), { recursive: true });
 });
 
@@ -246,7 +246,7 @@ describe('validateBindingsAgainstModel', () => {
             {
               SemanticQueryDataShapeCommand: {
                 Query: {
-                  From: [{ Name: 's', Entity: 'Sales' }],
+                  From: [{ Name: 's', Entity: 'MyTable' }],
                   Select: [
                     { Column: { Expression: { SourceRef: { Source: 's' } }, Property: 'Unknown' } },
                   ],
@@ -258,9 +258,11 @@ describe('validateBindingsAgainstModel', () => {
       },
     });
 
-    const model: ModelTable[] = [{ name: 'Sales', columns: [{ name: 'Revenue' }], measures: [] }];
+    const model: ModelTable[] = [
+      { name: 'MyTable', columns: [{ name: 'MyColumn' }], measures: [] },
+    ];
     const findings = validateBindingsAgainstModel(defn, model);
-    expect(findings.some((f) => f.message.includes('Sales[Unknown]'))).toBe(true);
+    expect(findings.some((f) => f.message.includes('MyTable[Unknown]'))).toBe(true);
   });
 
   it('returns no findings when all fields exist in the model', () => {
@@ -275,10 +277,13 @@ describe('validateBindingsAgainstModel', () => {
             {
               SemanticQueryDataShapeCommand: {
                 Query: {
-                  From: [{ Name: 's', Entity: 'Sales' }],
+                  From: [{ Name: 's', Entity: 'MyTable' }],
                   Select: [
                     {
-                      Measure: { Expression: { SourceRef: { Source: 's' } }, Property: 'Revenue' },
+                      Measure: {
+                        Expression: { SourceRef: { Source: 's' } },
+                        Property: 'MyMeasure',
+                      },
                     },
                   ],
                 },
@@ -289,7 +294,9 @@ describe('validateBindingsAgainstModel', () => {
       },
     });
 
-    const model: ModelTable[] = [{ name: 'Sales', columns: [], measures: [{ name: 'Revenue' }] }];
+    const model: ModelTable[] = [
+      { name: 'MyTable', columns: [], measures: [{ name: 'MyMeasure' }] },
+    ];
     const findings = validateBindingsAgainstModel(defn, model);
     expect(findings).toEqual([]);
   });

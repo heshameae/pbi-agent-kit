@@ -13,10 +13,10 @@ Every filter tool takes a `page` and an optional `visual`:
 
 ## Categorical (IN-list)
 
-"Filter to West and East regions":
+"Filter to a list of categorical values":
 ```
-pbi_filter_add_categorical(page, table: "Geography", column: "Region",
-  values: ["West", "East"])
+pbi_filter_add_categorical(page, table: "<Table>", column: "<Column>",
+  values: ["value-a", "value-b"])
 ```
 
 Values are encoded by type:
@@ -28,13 +28,14 @@ The tool detects the type automatically; pass values as strings.
 
 ## TopN
 
-"Top 10 customers by revenue":
+"Top N rows by a measure":
 ```
 pbi_filter_add_topn(page,
-  table: "Customer", column: "Name",       // what to filter (group by)
-  orderByTable: "Sales", orderByColumn: "Revenue",  // what to rank by
+  table: "<Table>", column: "<Column>",        // what to filter (group by)
+  orderByTable: "<Table>", orderByColumn: "<Measure>",  // what to rank by
+  orderByMeasure: true,                        // set true when ranking by a DAX measure
   n: 10,
-  direction: "Top"                          // or "Bottom" for lowest N
+  direction: "Top"                             // or "Bottom" for lowest N
 )
 ```
 
@@ -43,7 +44,7 @@ pbi_filter_add_topn(page,
 "Last 30 days":
 ```
 pbi_filter_add_relative_date(page,
-  table: "Calendar", column: "Date",
+  table: "<DateTable>", column: "<DateColumn>",
   amount: 30,
   timeUnit: "days"   // "days" | "weeks" | "months" | "years"
 )

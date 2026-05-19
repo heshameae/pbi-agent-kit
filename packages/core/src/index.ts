@@ -8,9 +8,14 @@ export * from './pbir/validators.js';
 export * from './report/scaffold.js';
 export * from './report/info.js';
 export * from './report/pages.js';
+export * from './report/theme.js';
+export * from './report/convert.js';
+export * from './layout/primitives.js';
 export * from './visual/backend.js';
 export * from './visual/bind.js';
+export * from './visual/bind-validator.js';
 export * from './visual/calc.js';
+export * from './visual/field-ref.js';
 export * from './visual/roles.js';
 export {
   fillTemplate,
@@ -21,3 +26,4 @@ export * from './filter/backend.js';
 export * from './bookmark/backend.js';
 export * from './format/backend.js';
 export * from './bulk/backend.js';
+export * from './modeling/index.js';

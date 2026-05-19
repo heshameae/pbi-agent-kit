@@ -12,7 +12,7 @@ CRUD + display options for pages in a PBIR report.
 | User says... | Use |
 |---|---|
 | "List pages" / "what tabs are in this report" | `pbi_page_list` |
-| "Add a page called Sales Overview" | `pbi_page_add` with `displayName: "Sales Overview"` |
+| "Add a page called Foo Bar" | `pbi_page_add` with `displayName: "Foo Bar"` |
 | "Show the X page" | `pbi_page_get` with `name: <id>` |
 | "Delete the Old Detail page" | `pbi_page_delete` |
 | "Make the page background light grey" | `pbi_page_set_background` with `color: "#F5F5F5"` |

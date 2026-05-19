@@ -39,21 +39,21 @@ describe('pbi-cli smoke', () => {
 });
 
 describe('pbi-ts report create / info', () => {
-  it('scaffolds Demo.pbip and reads it back', () => {
-    const create = JSON.parse(run(['report', 'create', 'Demo', '--target', tmp]));
+  it('scaffolds MyReport.pbip and reads it back', () => {
+    const create = JSON.parse(run(['report', 'create', 'MyReport', '--target', tmp]));
     expect(create.status).toBe('created');
-    expect(create.name).toBe('Demo');
-    expect(existsSync(path.join(tmp, 'Demo.pbip'))).toBe(true);
-    expect(existsSync(path.join(tmp, 'Demo.SemanticModel', 'definition.pbism'))).toBe(true);
+    expect(create.name).toBe('MyReport');
+    expect(existsSync(path.join(tmp, 'MyReport.pbip'))).toBe(true);
+    expect(existsSync(path.join(tmp, 'MyReport.SemanticModel', 'definition.pbism'))).toBe(true);
 
-    const info = JSON.parse(run(['report', 'info', '--path', path.join(tmp, 'Demo.Report')]));
+    const info = JSON.parse(run(['report', 'info', '--path', path.join(tmp, 'MyReport.Report')]));
     expect(info.pageCount).toBe(0);
     expect(info.theme).toBe('CY26SU02');
   });
 
   it('validates a fresh scaffold as valid', () => {
-    run(['report', 'create', 'Demo', '--target', tmp]);
-    const out = run(['report', 'validate', '--path', path.join(tmp, 'Demo.Report')]);
+    run(['report', 'create', 'MyReport', '--target', tmp]);
+    const out = run(['report', 'validate', '--path', path.join(tmp, 'MyReport.Report')]);
     const r = JSON.parse(out);
     expect(r.valid).toBe(true);
   });
@@ -61,8 +61,8 @@ describe('pbi-ts report create / info', () => {
 
 describe('pbi-ts page add / list / delete', () => {
   it('adds pages and lists them in pageOrder', () => {
-    run(['report', 'create', 'Demo', '--target', tmp]);
-    const reportPath = path.join(tmp, 'Demo.Report');
+    run(['report', 'create', 'MyReport', '--target', tmp]);
+    const reportPath = path.join(tmp, 'MyReport.Report');
 
     const a = JSON.parse(run(['page', 'add', 'Overview', '--path', reportPath, '-n', 'p1']));
     expect(a.status).toBe('created');

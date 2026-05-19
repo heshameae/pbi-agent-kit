@@ -5,8 +5,8 @@
       "args": ["${CLAUDE_PLUGIN_ROOT}/packages/mcp/dist/server.js"]
     },
     "powerbi-modeling": {
-      "command": "npx",
-      "args": ["-y", "@microsoft/powerbi-modeling-mcp@latest", "--start"]
+      "command": "${CLAUDE_PLUGIN_ROOT}/bin/powerbi-modeling-mcp",
+      "args": ["--start"]
     }
   }
 }

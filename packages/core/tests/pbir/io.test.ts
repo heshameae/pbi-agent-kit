@@ -25,9 +25,9 @@ describe('io: readJson / writeJson round-trip', () => {
 
   it('preserves UTF-8 (non-ASCII characters not escaped)', () => {
     const file = path.join(tmp, 'utf8.json');
-    writeJson(file, { name: 'Sales — Café', arrow: '→' });
+    writeJson(file, { name: 'Café — Résumé', arrow: '→' });
     const raw = readFileSync(file, 'utf-8');
-    expect(raw).toContain('Sales — Café');
+    expect(raw).toContain('Café — Résumé');
     expect(raw).toContain('→');
     expect(raw).not.toContain('\\u');
   });

@@ -1,0 +1,30 @@
+table Actuals
+	lineageTag: cccccccc-cccc-cccc-cccc-cccccccccccc
+
+	measure 'Actual Amount' = SUM(Actuals[Amount])
+		formatString: \$#,0;(\$#,0);\$#,0
+
+	column Amount
+		dataType: decimal
+		summarizeBy: sum
+		sourceColumn: Amount
+
+	column Category
+		dataType: string
+		summarizeBy: none
+		sourceColumn: Category
+
+	column 'Fine Grain Attribute'
+		dataType: string
+		summarizeBy: none
+		sourceColumn: FineGrainAttribute
+
+	column Region
+		dataType: string
+		summarizeBy: none
+		sourceColumn: Region
+
+	column 'Order Date'
+		dataType: dateTime
+		summarizeBy: none
+		sourceColumn: OrderDate

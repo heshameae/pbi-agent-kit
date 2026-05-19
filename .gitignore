@@ -8,3 +8,6 @@ coverage/
 .turbo/
 .idea/
 .vscode/
+
+# superpowers brainstorm session files
+.superpowers/

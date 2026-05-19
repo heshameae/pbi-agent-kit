@@ -7,27 +7,46 @@
 // shape of a projection is what Power BI Desktop expects and what its
 // validators check. Do not "improve" the shapes.
 //
-// Measure projection (e.g. `Sales[Total Revenue]` bound to Y):
+// Measure projection (e.g. `MyTable[My Measure With Spaces]` bound to Y):
 //   {
-//     "field": { "Measure": { "Expression": { "SourceRef": { "Entity": "Sales" } }, "Property": "Total Revenue" } },
-//     "queryRef": "Sales.Total Revenue",
-//     "nativeQueryRef": "Total Revenue"
+//     "field": { "Measure": { "Expression": { "SourceRef": { "Entity": "MyTable" } }, "Property": "My Measure With Spaces" } },
+//     "queryRef": "MyTable.My Measure With Spaces",
+//     "nativeQueryRef": "My Measure With Spaces"
 //   }
 //
-// Column projection (e.g. `Geography[Region]` bound to Category):
+// Column projection (e.g. `MyOtherTable[MyColumn]` bound to Category):
 //   {
-//     "field": { "Column": { "Expression": { "SourceRef": { "Entity": "Geography" } }, "Property": "Region" } },
-//     "queryRef": "Geography.Region",
-//     "nativeQueryRef": "Region",
+//     "field": { "Column": { "Expression": { "SourceRef": { "Entity": "MyOtherTable" } }, "Property": "MyColumn" } },
+//     "queryRef": "MyOtherTable.MyColumn",
+//     "nativeQueryRef": "MyColumn",
 //     "active": true                  // ← Columns get this; Measures do NOT
+//   }
+//
+// Aggregated-column projection (e.g. summable column `MyTable[MyNumColumn]`
+// bound to Values — required when binding a column with `summarizeBy != "None"`
+// to a measure-style role; otherwise Desktop renders "Something's wrong"):
+//   {
+//     "field": {
+//       "Aggregation": {
+//         "Expression": { "Column": { "Expression": { "SourceRef": { "Entity": "MyTable" } }, "Property": "MyNumColumn" } },
+//         "Function": 0
+//       }
+//     },
+//     "queryRef": "Sum(MyTable.MyNumColumn)",
+//     "nativeQueryRef": "Sum of MyNumColumn",
+//     "active": true
 //   }
 
 import { existsSync } from 'node:fs';
 import path from 'node:path';
-import { PbiCoreError } from '../errors.js';
+import { PbiCoreError, VisualBindValidationError } from '../errors.js';
 import { readJson, writeJson } from '../pbir/io.js';
 import { getVisualDir } from '../pbir/path.js';
+import { type VisualBindingValidationReport, validateVisualBindingPlan } from './bind-validator.js';
+import { parseFieldRef } from './field-ref.js';
 import { MEASURE_ROLES, ROLE_ALIASES } from './roles.js';
+
+export { parseFieldRef } from './field-ref.js';
 
 // -- Types -----------------------------------------------------------------
 
@@ -38,7 +57,38 @@ export interface VisualBinding {
   readonly field: string;
   /** If true, force-treat as a Measure regardless of role heuristic. */
   readonly measure?: boolean;
+  /**
+   * Wrap a column field in an aggregation function. Required when binding a
+   * column with `summarizeBy != "None"` to a measure-style role (Values, Y,
+   * Indicator, etc.) — otherwise Desktop shows "Something's wrong with one
+   * or more fields" because it expects an aggregated expression there.
+   *
+   * Ignored when `measure: true` (measures are already aggregated by their
+   * DAX expression and have no AggregationContext).
+   */
+  readonly aggregation?: AggregationKind;
 }
+
+/** Aggregation functions supported on column-typed bindings. */
+export type AggregationKind = 'sum' | 'avg' | 'count' | 'min' | 'max';
+
+/** PBI's internal Function code for each aggregation. */
+const AGGREGATION_FUNCTION: Readonly<Record<AggregationKind, number>> = {
+  sum: 0,
+  avg: 1,
+  count: 2,
+  min: 3,
+  max: 4,
+};
+
+/** User-visible name in `queryRef` (e.g. "Sum(Table.Col)") and `nativeQueryRef` (e.g. "Sum of Col"). */
+const AGGREGATION_LABEL: Readonly<Record<AggregationKind, string>> = {
+  sum: 'Sum',
+  avg: 'Average',
+  count: 'Count',
+  min: 'Min',
+  max: 'Max',
+};
 
 export interface AppliedBinding {
   readonly role: string;
@@ -51,26 +101,15 @@ export interface VisualBindResult {
   readonly name: string;
   readonly page: string;
   readonly bindings: readonly AppliedBinding[];
+  readonly validation?: VisualBindingValidationReport;
+}
+
+export interface VisualBindOptions {
+  /** Optional .SemanticModel/definition path. If omitted, sibling model is auto-resolved. */
+  readonly modelPath?: string;
 }
 
 // -- Parse helpers ---------------------------------------------------------
-
-const FIELD_REF_RE = /^(.+)\[(.+)\]$/;
-
-/**
- * Parse a `Table[Column]` field reference into table/column parts.
- * Throws `PbiCoreError` on malformed input.
- */
-export function parseFieldRef(ref: string): { table: string; column: string } {
-  const match = FIELD_REF_RE.exec(ref.trim());
-  if (!match) {
-    throw new PbiCoreError(`Invalid field reference '${ref}'. Expected 'Table[Column]' format.`);
-  }
-  return {
-    table: (match[1] ?? '').trim(),
-    column: (match[2] ?? '').trim(),
-  };
-}
 
 // -- Operation -------------------------------------------------------------
 
@@ -92,7 +131,19 @@ export function visualBind(
   pageName: string,
   visualName: string,
   bindings: readonly VisualBinding[],
+  options: VisualBindOptions = {},
 ): VisualBindResult {
+  const validation = validateVisualBindingPlan(
+    definitionPath,
+    pageName,
+    visualName,
+    bindings,
+    options,
+  );
+  if (validation.blockedWrite) {
+    throw new VisualBindValidationError(validation);
+  }
+
   const vfile = path.join(getVisualDir(definitionPath, pageName, visualName), 'visual.json');
   if (!existsSync(vfile)) {
     throw new PbiCoreError(`Visual '${visualName}' not found on page '${pageName}'.`);
@@ -121,29 +172,60 @@ export function visualBind(
 
     const { table, column } = parseFieldRef(b.field);
     const isMeasure = b.measure ?? MEASURE_ROLES.has(pbirRole);
-    const queryRef = `${table}.${column}`;
+    if (isMeasure && b.aggregation !== undefined) {
+      throw new PbiCoreError(
+        `Field '${b.field}' is a Measure; pass either measure:true OR aggregation, not both. Measures are already aggregated by their DAX expression.`,
+      );
+    }
+    const aggregation = !isMeasure ? b.aggregation : undefined;
 
-    const fieldExpr = isMeasure
-      ? {
-          Measure: {
-            Expression: { SourceRef: { Entity: table } },
-            Property: column,
+    let fieldExpr: Record<string, unknown>;
+    let queryRef: string;
+    let nativeQueryRef: string;
+
+    if (isMeasure) {
+      fieldExpr = {
+        Measure: {
+          Expression: { SourceRef: { Entity: table } },
+          Property: column,
+        },
+      };
+      queryRef = `${table}.${column}`;
+      nativeQueryRef = column;
+    } else if (aggregation !== undefined) {
+      // Aggregated column — required for summarizable columns in Values/Y roles.
+      fieldExpr = {
+        Aggregation: {
+          Expression: {
+            Column: {
+              Expression: { SourceRef: { Entity: table } },
+              Property: column,
+            },
           },
-        }
-      : {
-          Column: {
-            Expression: { SourceRef: { Entity: table } },
-            Property: column,
-          },
-        };
+          Function: AGGREGATION_FUNCTION[aggregation],
+        },
+      };
+      const label = AGGREGATION_LABEL[aggregation];
+      queryRef = `${label}(${table}.${column})`;
+      nativeQueryRef = `${label} of ${column}`;
+    } else {
+      // Identity column — used for Category, Legend, Rows, Columns, and table dims.
+      fieldExpr = {
+        Column: {
+          Expression: { SourceRef: { Entity: table } },
+          Property: column,
+        },
+      };
+      queryRef = `${table}.${column}`;
+      nativeQueryRef = column;
+    }
 
     const projection: Record<string, unknown> = {
       field: fieldExpr,
       queryRef,
-      nativeQueryRef: column,
+      nativeQueryRef,
     };
-    // Columns get "active: true"; measures DO NOT (empirical, Desktop rejects
-    // measures with active=true in some visuals).
+    // Columns (with or without aggregation) get "active: true"; measures do NOT.
     if (!isMeasure) projection.active = true;
 
     // Append to role's projections.
@@ -169,5 +251,6 @@ export function visualBind(
     name: visualName,
     page: pageName,
     bindings: applied,
+    validation,
   };
 }

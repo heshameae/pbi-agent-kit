@@ -1,0 +1,20 @@
+table Targets
+	lineageTag: dddddddd-dddd-dddd-dddd-dddddddddddd
+
+	measure 'Planned Amount' = SUM(Targets[Target])
+		formatString: \$#,0;(\$#,0);\$#,0
+
+	column Target
+		dataType: decimal
+		summarizeBy: sum
+		sourceColumn: Target
+
+	column Category
+		dataType: string
+		summarizeBy: none
+		sourceColumn: Category
+
+	column 'Order Date'
+		dataType: dateTime
+		summarizeBy: none
+		sourceColumn: OrderDate

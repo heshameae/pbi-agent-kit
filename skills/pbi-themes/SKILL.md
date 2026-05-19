@@ -11,11 +11,11 @@ Currently covers **visual-level conditional formatting** (`visual.objects.values
 
 ### 1. Gradient (continuous colour scale)
 
-"Colour the profit cells with a green→red gradient":
+"Colour the numeric cells with a green→red gradient":
 ```
 pbi_format_background_gradient(page, name: <visualId>,
-  inputTable: "Sales", inputColumn: "Profit",
-  fieldQueryRef: "Sum(Sales.Profit)",
+  inputTable: "<Table>", inputColumn: "<Column>",
+  fieldQueryRef: "Sum(<Table>.<Column>)",
   minColor: "#FF0000", maxColor: "#00FF00")
 ```
 
@@ -23,10 +23,10 @@ The aggregated value of `inputColumn` determines where on the gradient each cell
 
 ### 2. Conditional (rule-based)
 
-"Highlight cells where revenue > 1000 in green":
+"Highlight cells where the column value > 1000 in green":
 ```
 pbi_format_background_conditional(page, name: <visualId>,
-  inputTable: "Sales", inputColumn: "Revenue",
+  inputTable: "<Table>", inputColumn: "<Column>",
   threshold: 1000,
   colorHex: "#00FF00",
   comparison: "gt")   // eq | neq | gt | gte | lt | lte
@@ -36,18 +36,18 @@ Default comparison is `gt`. Threshold must be numeric.
 
 ### 3. Measure-driven
 
-"Use my DAX measure ColorByCategory to colour the cells":
+"Use my DAX measure to colour the cells":
 ```
 pbi_format_background_measure(page, name: <visualId>,
-  measureTable: "Sales", measureProperty: "ColorByCategory",
-  fieldQueryRef: "Sum(Sales.Profit)")
+  measureTable: "<Table>", measureProperty: "<MeasureReturningHex>",
+  fieldQueryRef: "Sum(<Table>.<Column>)")
 ```
 
 The measure must return a hex colour string per row.
 
 ## `fieldQueryRef` — selecting the target column
 
-`fieldQueryRef` is the `queryRef` of the visual column the rule applies to (`selector.metadata` in PBIR). For a column bound to a Measure named Revenue, it's typically `"Sum(Sales.Revenue)"`.
+`fieldQueryRef` is the `queryRef` of the visual column the rule applies to (`selector.metadata` in PBIR). For a column bound to a Measure, it's typically `"Sum(<Table>.<Measure>)"`.
 
 If unsure, call `pbi_visual_get(page, name)` and look at the `bindings[].queryRef` for the column you want to format. Pass that exact string.
 

@@ -6,6 +6,10 @@ tools: Read, mcp__pbi-report__pbi_visual_where, mcp__pbi-report__pbi_visual_bulk
 
 You execute bulk visual operations safely.
 
+## Tool discipline
+
+Use the MCP bulk tools (`pbi_visual_where`, `pbi_visual_bulk_*`). Never shell out for visual reads or writes — the bulk tools handle the filter + apply atomically and return structured results.
+
 ## Always preview first
 
 Before any bulk write:

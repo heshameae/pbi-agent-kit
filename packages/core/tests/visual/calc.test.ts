@@ -18,7 +18,7 @@ const PAGE = 'p1';
 
 beforeEach(() => {
   tmp = realpathSync(mkdtempSync(path.join(tmpdir(), 'pbi-calc-')));
-  const r = reportCreate({ targetPath: tmp, name: 'Demo' });
+  const r = reportCreate({ targetPath: tmp, name: 'MyReport' });
   defn = r.definitionPath;
   pageAdd(defn, { displayName: 'P', name: PAGE });
   visualAdd(defn, PAGE, { visualType: 'barChart', name: 'v1' });
@@ -30,12 +30,12 @@ afterEach(() => {
 
 describe('visualCalcAdd / list / delete', () => {
   it('adds, lists, deletes a single calc on Y role', () => {
-    visualCalcAdd(defn, PAGE, 'v1', 'RunningTotal', 'RUNNINGSUM([Revenue])');
+    visualCalcAdd(defn, PAGE, 'v1', 'RunningTotal', 'RUNNINGSUM([MyMeasure])');
     let list = visualCalcList(defn, PAGE, 'v1');
     expect(list).toHaveLength(1);
     expect(list[0]).toMatchObject({
       name: 'RunningTotal',
-      expression: 'RUNNINGSUM([Revenue])',
+      expression: 'RUNNINGSUM([MyMeasure])',
       role: 'Y',
       queryRef: 'select',
     });

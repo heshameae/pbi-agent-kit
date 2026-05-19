@@ -1,7 +1,18 @@
 {
   "name": "pbi-mcp-ts",
-  "version": "0.2.0",
-  "description": "Power BI report (PBIR) authoring for Claude Code — 39-tool TypeScript MCP server + 10 skills + 4 subagents + validation hook. Pairs with @microsoft/powerbi-modeling-mcp for full Power BI capability across modeling and report layers.",
-  "author": "Hesham Eissa",
-  "license": "MIT"
+  "version": "0.3.0",
+  "description": "Power BI report (PBIR) authoring for Claude Code — 47-tool TypeScript MCP server + 16 skills + 7 subagents (incl. modeling validators: BPA-style DAX + grain + relationship pre-flight) + validation hook + layout primitives + 3 LLM-composed dashboard scaffolds + DAX measure synthesis + multi-fact-table reasoning + date intelligence pattern library. Pairs with @microsoft/powerbi-modeling-mcp for full Power BI capability across modeling and report layers.",
+  "author": { "name": "Hesham Eissa" },
+  "license": "MIT",
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "agents": [
+    "./agents/pbi-report-validator.md",
+    "./agents/pbi-bind-doctor.md",
+    "./agents/pbi-bulk-operator.md",
+    "./agents/pbi-report-reviewer.md",
+    "./agents/pbi-designer.md",
+    "./agents/pbi-data-architect.md",
+    "./agents/pbi-model-doctor.md"
+  ]
 }

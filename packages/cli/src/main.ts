@@ -8,15 +8,22 @@
 import { Command } from 'commander';
 import {
   VERSION,
+  layoutColumn,
+  layoutGrid,
+  layoutRow,
   pageAdd,
   pageDelete,
   pageGet,
   pageList,
   pageSetBackground,
   pageSetVisibility,
+  reportConvert,
   reportCreate,
   reportInfo,
   resolveReportPath,
+  themeDiff,
+  themeGet,
+  themeSet,
   validateReportFull,
   visualAdd,
   visualBind,
@@ -80,6 +87,46 @@ report
     const r = validateReportFull(defn);
     out(r);
     if (!r.valid) process.exitCode = 1;
+  });
+
+report
+  .command('convert <source>')
+  .description('Wrap a bare .Report folder into a complete .pbip project')
+  .option(
+    '-o, --output <path>',
+    'Where to write the .pbip + .gitignore (defaults to source parent)',
+  )
+  .option('--force', 'Overwrite an existing .pbip', false)
+  .action((source: string, opts: { output?: string; force: boolean }) => {
+    out(reportConvert({ sourcePath: source, outputPath: opts.output, force: opts.force }));
+  });
+
+// -- theme -----------------------------------------------------------------
+
+const theme = program.command('theme').description('Custom theme: get/set/diff');
+
+theme
+  .command('get')
+  .description('Read current theme info (base + custom + full JSON)')
+  .option('-p, --path <path>', 'Path to the .Report folder')
+  .action((opts: { path?: string }) => {
+    out(themeGet(resolveReportPath(opts.path)));
+  });
+
+theme
+  .command('set <themePath>')
+  .description('Apply a custom theme JSON to the report')
+  .option('-p, --path <path>', 'Path to the .Report folder')
+  .action((themePath: string, opts: { path?: string }) => {
+    out(themeSet(resolveReportPath(opts.path), themePath));
+  });
+
+theme
+  .command('diff <themePath>')
+  .description('Diff a proposed theme JSON against the currently applied theme')
+  .option('-p, --path <path>', 'Path to the .Report folder')
+  .action((themePath: string, opts: { path?: string }) => {
+    out(themeDiff(resolveReportPath(opts.path), themePath));
   });
 
 // -- page ------------------------------------------------------------------
@@ -340,7 +387,7 @@ visual
       const fields = opts.field ?? [];
       if (roles.length === 0 || roles.length !== fields.length) {
         process.stderr.write(
-          'Error: pass --role and --field in matching pairs (e.g. --role Y --field "Sales[Revenue]")\n',
+          'Error: pass --role and --field in matching pairs (e.g. --role Y --field "MyTable[MyMeasure]")\n',
         );
         process.exit(2);
       }
@@ -396,6 +443,128 @@ visual
   .action((visual: string, calcName: string, opts: { page: string; path?: string }) => {
     out(visualCalcDelete(resolveReportPath(opts.path), opts.page, visual, calcName));
   });
+
+// -- layout ----------------------------------------------------------------
+
+const layout = program.command('layout').description('Compositional layout: grid / row / column');
+
+function parseNum(v: string | undefined): number | undefined {
+  return v !== undefined ? Number.parseFloat(v) : undefined;
+}
+
+layout
+  .command('grid <visuals...>')
+  .description('Arrange visuals into a rows × cols grid (row-major fill)')
+  .requiredOption('--page <name>', 'Page name')
+  .requiredOption('--rows <n>', 'Number of rows')
+  .requiredOption('--cols <n>', 'Number of columns')
+  .option('-p, --path <path>', 'Path to the .Report folder')
+  .option('--x <px>', 'Top-left x of the grid area')
+  .option('--y <px>', 'Top-left y of the grid area')
+  .option('--width <px>', 'Total grid width')
+  .option('--height <px>', 'Total grid height')
+  .option('--gap <px>', 'Pixel gap between cells', '8')
+  .action(
+    (
+      visuals: string[],
+      opts: {
+        page: string;
+        rows: string;
+        cols: string;
+        path?: string;
+        x?: string;
+        y?: string;
+        width?: string;
+        height?: string;
+        gap: string;
+      },
+    ) => {
+      out(
+        layoutGrid(resolveReportPath(opts.path), opts.page, {
+          visuals,
+          rows: Number.parseInt(opts.rows, 10),
+          cols: Number.parseInt(opts.cols, 10),
+          x: parseNum(opts.x),
+          y: parseNum(opts.y),
+          width: parseNum(opts.width),
+          height: parseNum(opts.height),
+          gap: parseNum(opts.gap),
+        }),
+      );
+    },
+  );
+
+layout
+  .command('row <visuals...>')
+  .description('Arrange visuals horizontally in a row')
+  .requiredOption('--page <name>', 'Page name')
+  .option('-p, --path <path>', 'Path to the .Report folder')
+  .option('--y <px>', 'Row top edge')
+  .option('--height <px>', 'Row height (default: each visual keeps its own)')
+  .option('--x <px>', 'Row left edge')
+  .option('--width <px>', 'Total row width')
+  .option('--gap <px>', 'Pixel gap between cells', '8')
+  .action(
+    (
+      visuals: string[],
+      opts: {
+        page: string;
+        path?: string;
+        y?: string;
+        height?: string;
+        x?: string;
+        width?: string;
+        gap: string;
+      },
+    ) => {
+      out(
+        layoutRow(resolveReportPath(opts.path), opts.page, {
+          visuals,
+          y: parseNum(opts.y),
+          height: parseNum(opts.height),
+          x: parseNum(opts.x),
+          width: parseNum(opts.width),
+          gap: parseNum(opts.gap),
+        }),
+      );
+    },
+  );
+
+layout
+  .command('column <visuals...>')
+  .description('Arrange visuals vertically in a column')
+  .requiredOption('--page <name>', 'Page name')
+  .option('-p, --path <path>', 'Path to the .Report folder')
+  .option('--x <px>', 'Column left edge')
+  .option('--width <px>', 'Column width (default: each visual keeps its own)')
+  .option('--y <px>', 'Column top edge')
+  .option('--height <px>', 'Total column height')
+  .option('--gap <px>', 'Pixel gap between cells', '8')
+  .action(
+    (
+      visuals: string[],
+      opts: {
+        page: string;
+        path?: string;
+        x?: string;
+        width?: string;
+        y?: string;
+        height?: string;
+        gap: string;
+      },
+    ) => {
+      out(
+        layoutColumn(resolveReportPath(opts.path), opts.page, {
+          visuals,
+          x: parseNum(opts.x),
+          width: parseNum(opts.width),
+          y: parseNum(opts.y),
+          height: parseNum(opts.height),
+          gap: parseNum(opts.gap),
+        }),
+      );
+    },
+  );
 
 program.parseAsync(process.argv).catch((err: unknown) => {
   const msg = err instanceof Error ? err.message : String(err);

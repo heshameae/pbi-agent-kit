@@ -1,0 +1,7 @@
+relationship rel-sales-product
+	fromColumn: Sales.ProductKey
+	toColumn: Product.ProductKey
+
+relationship rel-sales-calendar
+	fromColumn: Sales.DateKey
+	toColumn: Calendar.Date

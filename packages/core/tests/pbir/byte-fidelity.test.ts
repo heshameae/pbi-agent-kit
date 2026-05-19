@@ -58,7 +58,7 @@ describe('GATE 0: byte-fidelity vs Python json.dumps', () => {
 
   it('non-ASCII characters survive the round-trip without Unicode escaping', () => {
     const raw = readFileSync(path.join(FIXTURES_DIR, 'unicode.json'), 'utf-8');
-    expect(raw).toContain('Sales — Café');
+    expect(raw).toContain('Café — Résumé');
     expect(raw).toContain('→');
     // The fixture should not contain \u escapes
     expect(raw).not.toMatch(/\\u/);

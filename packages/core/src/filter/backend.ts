@@ -76,14 +76,52 @@ function readTarget(
 }
 
 /**
- * Convert a CLI string value to a typed Power BI literal:
- *   "123"   → "123L"   (int64)
- *   "3.14"  → "3.14D"  (double)
- *   "text"  → "'text'" (string)
+ * Convert a CLI string value to a typed Power BI literal.
+ *
+ * Mirrors pbi-cli's `_to_pbi_literal` semantics: try `int()` first, then
+ * `float()`, falling back to a single-quoted string. We use `Number()` parse
+ * to match Python's `int()`/`float()` permissiveness — including scientific
+ * notation ("1e5"), leading/trailing dot floats ("3.", ".5"), and special
+ * values (nan/inf).
+ *
+ *   "123"     → "123L"     (int64)
+ *   "-3"      → "-3L"
+ *   "007"     → "007L"     (leading-zero ints preserved verbatim)
+ *   "3.14"    → "3.14D"    (double)
+ *   "3."      → "3.D"
+ *   ".5"      → ".5D"
+ *   "1e5"     → "1e5D"     (scientific notation kept verbatim)
+ *   "nan"     → "nanD"     (special float values)
+ *   "text"    → "'text'"   (string fallback)
+ *   ""        → "''"
+ *   "0xFF"    → "'0xFF'"   (hex literals are strings — Python int() rejects)
  */
+// Python's float() grammar (per docs):
+//   [-]?  ( digits.digits? | digits. | .digits | digits )  ([eE][+-]?digits)?
+// Does NOT accept hex (0xFF), octal (0o7), binary (0b101), or whitespace.
+// JS Number() is more permissive (accepts hex/octal/binary), so we use a
+// strict regex instead.
+const PY_INT_RE = /^-?\d+$/;
+const PY_FLOAT_RE = /^-?(?:\d+\.\d*|\.\d+|\d+)(?:[eE][+-]?\d+)?$/;
+const PY_SPECIAL_FLOAT_RE = /^-?(?:nan|inf|infinity)$/i;
+
 function toPbiLiteral(value: string): string {
-  if (/^-?\d+$/.test(value)) return `${value}L`;
-  if (/^-?\d+\.\d+$/.test(value)) return `${value}D`;
+  // Empty → string literal (Python int("") and float("") both raise).
+  if (value.length === 0) return `'${value}'`;
+
+  // Integer check first, mirroring Python's `try int(value)`. Python's int()
+  // requires optional sign + decimal digits with no fractional/exponent part.
+  if (PY_INT_RE.test(value)) return `${value}L`;
+
+  // Float check, mirroring Python's `try float(value)`. Emit the ORIGINAL
+  // string with a "D" suffix so "1e5" stays "1e5D" (not "100000D").
+  if (PY_FLOAT_RE.test(value)) return `${value}D`;
+
+  // Special float values that Python's float() accepts: nan, inf, infinity.
+  if (PY_SPECIAL_FLOAT_RE.test(value)) return `${value}D`;
+
+  // String fallback (quoted). Covers hex/octal/binary literals (which Python
+  // does not parse as numbers in the default base), arbitrary text, etc.
   return `'${value}'`;
 }
 
@@ -167,6 +205,13 @@ export interface AddTopNOptions extends FilterRef {
   readonly orderByColumn: string;
   readonly direction?: 'Top' | 'Bottom';
   readonly name?: string;
+  /**
+   * Set true when `orderByColumn` is a DAX Measure (a TMDL `measure X = ...`
+   * definition). False/omitted treats it as a raw column and wraps in implicit
+   * SUM aggregation. Getting this wrong produces a filter that Desktop
+   * silently rejects.
+   */
+  readonly orderByMeasure?: boolean;
 }
 
 /**
@@ -228,19 +273,28 @@ export function filterAddTopN(
                 OrderBy: [
                   {
                     Direction: pbiDirection,
-                    Expression: {
-                      Aggregation: {
-                        Expression: {
-                          Column: {
+                    Expression: opts.orderByMeasure
+                      ? {
+                          Measure: {
                             Expression: {
                               SourceRef: { Source: sameTable ? catAlias : ordAlias },
                             },
                             Property: opts.orderByColumn,
                           },
+                        }
+                      : {
+                          Aggregation: {
+                            Expression: {
+                              Column: {
+                                Expression: {
+                                  SourceRef: { Source: sameTable ? catAlias : ordAlias },
+                                },
+                                Property: opts.orderByColumn,
+                              },
+                            },
+                            Function: 0,
+                          },
                         },
-                        Function: 0,
-                      },
-                    },
                   },
                 ],
                 Top: opts.n,

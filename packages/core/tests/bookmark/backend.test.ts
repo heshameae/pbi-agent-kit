@@ -19,7 +19,7 @@ const PAGE = 'overview';
 
 beforeEach(() => {
   tmp = realpathSync(mkdtempSync(path.join(tmpdir(), 'pbi-bookmark-')));
-  const r = reportCreate({ targetPath: tmp, name: 'Demo' });
+  const r = reportCreate({ targetPath: tmp, name: 'MyReport' });
   defn = r.definitionPath;
   pageAdd(defn, { displayName: 'Overview', name: PAGE });
 });
@@ -96,5 +96,21 @@ describe('bookmarkSetVisibility', () => {
 
   it('throws on missing bookmark', () => {
     expect(() => bookmarkSetVisibility(defn, 'missing', PAGE, 'v', true)).toThrow(PbiCoreError);
+  });
+
+  it('auto-creates the section path on demand for a previously-untouched page', () => {
+    // bookmarkAdd populates sections[PAGE] but NOT sections['other-page'].
+    // setVisibility must safely create the new nesting on first write.
+    bookmarkAdd(defn, 'B1', PAGE, 'bm1');
+    bookmarkSetVisibility(defn, 'bm1', 'other-page', 'new-visual', true);
+    const bm = bookmarkGet(defn, 'bm1');
+    const exp = bm.explorationState as Record<string, unknown>;
+    const sections = exp.sections as Record<string, unknown>;
+    const page = sections['other-page'] as Record<string, unknown>;
+    expect(page).toBeDefined();
+    const containers = page.visualContainers as Record<string, unknown>;
+    const container = containers['new-visual'] as Record<string, unknown>;
+    const single = container.singleVisual as Record<string, unknown>;
+    expect(single.display).toEqual({ mode: 'hidden' });
   });
 });

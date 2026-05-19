@@ -20,7 +20,7 @@ let defn: string;
 
 beforeEach(() => {
   tmp = realpathSync(mkdtempSync(path.join(tmpdir(), 'pbi-pages-')));
-  const r = reportCreate({ targetPath: tmp, name: 'Demo' });
+  const r = reportCreate({ targetPath: tmp, name: 'MyReport' });
   defn = r.definitionPath;
 });
 
@@ -100,6 +100,32 @@ describe('pageDelete', () => {
 
   it('throws when the page does not exist', () => {
     expect(() => pageDelete(defn, 'missing')).toThrow(PbiCoreError);
+  });
+
+  it('falls back activePageName to first remaining when active page is deleted', () => {
+    // Add 3 pages; "p2" becomes active (because pageAdd makes the first the
+    // active; after 3 adds, activePageName is still p1)
+    const a = pageAdd(defn, { displayName: 'A', name: 'p1' });
+    pageAdd(defn, { displayName: 'B', name: 'p2' });
+    pageAdd(defn, { displayName: 'C', name: 'p3' });
+
+    let meta = readJson(path.join(defn, 'pages', 'pages.json')) as Record<string, unknown>;
+    expect(meta.activePageName).toBe(a.name);
+
+    // Delete the active page → should fall back to the next survivor in order
+    pageDelete(defn, a.name);
+    meta = readJson(path.join(defn, 'pages', 'pages.json')) as Record<string, unknown>;
+    expect(meta.pageOrder).toEqual(['p2', 'p3']);
+    expect(meta.activePageName).toBe('p2'); // first remaining
+  });
+
+  it('keeps activePageName intact when deleting a non-active page', () => {
+    pageAdd(defn, { displayName: 'A', name: 'p1' });
+    const b = pageAdd(defn, { displayName: 'B', name: 'p2' });
+    pageDelete(defn, b.name);
+    const meta = readJson(path.join(defn, 'pages', 'pages.json')) as Record<string, unknown>;
+    expect(meta.activePageName).toBe('p1');
+    expect(meta.pageOrder).toEqual(['p1']);
   });
 });
 

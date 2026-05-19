@@ -27,7 +27,7 @@ afterEach(() => {
   rmSync(tmp, { recursive: true, force: true });
 });
 
-function scaffoldReport(root: string, name = 'Demo'): string {
+function scaffoldReport(root: string, name = 'MyReport'): string {
   const reportFolder = path.join(root, `${name}.Report`);
   const defn = path.join(reportFolder, 'definition');
   const pages = path.join(defn, 'pages');

@@ -134,18 +134,18 @@ describe('schemas: DEFAULT_BASE_THEME', () => {
 describe('schemas: qualifiedFieldName', () => {
   it('formats as Table[Column]', () => {
     expect(
-      qualifiedFieldName({ role: 'Y', table: 'Sales', column: 'Revenue', isMeasure: true }),
-    ).toBe('Sales[Revenue]');
+      qualifiedFieldName({ role: 'Y', table: 'MyTable', column: 'MyMeasure', isMeasure: true }),
+    ).toBe('MyTable[MyMeasure]');
   });
 
   it('handles column names with spaces', () => {
     expect(
       qualifiedFieldName({
         role: 'Y',
-        table: 'Sales',
-        column: 'Total Revenue',
+        table: 'MyTable',
+        column: 'My Measure With Spaces',
         isMeasure: true,
       }),
-    ).toBe('Sales[Total Revenue]');
+    ).toBe('MyTable[My Measure With Spaces]');
   });
 });

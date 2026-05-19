@@ -7,9 +7,9 @@
   "plugins": [
     {
       "name": "pbi-mcp-ts",
-      "source": ".",
+      "source": "./",
       "version": "0.2.0",
-      "description": "Power BI report (PBIR) authoring for Claude Code — 39-tool MCP server + 10 skills + 4 subagents + validation hook. Pairs with @microsoft/powerbi-modeling-mcp."
+      "description": "Power BI report (PBIR) authoring for Claude Code — 46-tool MCP server + 14 skills + 5 subagents + layout primitives + LLM-composed dashboard scaffolds. Pairs with @microsoft/powerbi-modeling-mcp."
     }
   ]
 }
