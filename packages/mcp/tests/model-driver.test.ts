@@ -33,6 +33,7 @@ function json(value: unknown): McpToolResult {
 }
 
 afterEach(() => {
+  // biome-ignore lint/performance/noDelete: unsetting an env var needs delete; assigning undefined coerces to the string "undefined"
   delete process.env.PBI_MODELING_MCP_CONNECTION_STRING;
 });
 
@@ -136,22 +137,37 @@ describe('ModelDriver.ensureConnection', () => {
     await expect(driver.ensureConnection()).rejects.toThrow(/found 2 open/i);
   });
 
-  it('falls back to folder mode when no instance and a folderPath is given', async () => {
-    const client = makeClient({
-      'connection_operations/ListLocalInstances': json({ data: [] }),
-    });
+  it('connects folder mode directly when a folderPath is given (no live probe)', async () => {
+    const client = makeClient();
     const driver = new ModelDriver(client);
 
     const info = await driver.ensureConnection({ folderPath: '/x/Model.SemanticModel/definition' });
 
     expect(info.mode).toBe('folder');
     expect(info.folderPath).toBe('/x/Model.SemanticModel/definition');
+    // folderPath short-circuits: ConnectFolder is called, ListLocalInstances is NOT.
+    const ops = client.calls.map(
+      (c) => (c.args as { request: { operation: string } }).request.operation,
+    );
+    expect(ops).toEqual(['ConnectFolder']);
+    expect(ops).not.toContain('ListLocalInstances');
   });
 
   it('throws when no instance and no folderPath', async () => {
     const client = makeClient({ 'connection_operations/ListLocalInstances': json({ data: [] }) });
     const driver = new ModelDriver(client);
     await expect(driver.ensureConnection()).rejects.toThrow(/No open Power BI Desktop instance/);
+  });
+
+  it('wraps a discovery failure (MS MCP unreachable) in a clear message', async () => {
+    const client: ModelClient = {
+      async callTool(name) {
+        if (name === 'connection_operations') throw new Error('spawn ENOENT');
+        return { structuredContent: {} };
+      },
+    };
+    const driver = new ModelDriver(client);
+    await expect(driver.ensureConnection()).rejects.toThrow(/Live modeling requires Windows/);
   });
 });
 

@@ -193,7 +193,24 @@ export class ModelDriver {
       return this.#connection;
     }
 
-    const instances = await this.listLocalInstances();
+    // Explicit folder request: connect the MS MCP to the folder (for writes)
+    // and skip live discovery entirely. Folder-mode READS use pbi-core's pure
+    // parser (see snapshotModel in the server) and never reach here.
+    if (opts?.folderPath) {
+      await this.call(MS_TOOLS.connection, 'ConnectFolder', { path: opts.folderPath });
+      this.#connection = { mode: 'folder', folderPath: opts.folderPath };
+      return this.#connection;
+    }
+
+    let instances: string[];
+    try {
+      instances = await this.listLocalInstances();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new Error(
+        `Could not reach the Power BI modeling MCP to discover a live Desktop instance. Live modeling requires Windows with Power BI Desktop open. (${msg})`,
+      );
+    }
     if (instances.length === 1) {
       const connectionString = instances[0] as string;
       await this.call(MS_TOOLS.connection, 'Connect', { connectionString });
@@ -204,12 +221,6 @@ export class ModelDriver {
       throw new Error(
         `Found ${instances.length} open Power BI Desktop instances. Set PBI_MODELING_MCP_CONNECTION_STRING to choose one.`,
       );
-    }
-
-    if (opts?.folderPath) {
-      await this.call(MS_TOOLS.connection, 'ConnectFolder', { path: opts.folderPath });
-      this.#connection = { mode: 'folder', folderPath: opts.folderPath };
-      return this.#connection;
     }
 
     throw new Error(

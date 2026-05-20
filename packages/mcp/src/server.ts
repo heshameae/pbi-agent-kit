@@ -15,6 +15,7 @@ import { pathToFileURL } from 'node:url';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import {
+  type TMDLModel,
   VERSION,
   bookmarkAdd,
   bookmarkDelete,
@@ -337,69 +338,74 @@ function resolveFolderOpt(folderPath?: string): { folderPath: string } | undefin
   return { folderPath: resolveSemanticModelDefinition(folderPath) };
 }
 
+// Read a model snapshot. Folder mode uses pbi-core's pure-TS TMDL parser
+// (cross-platform — works without the Windows MS MCP). Live mode (no folderPath)
+// goes through the wrapped MS MCP. Both yield the same TMDLModel.
+async function snapshotModel(
+  folderPath?: string,
+): Promise<{ mode: 'live' | 'folder'; model: TMDLModel }> {
+  if (folderPath) {
+    return { mode: 'folder', model: parseTMDLFolder(resolveSemanticModelDefinition(folderPath)) };
+  }
+  const drv = getModelDriver();
+  const conn = await drv.ensureConnection();
+  return { mode: conn.mode, model: await drv.getModelSnapshot() };
+}
+
 tool(
   'pbi_model_snapshot',
   'Read Live Model',
   'Connect to the model (live Power BI Desktop instance, else folder fallback) and return the full semantic model: tables, columns, measures, relationships. Read-only.',
   { folderPath: MODEL_FOLDER_FIELD },
   { readOnlyHint: true, idempotentHint: true },
-  async (input) => {
-    const drv = getModelDriver();
-    const conn = await drv.ensureConnection(resolveFolderOpt(input.folderPath));
-    const model = await drv.getModelSnapshot();
-    return { mode: conn.mode, model };
-  },
+  async (input) => snapshotModel(input.folderPath),
 );
 
 tool(
   'pbi_model_list_tables',
-  'List Tables (live)',
-  'List the tables in the connected model. Read-only.',
+  'List Tables',
+  'List the tables in the model (live Desktop instance, else folder). Read-only.',
   { folderPath: MODEL_FOLDER_FIELD },
   { readOnlyHint: true, idempotentHint: true },
   async (input) => {
-    const drv = getModelDriver();
-    await drv.ensureConnection(resolveFolderOpt(input.folderPath));
-    return { tables: await drv.listTablesRaw() };
+    const { mode, model } = await snapshotModel(input.folderPath);
+    return { mode, tables: model.tables };
   },
 );
 
 tool(
   'pbi_model_list_columns',
-  'List Columns (live)',
-  'List the columns in the connected model. Read-only.',
+  'List Columns',
+  'List the columns in the model (live Desktop instance, else folder). Read-only.',
   { folderPath: MODEL_FOLDER_FIELD },
   { readOnlyHint: true, idempotentHint: true },
   async (input) => {
-    const drv = getModelDriver();
-    await drv.ensureConnection(resolveFolderOpt(input.folderPath));
-    return { columns: await drv.listColumnsRaw() };
+    const { mode, model } = await snapshotModel(input.folderPath);
+    return { mode, columns: model.tables.flatMap((t) => t.columns) };
   },
 );
 
 tool(
   'pbi_model_list_measures',
-  'List Measures (live)',
-  'List the measures in the connected model. Read-only.',
+  'List Measures',
+  'List the measures in the model (live Desktop instance, else folder). Read-only.',
   { folderPath: MODEL_FOLDER_FIELD },
   { readOnlyHint: true, idempotentHint: true },
   async (input) => {
-    const drv = getModelDriver();
-    await drv.ensureConnection(resolveFolderOpt(input.folderPath));
-    return { measures: await drv.listMeasuresRaw() };
+    const { mode, model } = await snapshotModel(input.folderPath);
+    return { mode, measures: model.tables.flatMap((t) => t.measures) };
   },
 );
 
 tool(
   'pbi_model_list_relationships',
-  'List Relationships (live)',
-  'List the relationships in the connected model. Read-only.',
+  'List Relationships',
+  'List the relationships in the model (live Desktop instance, else folder). Read-only.',
   { folderPath: MODEL_FOLDER_FIELD },
   { readOnlyHint: true, idempotentHint: true },
   async (input) => {
-    const drv = getModelDriver();
-    await drv.ensureConnection(resolveFolderOpt(input.folderPath));
-    return { relationships: await drv.listRelationshipsRaw() };
+    const { mode, model } = await snapshotModel(input.folderPath);
+    return { mode, relationships: model.relationships };
   },
 );
 
@@ -433,9 +439,7 @@ tool(
   },
   { destructiveHint: false, idempotentHint: false },
   async (input) => {
-    const drv = getModelDriver();
-    const conn = await drv.ensureConnection(resolveFolderOpt(input.folderPath));
-    const model = await drv.getModelSnapshot();
+    const { mode, model } = await snapshotModel(input.folderPath);
     const check = daxReferenceCheck(input.expression, model, { hostTable: input.tableName });
     if (!check.valid) {
       const err = new Error(
@@ -449,6 +453,8 @@ tool(
       };
       throw err;
     }
+    const drv = getModelDriver();
+    await drv.ensureConnection(resolveFolderOpt(input.folderPath));
     const result = await drv.createMeasure({
       tableName: input.tableName,
       name: input.name,
@@ -458,9 +464,9 @@ tool(
     });
     return {
       created: true,
-      mode: conn.mode,
+      mode,
       persist:
-        conn.mode === 'live'
+        mode === 'live'
           ? 'Measure is live in Power BI Desktop — press Ctrl+S to persist to the .pbip.'
           : 'Call pbi_model_export to write the TMDL to disk.',
       result,
@@ -482,9 +488,7 @@ tool(
   },
   { destructiveHint: false, idempotentHint: true },
   async (input) => {
-    const drv = getModelDriver();
-    const conn = await drv.ensureConnection(resolveFolderOpt(input.folderPath));
-    const model = await drv.getModelSnapshot();
+    const { mode, model } = await snapshotModel(input.folderPath);
     const check = daxReferenceCheck(input.expression, model, { hostTable: input.tableName });
     if (!check.valid) {
       const err = new Error(
@@ -498,6 +502,8 @@ tool(
       };
       throw err;
     }
+    const drv = getModelDriver();
+    await drv.ensureConnection(resolveFolderOpt(input.folderPath));
     const result = await drv.updateMeasure({
       tableName: input.tableName,
       name: input.name,
@@ -505,7 +511,7 @@ tool(
       formatString: input.formatString,
       description: input.description,
     });
-    return { updated: true, mode: conn.mode, result };
+    return { updated: true, mode, result };
   },
 );
 
