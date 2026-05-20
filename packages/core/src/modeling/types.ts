@@ -22,6 +22,7 @@ export interface TMDLMeasure {
   readonly formatString?: string;
   readonly isHidden: boolean;
   readonly description?: string;
+  readonly annotations: Readonly<Record<string, string>>;
 }
 
 export interface TMDLTable {

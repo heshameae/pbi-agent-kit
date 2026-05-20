@@ -231,6 +231,105 @@ describe('validateVisualBindingPlan', () => {
     expect(report.status).toBe('valid');
   });
 
+  it('passes a bridge-annotated measure on a covered axis on the bridge_from table', () => {
+    visualAdd(defn, PAGE, { visualType: 'barChart', name: 'v1' });
+    const report = validateVisualBindingPlan(
+      defn,
+      PAGE,
+      'v1',
+      [
+        { role: 'Category', field: 'FactBridgeFrom[SharedAxis]', measure: false },
+        { role: 'Y', field: 'FactBridgeFrom[BridgeMetric]', measure: true },
+      ],
+      { modelPath: modelDefn },
+    );
+
+    expect(report.status).toBe('valid');
+  });
+
+  it('blocks a bridge-annotated measure on an uncovered axis on the bridge_from table', () => {
+    visualAdd(defn, PAGE, { visualType: 'barChart', name: 'v1' });
+    const report = validateVisualBindingPlan(
+      defn,
+      PAGE,
+      'v1',
+      [
+        { role: 'Category', field: 'FactBridgeFrom[DetailAxis]', measure: false },
+        { role: 'Y', field: 'FactBridgeFrom[BridgeMetric]', measure: true },
+      ],
+      { modelPath: modelDefn },
+    );
+
+    expect(report.status).toBe('blocked');
+    expect(report.findings.map((f) => f.code)).toContain('BRIDGE_BLOCKED_AXIS');
+  });
+
+  it('blocks a bridge-annotated measure on an unrelated same-name axis', () => {
+    visualAdd(defn, PAGE, { visualType: 'barChart', name: 'v1' });
+    const report = validateVisualBindingPlan(
+      defn,
+      PAGE,
+      'v1',
+      [
+        { role: 'Category', field: 'DimOther[SharedAxis]', measure: false },
+        { role: 'Y', field: 'FactBridgeFrom[BridgeMetric]', measure: true },
+      ],
+      { modelPath: modelDefn },
+    );
+
+    expect(report.status).toBe('blocked');
+    expect(report.findings.map((f) => f.code)).toContain('BRIDGE_BLOCKED_AXIS');
+  });
+
+  it('passes a bridge-annotated measure on a related dimension axis when an active relationship path exists', () => {
+    visualAdd(defn, PAGE, { visualType: 'barChart', name: 'v1' });
+    const report = validateVisualBindingPlan(
+      defn,
+      PAGE,
+      'v1',
+      [
+        { role: 'Category', field: 'DimShared[SharedAxis]', measure: false },
+        { role: 'Y', field: 'FactBridgeFrom[BridgeMetric]', measure: true },
+      ],
+      { modelPath: modelDefn },
+    );
+
+    expect(report.status).toBe('valid');
+  });
+
+  it('blocks via bridge annotations even when the expression has no TREATAS', () => {
+    visualAdd(defn, PAGE, { visualType: 'barChart', name: 'v1' });
+    const report = validateVisualBindingPlan(
+      defn,
+      PAGE,
+      'v1',
+      [
+        { role: 'Category', field: 'FactBridgeFrom[DetailAxis]', measure: false },
+        { role: 'Y', field: 'FactBridgeFrom[BridgeMetricSimple]', measure: true },
+      ],
+      { modelPath: modelDefn },
+    );
+
+    expect(report.status).toBe('blocked');
+    expect(report.findings.map((f) => f.code)).toContain('BRIDGE_BLOCKED_AXIS');
+  });
+
+  it('blocks via bridge annotations even when annotation values are double-quoted', () => {
+    visualAdd(defn, PAGE, { visualType: 'barChart', name: 'v1' });
+    const report = validateVisualBindingPlan(
+      defn,
+      PAGE,
+      'v1',
+      [
+        { role: 'Category', field: 'FactBridgeFrom[DetailAxis]', measure: false },
+        { role: 'Y', field: 'FactBridgeFrom[BridgeMetricQuoted]', measure: true },
+      ],
+      { modelPath: modelDefn },
+    );
+    expect(report.status).toBe('blocked');
+    expect(report.findings.map((f) => f.code)).toContain('BRIDGE_BLOCKED_AXIS');
+  });
+
   it('fails closed when auto-resolution sees multiple sibling semantic models', () => {
     mkdirSync(path.join(tmp, 'OtherModel.SemanticModel', 'definition', 'tables'), {
       recursive: true,
@@ -362,11 +461,96 @@ function writeModel(definitionPath: string): void {
     'utf8',
   );
   writeFileSync(
+    path.join(tablesDir, 'FactBridgeFrom.tmdl'),
+    [
+      'table FactBridgeFrom',
+      '\tcolumn SharedAxis',
+      '\t\tdataType: string',
+      '\t\tsummarizeBy: none',
+      '',
+      '\tcolumn DetailAxis',
+      '\t\tdataType: string',
+      '\t\tsummarizeBy: none',
+      '',
+      '\tcolumn ValueMetric',
+      '\t\tdataType: decimal',
+      '\t\tsummarizeBy: sum',
+      '',
+      '\tmeasure BridgeMetric =',
+      '\t\tCALCULATE(',
+      '\t\t\tSUM(FactBridgeTo[PlanMetric]),',
+      '\t\t\tTREATAS(VALUES(FactBridgeFrom[SharedAxis]), FactBridgeTo[SharedAxis])',
+      '\t\t)',
+      '\t\tformatString: #,##0',
+      '\t\tannotation pbi_bridge_from = FactBridgeFrom',
+      '\t\tannotation pbi_bridge_to = FactBridgeTo',
+      '\t\tannotation pbi_bridge_via = TREATAS',
+      '\t\tannotation pbi_bridge_covers = "[\\"FactBridgeFrom[SharedAxis]\\"]"',
+      '',
+      '\tmeasure BridgeMetricSimple = SUM(FactBridgeFrom[ValueMetric])',
+      '\t\tformatString: #,##0',
+      '\t\tannotation pbi_bridge_from = FactBridgeFrom',
+      '\t\tannotation pbi_bridge_to = FactBridgeTo',
+      '\t\tannotation pbi_bridge_via = TREATAS',
+      '\t\tannotation pbi_bridge_covers = "[\\"FactBridgeFrom[SharedAxis]\\"]"',
+      '',
+      '\tmeasure BridgeMetricQuoted = SUM(FactBridgeFrom[ValueMetric])',
+      '\t\tformatString: #,##0',
+      '\t\tannotation pbi_bridge_from = "FactBridgeFrom"',
+      '\t\tannotation pbi_bridge_to = "FactBridgeTo"',
+      '\t\tannotation pbi_bridge_via = "TREATAS"',
+      '\t\tannotation pbi_bridge_covers = "[\\"FactBridgeFrom[SharedAxis]\\"]"',
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+  writeFileSync(
+    path.join(tablesDir, 'FactBridgeTo.tmdl'),
+    [
+      'table FactBridgeTo',
+      '\tcolumn SharedAxis',
+      '\t\tdataType: string',
+      '\t\tsummarizeBy: none',
+      '',
+      '\tcolumn PlanMetric',
+      '\t\tdataType: decimal',
+      '\t\tsummarizeBy: sum',
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+  writeFileSync(
+    path.join(tablesDir, 'DimShared.tmdl'),
+    [
+      'table DimShared',
+      '\tcolumn SharedAxis',
+      '\t\tdataType: string',
+      '\t\tsummarizeBy: none',
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+  writeFileSync(
+    path.join(tablesDir, 'DimOther.tmdl'),
+    [
+      'table DimOther',
+      '\tcolumn SharedAxis',
+      '\t\tdataType: string',
+      '\t\tsummarizeBy: none',
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+  writeFileSync(
     path.join(definitionPath, 'relationships.tmdl'),
     [
       'relationship rel_fact_dim',
       '\tfromColumn: MyFact.MyDimKey',
       '\ttoColumn: MyDim.MyDimKey',
+      '',
+      'relationship rel_bridge_dim_shared',
+      '\tfromColumn: FactBridgeFrom.SharedAxis',
+      '\ttoColumn: DimShared.SharedAxis',
       '',
     ].join('\n'),
     'utf8',

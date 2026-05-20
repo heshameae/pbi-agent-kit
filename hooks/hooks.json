@@ -1,12 +1,54 @@
 {
   "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "mcp__(?:plugin_pbi-mcp-ts_)?powerbi-modeling__measure_operations",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/scripts/gate-measure-create.mjs"]
+          }
+        ]
+      }
+    ],
     "PostToolUse": [
       {
-        "matcher": "mcp__pbi-report__pbi_(page|visual|filter|bookmark|format)_(add|update|delete|bind|set_.*|clear|bulk_.*|calc_.*)",
+        "matcher": "mcp__(?:plugin_pbi-mcp-ts_)?pbi-report__pbi_(page|visual|filter|bookmark|format)_(add|update|delete|bind|set_.*|clear|bulk_.*|calc_.*)",
         "hooks": [
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/packages/cli/dist/main.js\" report validate"
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__(?:plugin_pbi-mcp-ts_)?powerbi-modeling__connection_operations",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/scripts/update-connection-sidecar.mjs"]
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__(?:plugin_pbi-mcp-ts_)?powerbi-modeling__measure_operations",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/scripts/track-uncommitted-measure.mjs"]
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__(?:plugin_pbi-mcp-ts_)?powerbi-modeling__database_operations",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/scripts/clear-uncommitted-on-export.mjs"]
           }
         ]
       }

@@ -11,3 +11,6 @@ coverage/
 
 # superpowers brainstorm session files
 .superpowers/
+
+# hook sidecar state (project-scoped connection/uncommitted-measures registry)
+.pbi-mcp-ts/

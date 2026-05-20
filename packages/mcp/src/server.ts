@@ -11,6 +11,7 @@
 
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import {
@@ -20,6 +21,7 @@ import {
   bookmarkGet,
   bookmarkList,
   bookmarkSetVisibility,
+  daxReferenceCheck,
   filterAddCategorical,
   filterAddRelativeDate,
   filterAddTopN,
@@ -41,6 +43,7 @@ import {
   pageList,
   pageSetBackground,
   pageSetVisibility,
+  parseTMDLFolder,
   reportConvert,
   reportCreate,
   reportInfo,
@@ -265,6 +268,28 @@ tool(
     return modelDoctorFromFolder(definitionPath, {
       bridgeIntent: input.bridgeIntent,
     });
+  },
+);
+
+tool(
+  'pbi_dax_reference_check',
+  'Check DAX References',
+  'Read-only lexical DAX reference check against a .SemanticModel/definition folder. Verifies qualified Table[Field] and bare [Measure] references; fails closed on missing or ambiguous references.',
+  {
+    modelPath: z
+      .string()
+      .describe('Path to .SemanticModel/definition, .SemanticModel, .pbip, or containing folder.'),
+    expression: z.string().describe('DAX expression to check.'),
+    hostTable: z
+      .string()
+      .optional()
+      .describe('Host table for same-table bare [Measure] references.'),
+  },
+  { readOnlyHint: true, idempotentHint: true },
+  (input) => {
+    const definitionPath = resolveSemanticModelDefinition(input.modelPath);
+    const model = parseTMDLFolder(definitionPath);
+    return daxReferenceCheck(input.expression, model, { hostTable: input.hostTable });
   },
 );
 
@@ -1148,6 +1173,10 @@ tool(
 
 // -- Boot ------------------------------------------------------------------
 
+export function buildServer(): McpServer {
+  return server;
+}
+
 async function main(): Promise<void> {
   const transport = new StdioServerTransport();
   await server.connect(transport);
@@ -1155,7 +1184,13 @@ async function main(): Promise<void> {
   process.stderr.write(`pbi-report-mcp-server v${VERSION} ready (stdio)\n`);
 }
 
-main().catch((err: unknown) => {
-  process.stderr.write(`Fatal: ${err instanceof Error ? err.message : String(err)}\n`);
-  process.exit(1);
-});
+const invokedAsScript =
+  process.argv[1] !== undefined &&
+  import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href;
+
+if (invokedAsScript) {
+  main().catch((err: unknown) => {
+    process.stderr.write(`Fatal: ${err instanceof Error ? err.message : String(err)}\n`);
+    process.exit(1);
+  });
+}

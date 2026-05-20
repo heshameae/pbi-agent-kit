@@ -27,6 +27,7 @@ describe('BPA: DAX001 — DIVIDE over /', () => {
               name: 'Ratio',
               expression: '[Num] / [Den]',
               isHidden: false,
+              annotations: {},
             },
           ],
         },
@@ -51,6 +52,7 @@ describe('BPA: DAX001 — DIVIDE over /', () => {
               name: 'Ratio',
               expression: 'DIVIDE([Num], [Den])',
               isHidden: false,
+              annotations: {},
             },
           ],
         },
@@ -71,7 +73,9 @@ describe('BPA: FMT001 — missing formatString', () => {
           isCalculated: false,
           isAutoDateTable: false,
           columns: [],
-          measures: [{ table: 'T', name: 'X', expression: 'SUM(T[X])', isHidden: false }],
+          measures: [
+            { table: 'T', name: 'X', expression: 'SUM(T[X])', isHidden: false, annotations: {} },
+          ],
         },
       ],
     });
@@ -88,7 +92,9 @@ describe('BPA: FMT001 — missing formatString', () => {
           isCalculated: false,
           isAutoDateTable: false,
           columns: [],
-          measures: [{ table: 'T', name: 'X', expression: 'SUM(T[X])', isHidden: true }],
+          measures: [
+            { table: 'T', name: 'X', expression: 'SUM(T[X])', isHidden: true, annotations: {} },
+          ],
         },
       ],
     });
@@ -114,6 +120,7 @@ describe('BPA: FMT002 — quoted formatString', () => {
               expression: 'SUM(T[X])',
               isHidden: false,
               formatString: '"""$#,0;($#,0);$#,0"""',
+              annotations: {},
             },
           ],
         },
@@ -162,7 +169,15 @@ describe('BPA: NAM001 — measure/column collision', () => {
               isCalculated: false,
             },
           ],
-          measures: [{ table: 'T', name: 'Sales', expression: 'SUM(T[Sales])', isHidden: false }],
+          measures: [
+            {
+              table: 'T',
+              name: 'Sales',
+              expression: 'SUM(T[Sales])',
+              isHidden: false,
+              annotations: {},
+            },
+          ],
         },
       ],
     });
@@ -283,6 +298,7 @@ describe('BPA: DAX005 — reference existence', () => {
               name: 'X',
               expression: 'SUM(B[Value])',
               isHidden: false,
+              annotations: {},
             },
           ],
         },
@@ -324,6 +340,7 @@ describe('BPA: DAX005 — reference existence', () => {
               name: 'X',
               expression: 'SUM(B[Missing])',
               isHidden: false,
+              annotations: {},
             },
           ],
         },

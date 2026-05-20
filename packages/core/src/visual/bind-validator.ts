@@ -465,9 +465,28 @@ function validateAxisMeasureCompatibility(
   for (const measureBinding of measures) {
     const measure = findMeasure(index, measureBinding.table, measureBinding.name);
     if (!measure) continue;
+    const metadata = bridgeMetadataFor(measure);
     const bridge = index.treatasBridgeMeasures[`${measure.table}[${measure.name}]`];
 
     for (const axis of axes) {
+      if (metadata) {
+        if (!isMetadataBridgeCoveredAxis(index, axis, metadata)) {
+          findings.push({
+            code: 'BRIDGE_BLOCKED_AXIS',
+            severity: 'error',
+            role: measureBinding.role,
+            field: measureBinding.field,
+            reason: `Bridge measure '${measureBinding.field}' (annotations declare bridge_from=${metadata.from}) does not cover axis '${axis.field}'.`,
+            fixOptions: [
+              'Remove the bridged measure from this visual.',
+              'Use an actuals-only measure on this axis.',
+              `Extend pbi_bridge_covers on '${measure.table}[${measure.name}]' so it lists this axis, or pick an axis the bridge already covers.`,
+            ],
+          });
+        }
+        continue;
+      }
+
       if (bridge && !isBridgeCoveredAxis(index, axis, bridge)) {
         findings.push({
           code: 'BRIDGE_BLOCKED_AXIS',
@@ -502,6 +521,66 @@ function validateAxisMeasureCompatibility(
       }
     }
   }
+}
+
+interface BridgeMetadata {
+  readonly from: string;
+  readonly to: string;
+  readonly via: 'TREATAS' | 'USERELATIONSHIP';
+  readonly covers: readonly { readonly table: string; readonly name: string }[];
+}
+
+function bridgeMetadataFor(measure: ModelMeasureField): BridgeMetadata | null {
+  const annotations = measure.annotations;
+  if (!annotations) return null;
+  const from = annotations.pbi_bridge_from;
+  const to = annotations.pbi_bridge_to;
+  const via = annotations.pbi_bridge_via;
+  const coversRaw = annotations.pbi_bridge_covers;
+  if (!from || !to || !via || !coversRaw) return null;
+  if (via !== 'TREATAS' && via !== 'USERELATIONSHIP') return null;
+
+  const coversList = parseCoversAnnotation(coversRaw);
+  if (coversList === null) return null;
+
+  const covers: { table: string; name: string }[] = [];
+  for (const entry of coversList) {
+    const match = /^([^[]+)\[([^\]]+)\]$/.exec(entry);
+    if (!match || !match[1] || !match[2]) continue;
+    covers.push({ table: match[1].trim(), name: match[2].trim() });
+  }
+  if (covers.length === 0) return null;
+
+  return { from, to, via, covers };
+}
+
+function parseCoversAnnotation(raw: string): readonly string[] | null {
+  let value: unknown;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (typeof value === 'string') {
+    try {
+      value = JSON.parse(value);
+    } catch {
+      return null;
+    }
+  }
+  if (!Array.isArray(value)) return null;
+  return value.filter((entry): entry is string => typeof entry === 'string');
+}
+
+function isMetadataBridgeCoveredAxis(
+  index: ModelFieldIndex,
+  axis: NormalizedBinding,
+  metadata: BridgeMetadata,
+): boolean {
+  const coveredNames = new Set(metadata.covers.map((entry) => entry.name));
+  if (!coveredNames.has(axis.name)) return false;
+  if (axis.table === metadata.from) return true;
+  return hasDirectedFilterPath(index, axis.table, metadata.from);
 }
 
 function validateModelDoctorFindings(

@@ -179,6 +179,23 @@ function unquoteIdent(s: string): string {
   return t;
 }
 
+function unquoteAnnotationValue(s: string): string {
+  const t = s.trim();
+  if (t.length >= 2 && t.startsWith("'") && t.endsWith("'")) {
+    return t.slice(1, -1);
+  }
+  if (t.length >= 2 && t.startsWith('"') && t.endsWith('"')) {
+    try {
+      const parsed = JSON.parse(t) as unknown;
+      if (typeof parsed === 'string') return parsed;
+      return t.slice(1, -1);
+    } catch {
+      return t.slice(1, -1);
+    }
+  }
+  return t;
+}
+
 function parseMeasureHeader(rest: string): { name: string; inlineExpression?: string } {
   const eqIdx = rest.indexOf('=');
   if (eqIdx < 0) {
@@ -241,6 +258,7 @@ function buildMeasure(
   let formatString: string | undefined;
   let isHidden = false;
   let description: string | undefined;
+  const annotations: Record<string, string> = {};
 
   const exprLines: string[] = [];
   if (inlineExpression) exprLines.push(inlineExpression);
@@ -256,7 +274,16 @@ function buildMeasure(
       isHidden = true;
       continue;
     }
-    if (line.startsWith('lineageTag:') || line.startsWith('annotation ')) {
+    if (line.startsWith('annotation ')) {
+      const annotationMatch = /^annotation\s+([^\s=]+)\s*=\s*(.*)$/.exec(line);
+      const annotationName = annotationMatch?.[1];
+      const annotationValue = annotationMatch?.[2];
+      if (annotationName && annotationValue !== undefined) {
+        annotations[annotationName] = unquoteAnnotationValue(annotationValue);
+      }
+      continue;
+    }
+    if (line.startsWith('lineageTag:')) {
       continue;
     }
     if (line.startsWith('displayFolder:') || line.startsWith('description:')) {
@@ -285,6 +312,7 @@ function buildMeasure(
     formatString,
     isHidden,
     description,
+    annotations,
   };
 }
 

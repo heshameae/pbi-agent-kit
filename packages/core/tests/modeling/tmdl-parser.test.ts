@@ -41,6 +41,48 @@ describe('parseTableFile', () => {
     expect(m.formatString).toBe('#,0');
   });
 
+  it('parses measure annotations', () => {
+    const tbl = parseTableFile(
+      [
+        'table FactBridgeFrom',
+        '\tmeasure BridgeMetric = CALCULATE(SUM(FactBridgeTo[PlanMetric]), TREATAS(VALUES(FactBridgeFrom[SharedAxis]), FactBridgeTo[SharedAxis]))',
+        '\t\tformatString: #,##0',
+        '\t\tannotation pbi_bridge_from = FactBridgeFrom',
+        '\t\tannotation pbi_bridge_to = FactBridgeTo',
+        '\t\tannotation pbi_bridge_via = TREATAS',
+        '\t\tannotation pbi_bridge_covers = "[\\"FactBridgeFrom[SharedAxis]\\"]"',
+      ].join('\n'),
+    );
+
+    expect(tbl?.measures[0]?.annotations).toEqual({
+      pbi_bridge_from: 'FactBridgeFrom',
+      pbi_bridge_to: 'FactBridgeTo',
+      pbi_bridge_via: 'TREATAS',
+      pbi_bridge_covers: '["FactBridgeFrom[SharedAxis]"]',
+    });
+  });
+
+  it('unquotes double-quoted annotation values and handles escapes', () => {
+    const tbl = parseTableFile(
+      [
+        'table FactBridgeFrom',
+        '\tmeasure BridgeMetric = SUM(FactBridgeFrom[ValueMetric])',
+        '\t\tformatString: #,##0',
+        '\t\tannotation pbi_bridge_from = "FactBridgeFrom"',
+        '\t\tannotation pbi_bridge_to = "FactBridgeTo"',
+        '\t\tannotation pbi_bridge_via = "TREATAS"',
+        '\t\tannotation pbi_bridge_covers = "[\\"FactBridgeFrom[SharedAxis]\\"]"',
+      ].join('\n'),
+    );
+
+    expect(tbl?.measures[0]?.annotations).toEqual({
+      pbi_bridge_from: 'FactBridgeFrom',
+      pbi_bridge_to: 'FactBridgeTo',
+      pbi_bridge_via: 'TREATAS',
+      pbi_bridge_covers: '["FactBridgeFrom[SharedAxis]"]',
+    });
+  });
+
   it('parses a measure with multi-line body expression', () => {
     const src =
       'table T\n' +

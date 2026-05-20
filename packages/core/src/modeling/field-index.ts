@@ -23,6 +23,7 @@ export interface ModelMeasureField {
   readonly formatString?: string;
   readonly isHidden: boolean;
   readonly description?: string;
+  readonly annotations: Readonly<Record<string, string>>;
 }
 
 export type ModelField = ModelColumnField | ModelMeasureField;
@@ -240,6 +241,7 @@ function measureField(measure: TMDLMeasure): ModelMeasureField {
     formatString: measure.formatString,
     isHidden: measure.isHidden,
     description: measure.description,
+    annotations: measure.annotations,
   };
 }
 

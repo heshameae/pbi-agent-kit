@@ -47,3 +47,10 @@ export type { BPARule, BPARuleCategory } from './bpa.js';
 export { checkRelationships } from './relationship-check.js';
 export { modelDoctor, modelDoctorFromFolder } from './doctor.js';
 export type { ModelDoctorOptions } from './doctor.js';
+export { daxReferenceCheck } from './dax-reference-check.js';
+export type {
+  DaxReference,
+  DaxReferenceCheckOptions,
+  DaxReferenceCheckResult,
+  UncommittedMeasureRef,
+} from './dax-reference-check.js';
