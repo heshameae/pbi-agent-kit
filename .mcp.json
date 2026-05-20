@@ -3,10 +3,6 @@
     "pbi-report": {
       "command": "node",
       "args": ["${CLAUDE_PLUGIN_ROOT}/packages/mcp/dist/server.js"]
-    },
-    "powerbi-modeling": {
-      "command": "${CLAUDE_PLUGIN_ROOT}/bin/powerbi-modeling-mcp",
-      "args": ["--start"]
     }
   }
 }

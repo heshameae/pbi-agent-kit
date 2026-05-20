@@ -1,13 +1,13 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import type { McpToolResult } from '../src/model-bridge/ms-mcp-client.js';
 import {
-  collectConnectionStrings,
   type ModelClient,
   ModelDriver,
+  collectConnectionStrings,
   operationArgs,
   pickArray,
   redactConnectionSecrets,
 } from '../src/model-bridge/model-driver.js';
+import type { McpToolResult } from '../src/model-bridge/ms-mcp-client.js';
 
 interface RecordedCall {
   name: string;
@@ -118,10 +118,9 @@ describe('ModelDriver.ensureConnection', () => {
     const info = await driver.ensureConnection();
 
     expect(info).toEqual({ mode: 'live', connectionString: 'Data Source=localhost:59186;' });
-    expect(client.calls.map((c) => (c.args as { request: { operation: string } }).request.operation)).toEqual([
-      'ListLocalInstances',
-      'Connect',
-    ]);
+    expect(
+      client.calls.map((c) => (c.args as { request: { operation: string } }).request.operation),
+    ).toEqual(['ListLocalInstances', 'Connect']);
   });
 
   it('throws on multiple instances', async () => {
@@ -218,7 +217,12 @@ describe('ModelDriver writes', () => {
         request: {
           operation: 'Create',
           definitions: [
-            { tableName: 'FactPrimary', name: 'Value YoY', expression: '...', formatString: '0.0%' },
+            {
+              tableName: 'FactPrimary',
+              name: 'Value YoY',
+              expression: '...',
+              formatString: '0.0%',
+            },
           ],
         },
       },

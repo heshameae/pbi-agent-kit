@@ -10,13 +10,7 @@
 // extraction helpers below are deliberately tolerant; log a raw payload once
 // against a live Desktop (Parallels) and tighten `pickArray` / key lists.
 
-import type {
-  TMDLColumn,
-  TMDLMeasure,
-  TMDLModel,
-  TMDLRelationship,
-  TMDLTable,
-} from 'pbi-core';
+import type { TMDLColumn, TMDLMeasure, TMDLModel, TMDLRelationship, TMDLTable } from 'pbi-core';
 import type { McpToolResult } from './ms-mcp-client.js';
 
 // Raw Microsoft-MCP tool names (called directly — no `mcp__` peer prefix,
@@ -65,11 +59,7 @@ export function operationArgs(
 ): Record<string, unknown> {
   const isList = operation.toLowerCase() === 'list';
   const body =
-    params && Object.keys(params).length > 0
-      ? isList
-        ? { filter: params }
-        : params
-      : {};
+    params && Object.keys(params).length > 0 ? (isList ? { filter: params } : params) : {};
   return { request: { operation, ...body } };
 }
 

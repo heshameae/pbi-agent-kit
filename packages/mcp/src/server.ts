@@ -36,6 +36,7 @@ import {
   layoutColumn,
   layoutGrid,
   layoutRow,
+  modelDoctor,
   modelDoctorFromFolder,
   pageAdd,
   pageDelete,
@@ -69,6 +70,8 @@ import {
   visualWhere,
 } from 'pbi-core';
 import { z } from 'zod';
+import { ModelDriver } from './model-bridge/model-driver.js';
+import { getMsMcpClient } from './model-bridge/ms-mcp-client.js';
 
 const server = new McpServer({
   name: 'pbi-report-mcp-server',
@@ -261,9 +264,21 @@ tool(
       .describe(
         'Optional TREATAS bridge intent. When provided, the report includes a bridge analysis identifying which axes the bridge covers and which are structurally blocked.',
       ),
+    live: z
+      .boolean()
+      .optional()
+      .describe(
+        'Read the live Power BI Desktop model (via the wrapped Microsoft MCP) instead of a folder. When true, modelPath is ignored.',
+      ),
   },
   { readOnlyHint: true, idempotentHint: true },
-  (input) => {
+  async (input) => {
+    if (input.live) {
+      const drv = getModelDriver();
+      await drv.ensureConnection();
+      const model = await drv.getModelSnapshot();
+      return modelDoctor(model, { bridgeIntent: input.bridgeIntent });
+    }
     const definitionPath = resolveSemanticModelDefinition(input.modelPath);
     return modelDoctorFromFolder(definitionPath, {
       bridgeIntent: input.bridgeIntent,
@@ -290,6 +305,237 @@ tool(
     const definitionPath = resolveSemanticModelDefinition(input.modelPath);
     const model = parseTMDLFolder(definitionPath);
     return daxReferenceCheck(input.expression, model, { hostTable: input.hostTable });
+  },
+);
+
+// =========================================================================
+// MODELING — LIVE (wrapped Microsoft Power BI modeling MCP)
+// =========================================================================
+//
+// These tools drive Microsoft's modeling MCP, which we spawn as an INTERNAL
+// child subprocess (see model-bridge/) rather than register as a peer. Reads
+// assemble the live model into a TMDLModel so the existing validators reuse;
+// pbi_measure_create runs an in-code DAX-reference gate before any write — the
+// deterministic replacement for the old gate-measure-create PreToolUse hook.
+
+let modelDriver: ModelDriver | null = null;
+function getModelDriver(): ModelDriver {
+  if (!modelDriver) modelDriver = new ModelDriver(getMsMcpClient());
+  return modelDriver;
+}
+
+const MODEL_FOLDER_FIELD = z
+  .string()
+  .optional()
+  .describe(
+    'Folder-mode fallback: a .SemanticModel/definition (or .pbip/containing dir) used only when no live Power BI Desktop instance is open. Omit when Desktop is running.',
+  );
+
+function resolveFolderOpt(folderPath?: string): { folderPath: string } | undefined {
+  if (!folderPath) return undefined;
+  return { folderPath: resolveSemanticModelDefinition(folderPath) };
+}
+
+tool(
+  'pbi_model_snapshot',
+  'Read Live Model',
+  'Connect to the model (live Power BI Desktop instance, else folder fallback) and return the full semantic model: tables, columns, measures, relationships. Read-only.',
+  { folderPath: MODEL_FOLDER_FIELD },
+  { readOnlyHint: true, idempotentHint: true },
+  async (input) => {
+    const drv = getModelDriver();
+    const conn = await drv.ensureConnection(resolveFolderOpt(input.folderPath));
+    const model = await drv.getModelSnapshot();
+    return { mode: conn.mode, model };
+  },
+);
+
+tool(
+  'pbi_model_list_tables',
+  'List Tables (live)',
+  'List the tables in the connected model. Read-only.',
+  { folderPath: MODEL_FOLDER_FIELD },
+  { readOnlyHint: true, idempotentHint: true },
+  async (input) => {
+    const drv = getModelDriver();
+    await drv.ensureConnection(resolveFolderOpt(input.folderPath));
+    return { tables: await drv.listTablesRaw() };
+  },
+);
+
+tool(
+  'pbi_model_list_columns',
+  'List Columns (live)',
+  'List the columns in the connected model. Read-only.',
+  { folderPath: MODEL_FOLDER_FIELD },
+  { readOnlyHint: true, idempotentHint: true },
+  async (input) => {
+    const drv = getModelDriver();
+    await drv.ensureConnection(resolveFolderOpt(input.folderPath));
+    return { columns: await drv.listColumnsRaw() };
+  },
+);
+
+tool(
+  'pbi_model_list_measures',
+  'List Measures (live)',
+  'List the measures in the connected model. Read-only.',
+  { folderPath: MODEL_FOLDER_FIELD },
+  { readOnlyHint: true, idempotentHint: true },
+  async (input) => {
+    const drv = getModelDriver();
+    await drv.ensureConnection(resolveFolderOpt(input.folderPath));
+    return { measures: await drv.listMeasuresRaw() };
+  },
+);
+
+tool(
+  'pbi_model_list_relationships',
+  'List Relationships (live)',
+  'List the relationships in the connected model. Read-only.',
+  { folderPath: MODEL_FOLDER_FIELD },
+  { readOnlyHint: true, idempotentHint: true },
+  async (input) => {
+    const drv = getModelDriver();
+    await drv.ensureConnection(resolveFolderOpt(input.folderPath));
+    return { relationships: await drv.listRelationshipsRaw() };
+  },
+);
+
+tool(
+  'pbi_dax_query',
+  'Execute DAX Query (read-only)',
+  'Run a read-only DAX query against the connected model and return the result. For inspection/aggregate checks; not a write path.',
+  {
+    query: z.string().describe('A DAX query (e.g. EVALUATE ...).'),
+    folderPath: MODEL_FOLDER_FIELD,
+  },
+  { readOnlyHint: true, idempotentHint: true },
+  async (input) => {
+    const drv = getModelDriver();
+    await drv.ensureConnection(resolveFolderOpt(input.folderPath));
+    return drv.daxQuery(input.query);
+  },
+);
+
+tool(
+  'pbi_measure_create',
+  'Create Measure (DAX-gated)',
+  'Create a measure on the connected model. HARD GATE: an in-code DAX-reference check runs first against the live model — if the expression references a table/column/measure that does not exist (or is ambiguous), the create is REFUSED and nothing is written. On success in live mode the measure appears in Desktop immediately; press Ctrl+S to persist. In folder mode, call pbi_model_export.',
+  {
+    tableName: z.string().describe('Home table for the measure.'),
+    name: z.string().describe('Measure name (must be unique in the model).'),
+    expression: z.string().describe('DAX expression.'),
+    formatString: z.string().optional().describe('Format string (bare TMDL backslash form).'),
+    description: z.string().optional().describe('Optional measure description.'),
+    folderPath: MODEL_FOLDER_FIELD,
+  },
+  { destructiveHint: false, idempotentHint: false },
+  async (input) => {
+    const drv = getModelDriver();
+    const conn = await drv.ensureConnection(resolveFolderOpt(input.folderPath));
+    const model = await drv.getModelSnapshot();
+    const check = daxReferenceCheck(input.expression, model, { hostTable: input.tableName });
+    if (!check.valid) {
+      const err = new Error(
+        `Refused: measure "${input.name}" references fields not present in the model.`,
+      ) as Error & { report?: unknown };
+      err.report = {
+        gate: 'dax-reference-check',
+        missing: check.missing,
+        ambiguous: check.ambiguous,
+        unsupported: check.unsupported,
+      };
+      throw err;
+    }
+    const result = await drv.createMeasure({
+      tableName: input.tableName,
+      name: input.name,
+      expression: input.expression,
+      formatString: input.formatString,
+      description: input.description,
+    });
+    return {
+      created: true,
+      mode: conn.mode,
+      persist:
+        conn.mode === 'live'
+          ? 'Measure is live in Power BI Desktop — press Ctrl+S to persist to the .pbip.'
+          : 'Call pbi_model_export to write the TMDL to disk.',
+      result,
+    };
+  },
+);
+
+tool(
+  'pbi_measure_update',
+  'Update Measure (DAX-gated)',
+  'Update an existing measure. If a new expression is supplied it passes the same in-code DAX-reference gate as create.',
+  {
+    tableName: z.string().describe('Home table of the measure.'),
+    name: z.string().describe('Measure name to update.'),
+    expression: z.string().describe('New DAX expression.'),
+    formatString: z.string().optional(),
+    description: z.string().optional(),
+    folderPath: MODEL_FOLDER_FIELD,
+  },
+  { destructiveHint: false, idempotentHint: true },
+  async (input) => {
+    const drv = getModelDriver();
+    const conn = await drv.ensureConnection(resolveFolderOpt(input.folderPath));
+    const model = await drv.getModelSnapshot();
+    const check = daxReferenceCheck(input.expression, model, { hostTable: input.tableName });
+    if (!check.valid) {
+      const err = new Error(
+        `Refused: measure "${input.name}" references fields not present in the model.`,
+      ) as Error & { report?: unknown };
+      err.report = {
+        gate: 'dax-reference-check',
+        missing: check.missing,
+        ambiguous: check.ambiguous,
+        unsupported: check.unsupported,
+      };
+      throw err;
+    }
+    const result = await drv.updateMeasure({
+      tableName: input.tableName,
+      name: input.name,
+      expression: input.expression,
+      formatString: input.formatString,
+      description: input.description,
+    });
+    return { updated: true, mode: conn.mode, result };
+  },
+);
+
+tool(
+  'pbi_measure_delete',
+  'Delete Measure',
+  'Delete a measure from the connected model.',
+  {
+    tableName: z.string().describe('Home table of the measure.'),
+    name: z.string().describe('Measure name to delete.'),
+    folderPath: MODEL_FOLDER_FIELD,
+  },
+  { destructiveHint: true, idempotentHint: false },
+  async (input) => {
+    const drv = getModelDriver();
+    const conn = await drv.ensureConnection(resolveFolderOpt(input.folderPath));
+    const result = await drv.deleteMeasure({ tableName: input.tableName, name: input.name });
+    return { deleted: true, mode: conn.mode, result };
+  },
+);
+
+tool(
+  'pbi_model_export',
+  'Export TMDL to Folder (folder-mode persistence)',
+  'Persist the connected model to its .SemanticModel/definition TMDL on disk. Used in folder mode; in live mode persistence is the user pressing Ctrl+S in Desktop.',
+  { folderPath: MODEL_FOLDER_FIELD },
+  { destructiveHint: false, idempotentHint: true },
+  async (input) => {
+    const drv = getModelDriver();
+    await drv.ensureConnection(resolveFolderOpt(input.folderPath));
+    return { exported: true, result: await drv.exportToTmdlFolder() };
   },
 );
 
