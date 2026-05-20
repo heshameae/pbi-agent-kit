@@ -27,3 +27,4 @@ export * from './bookmark/backend.js';
 export * from './format/backend.js';
 export * from './bulk/backend.js';
 export * from './modeling/index.js';
+export * from './types/spec.js';

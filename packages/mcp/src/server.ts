@@ -52,6 +52,7 @@ import {
   themeDiff,
   themeGet,
   themeSet,
+  validateDashboardSpec,
   validateReportFull,
   validateVisualBindingPlan,
   visualAdd,
@@ -537,6 +538,15 @@ tool(
     await drv.ensureConnection(resolveFolderOpt(input.folderPath));
     return { exported: true, result: await drv.exportToTmdlFolder() };
   },
+);
+
+tool(
+  'pbi_spec_validate',
+  'Validate DashboardSpec',
+  'Validate a DashboardSpec — the pbi-data-analyst → pbi-model-builder contract — against the v6 schema. Returns { valid, errors[] }. The model-builder MUST call this and refuse to act when valid is false.',
+  { spec: z.unknown().describe('The DashboardSpec object to validate.') },
+  { readOnlyHint: true, idempotentHint: true },
+  (input) => validateDashboardSpec(input.spec),
 );
 
 tool(

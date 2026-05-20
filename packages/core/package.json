@@ -18,5 +18,8 @@
     "build": "tsc -p tsconfig.json && node scripts/copy-templates.mjs",
     "test": "vitest run",
     "test:watch": "vitest"
+  },
+  "dependencies": {
+    "zod": "^3.23.8"
   }
 }
