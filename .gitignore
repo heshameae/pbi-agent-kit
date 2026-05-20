@@ -14,3 +14,6 @@ coverage/
 
 # hook sidecar state (project-scoped connection/uncommitted-measures registry)
 .pbi-mcp-ts/
+
+# reference-repo mining dumps (raw repomix output of external repos — not ours to redistribute; some are GPL)
+docs/superpowers/mining/packed/
