@@ -239,6 +239,24 @@ export class ModelDriver {
   async listMeasuresRaw(): Promise<Record<string, unknown>[]> {
     return pickArray(await this.call(MS_TOOLS.measures, 'List')).filter(isRecord);
   }
+
+  // The live measure List returns only { name, description } — no table,
+  // expression, or formatString. Enrich with a single batched Get
+  // (references: [{ name }]) which returns the full definitions.
+  async listMeasuresEnriched(): Promise<Record<string, unknown>[]> {
+    const names = (await this.listMeasuresRaw())
+      .map((m) => str(m, 'name', 'measureName'))
+      .filter((n): n is string => typeof n === 'string' && n.length > 0);
+    if (names.length === 0) return [];
+    const got = await this.call(MS_TOOLS.measures, 'Get', {
+      references: names.map((name) => ({ name })),
+    });
+    // Batched Get returns { results: [{ success, data: { ...measure } }, ...] }.
+    // pickArray grabs `results`; unwrap each item's `data`. Tolerate a flat shape.
+    return pickArray(got)
+      .map((r) => (isRecord(r) && isRecord(r.data) ? r.data : r))
+      .filter(isRecord);
+  }
   async listRelationshipsRaw(): Promise<Record<string, unknown>[]> {
     return pickArray(await this.call(MS_TOOLS.relationships, 'List')).filter(isRecord);
   }
@@ -251,7 +269,7 @@ export class ModelDriver {
     const [rawTables, rawColumns, rawMeasures, rawRels] = await Promise.all([
       this.listTablesRaw(),
       this.listColumnsRaw(),
-      this.listMeasuresRaw(),
+      this.listMeasuresEnriched(),
       this.listRelationshipsRaw(),
     ]);
 

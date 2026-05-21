@@ -181,13 +181,19 @@ describe('ModelDriver.getModelSnapshot', () => {
           { tableName: 'DimShared', name: 'SharedAxis', dataType: 'string', isKey: true },
         ],
       }),
-      'measure_operations/List': json({
-        data: [
+      // Live List is names-only; getModelSnapshot enriches via a batched Get
+      // whose real shape is { results: [{ success, data: { ...measure } }] }.
+      'measure_operations/List': json({ data: [{ name: 'Total Value', description: 'x' }] }),
+      'measure_operations/Get': json({
+        results: [
           {
-            tableName: 'FactPrimary',
-            name: 'Total Value',
-            expression: 'SUM(FactPrimary[ValueMetric])',
-            formatString: '0',
+            success: true,
+            data: {
+              tableName: 'FactPrimary',
+              name: 'Total Value',
+              expression: 'SUM(FactPrimary[ValueMetric])',
+              formatString: '0',
+            },
           },
         ],
       }),
