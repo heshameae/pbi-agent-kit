@@ -28,6 +28,19 @@ export const MS_TOOLS = {
 export interface ModelClient {
   callTool(name: string, args: Record<string, unknown>): Promise<McpToolResult>;
   reset?(): void;
+  // Registers a callback fired when the underlying subprocess/transport drops.
+  onReset?(cb: () => void): void;
+}
+
+// A dropped bridge subprocess / closed transport / freshly re-spawned but
+// not-yet-connected MS MCP all surface as one of these. The "connect to a
+// server first" / "no last used connection" forms come from the MS MCP itself
+// when the subprocess re-spawned and lost its model connection.
+export function isConnectionDrop(err: unknown): boolean {
+  const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  return /closed|transport|epipe|econn|not connected|disconnect|reachab|broken pipe|spawn|connect to a server first|no last used connection|no connectionname/.test(
+    msg,
+  );
 }
 
 export type ConnectionMode = 'live' | 'folder';
@@ -151,9 +164,16 @@ function bool(obj: Record<string, unknown>, keys: string[], fallback = false): b
 export class ModelDriver {
   readonly #client: ModelClient;
   #connection: ConnectionInfo | null = null;
+  #lastOpts: { folderPath?: string } | undefined;
+  #connectPending: Promise<ConnectionInfo> | null = null;
 
   constructor(client: ModelClient) {
     this.#client = client;
+    // When the bridged subprocess/transport drops, the client resets — drop our
+    // cached connection so the next call re-discovers and re-Connects.
+    this.#client.onReset?.(() => {
+      this.#connection = null;
+    });
   }
 
   get connection(): ConnectionInfo | null {
@@ -182,10 +202,19 @@ export class ModelDriver {
     return collectConnectionStrings(payload);
   }
 
-  // Auto-detect connection. Caches the result; call reset-on-driver to redo.
+  // Auto-detect connection. Cached + serialized (concurrent callers share one
+  // connect). The cache is invalidated on a transport drop (onReset) or by #live.
   async ensureConnection(opts?: { folderPath?: string }): Promise<ConnectionInfo> {
+    if (opts) this.#lastOpts = opts;
     if (this.#connection) return this.#connection;
+    if (this.#connectPending) return this.#connectPending;
+    this.#connectPending = this.#connect(this.#lastOpts).finally(() => {
+      this.#connectPending = null;
+    });
+    return this.#connectPending;
+  }
 
+  async #connect(opts?: { folderPath?: string }): Promise<ConnectionInfo> {
     const pinned = process.env.PBI_MODELING_MCP_CONNECTION_STRING?.trim();
     if (pinned) {
       await this.call(MS_TOOLS.connection, 'Connect', { connectionString: pinned });
@@ -228,16 +257,38 @@ export class ModelDriver {
     );
   }
 
+  // Run an operation against a connected model, retrying once if the connection
+  // drops (or the subprocess re-spawned unconnected): invalidate the cache,
+  // reset the subprocess, re-Connect, and re-run.
+  async #live<T>(fn: () => Promise<T>): Promise<T> {
+    await this.ensureConnection();
+    try {
+      return await fn();
+    } catch (err) {
+      if (!isConnectionDrop(err)) throw err;
+      this.#connection = null;
+      this.#client.reset?.();
+      await this.ensureConnection();
+      return await fn();
+    }
+  }
+
   // --- reads -------------------------------------------------------------
 
   async listTablesRaw(): Promise<Record<string, unknown>[]> {
-    return pickArray(await this.call(MS_TOOLS.tables, 'List')).filter(isRecord);
+    return this.#live(async () =>
+      pickArray(await this.call(MS_TOOLS.tables, 'List')).filter(isRecord),
+    );
   }
   async listColumnsRaw(): Promise<Record<string, unknown>[]> {
-    return pickArray(await this.call(MS_TOOLS.columns, 'List')).filter(isRecord);
+    return this.#live(async () =>
+      pickArray(await this.call(MS_TOOLS.columns, 'List')).filter(isRecord),
+    );
   }
   async listMeasuresRaw(): Promise<Record<string, unknown>[]> {
-    return pickArray(await this.call(MS_TOOLS.measures, 'List')).filter(isRecord);
+    return this.#live(async () =>
+      pickArray(await this.call(MS_TOOLS.measures, 'List')).filter(isRecord),
+    );
   }
 
   // The live measure List returns only { name, description } — no table,
@@ -248,9 +299,9 @@ export class ModelDriver {
       .map((m) => str(m, 'name', 'measureName'))
       .filter((n): n is string => typeof n === 'string' && n.length > 0);
     if (names.length === 0) return [];
-    const got = await this.call(MS_TOOLS.measures, 'Get', {
-      references: names.map((name) => ({ name })),
-    });
+    const got = await this.#live(() =>
+      this.call(MS_TOOLS.measures, 'Get', { references: names.map((name) => ({ name })) }),
+    );
     // Batched Get returns { results: [{ success, data: { ...measure } }, ...] }.
     // pickArray grabs `results`; unwrap each item's `data`. Tolerate a flat shape.
     return pickArray(got)
@@ -258,10 +309,12 @@ export class ModelDriver {
       .filter(isRecord);
   }
   async listRelationshipsRaw(): Promise<Record<string, unknown>[]> {
-    return pickArray(await this.call(MS_TOOLS.relationships, 'List')).filter(isRecord);
+    return this.#live(async () =>
+      pickArray(await this.call(MS_TOOLS.relationships, 'List')).filter(isRecord),
+    );
   }
   async daxQuery(query: string): Promise<unknown> {
-    return this.call(MS_TOOLS.dax, 'Execute', { query });
+    return this.#live(() => this.call(MS_TOOLS.dax, 'Execute', { query }));
   }
 
   // Assemble the live model into pbi-core's TMDLModel so existing validators reuse.
@@ -378,22 +431,21 @@ export class ModelDriver {
   // --- writes ------------------------------------------------------------
 
   async createMeasure(def: MeasureWrite): Promise<unknown> {
-    return this.call(MS_TOOLS.measures, 'Create', { definitions: [def] });
+    return this.#live(() => this.call(MS_TOOLS.measures, 'Create', { definitions: [def] }));
   }
   async updateMeasure(def: MeasureWrite): Promise<unknown> {
-    return this.call(MS_TOOLS.measures, 'Update', { definitions: [def] });
+    return this.#live(() => this.call(MS_TOOLS.measures, 'Update', { definitions: [def] }));
   }
   async deleteMeasure(ref: MeasureRef): Promise<unknown> {
-    return this.call(MS_TOOLS.measures, 'Delete', {
-      references: [ref],
-      shouldCascadeDelete: false,
-    });
+    return this.#live(() =>
+      this.call(MS_TOOLS.measures, 'Delete', { references: [ref], shouldCascadeDelete: false }),
+    );
   }
 
   // Folder-mode persistence. Live mode persists via the user's Ctrl+S in Desktop.
   async exportToTmdlFolder(folderPath?: string): Promise<unknown> {
     const params = folderPath ? { path: folderPath } : undefined;
-    return this.call(MS_TOOLS.database, 'ExportToTmdlFolder', params);
+    return this.#live(() => this.call(MS_TOOLS.database, 'ExportToTmdlFolder', params));
   }
 }
 

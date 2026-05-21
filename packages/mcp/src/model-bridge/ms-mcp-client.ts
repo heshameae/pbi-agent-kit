@@ -119,12 +119,19 @@ export const defaultClientFactory: ClientFactory = async (config, onClose) => {
 export class MsMcpClient {
   #client: McpClientLike | null = null;
   #pending: Promise<McpClientLike> | null = null;
+  #onReset?: () => void;
   readonly #factory: ClientFactory;
   readonly #config: MsMcpSpawnConfig;
 
   constructor(factory: ClientFactory, config: MsMcpSpawnConfig) {
     this.#factory = factory;
     this.#config = config;
+  }
+
+  // Register a callback fired whenever the connection is reset (transport drop
+  // or explicit reset) — lets the driver invalidate its cached connection.
+  onReset(cb: () => void): void {
+    this.#onReset = cb;
   }
 
   // Connect on first use; reuse the live client; dedupe concurrent connects.
@@ -156,6 +163,7 @@ export class MsMcpClient {
     this.#client = null;
     this.#pending = null;
     if (client) void client.close().catch(() => undefined);
+    this.#onReset?.();
   }
 }
 

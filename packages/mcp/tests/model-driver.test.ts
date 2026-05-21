@@ -174,6 +174,9 @@ describe('ModelDriver.ensureConnection', () => {
 describe('ModelDriver.getModelSnapshot', () => {
   it('assembles a TMDLModel from live List output (defensive field names)', async () => {
     const client = makeClient({
+      'connection_operations/ListLocalInstances': json({
+        data: [{ connectionString: 'Data Source=localhost:1;' }],
+      }),
       'table_operations/List': json({ data: [{ name: 'FactPrimary' }, { name: 'DimShared' }] }),
       // Live column List is grouped per table with a nested `columns` array.
       'column_operations/List': json({
@@ -225,8 +228,17 @@ describe('ModelDriver.getModelSnapshot', () => {
 });
 
 describe('ModelDriver writes', () => {
+  const liveClient = () =>
+    makeClient({
+      'connection_operations/ListLocalInstances': json({
+        data: [{ connectionString: 'Data Source=localhost:1;' }],
+      }),
+    });
+  const opCall = (calls: RecordedCall[], op: string) =>
+    calls.find((c) => (c.args as { request?: { operation?: string } }).request?.operation === op);
+
   it('createMeasure sends a Create with one definition', async () => {
-    const client = makeClient();
+    const client = liveClient();
     const driver = new ModelDriver(client);
     await driver.createMeasure({
       tableName: 'FactPrimary',
@@ -234,29 +246,23 @@ describe('ModelDriver writes', () => {
       expression: '...',
       formatString: '0.0%',
     });
-    expect(client.calls[0]).toEqual({
-      name: 'measure_operations',
-      args: {
-        request: {
-          operation: 'Create',
-          definitions: [
-            {
-              tableName: 'FactPrimary',
-              name: 'Value YoY',
-              expression: '...',
-              formatString: '0.0%',
-            },
-          ],
-        },
+    const create = opCall(client.calls, 'Create');
+    expect(create?.name).toBe('measure_operations');
+    expect(create?.args).toEqual({
+      request: {
+        operation: 'Create',
+        definitions: [
+          { tableName: 'FactPrimary', name: 'Value YoY', expression: '...', formatString: '0.0%' },
+        ],
       },
     });
   });
 
   it('deleteMeasure sends references + shouldCascadeDelete', async () => {
-    const client = makeClient();
+    const client = liveClient();
     const driver = new ModelDriver(client);
     await driver.deleteMeasure({ tableName: 'FactPrimary', name: 'Value YoY' });
-    expect(client.calls[0]?.args).toEqual({
+    expect(opCall(client.calls, 'Delete')?.args).toEqual({
       request: {
         operation: 'Delete',
         references: [{ tableName: 'FactPrimary', name: 'Value YoY' }],
@@ -277,5 +283,61 @@ describe('ModelDriver.call error handling', () => {
     process.env.PBI_MODELING_MCP_CONNECTION_STRING = 'Data Source=localhost:9999;';
     const driver = new ModelDriver(client);
     await expect(driver.ensureConnection()).rejects.toThrow(/Data Source=\*\*\*/);
+  });
+});
+
+describe('ModelDriver reconnect resilience', () => {
+  it('reconnects and retries once when an operation drops the connection', async () => {
+    let createAttempts = 0;
+    let connects = 0;
+    const client: ModelClient = {
+      reset() {},
+      async callTool(name, args) {
+        const op = (args as { request?: { operation?: string } }).request?.operation ?? '';
+        if (name === 'connection_operations' && op === 'ListLocalInstances') {
+          return {
+            structuredContent: { data: [{ connectionString: 'Data Source=localhost:1;' }] },
+          };
+        }
+        if (name === 'connection_operations' && op === 'Connect') {
+          connects += 1;
+          return { structuredContent: {} };
+        }
+        if (name === 'measure_operations' && op === 'Create') {
+          createAttempts += 1;
+          if (createAttempts === 1) throw new Error('transport closed');
+          return { structuredContent: { success: true } };
+        }
+        return { structuredContent: {} };
+      },
+    };
+    const driver = new ModelDriver(client);
+    await driver.ensureConnection();
+    await driver.createMeasure({ tableName: 'T', name: 'M', expression: '1', formatString: '0' });
+    expect(createAttempts).toBe(2); // failed once, retried
+    expect(connects).toBeGreaterThanOrEqual(2); // re-Connected after the drop
+  });
+
+  it('invalidates the cached connection when the client resets (onReset)', async () => {
+    let resetCb: (() => void) | undefined;
+    const client: ModelClient = {
+      onReset(cb) {
+        resetCb = cb;
+      },
+      async callTool(_name, args) {
+        const op = (args as { request?: { operation?: string } }).request?.operation ?? '';
+        if (op === 'ListLocalInstances') {
+          return {
+            structuredContent: { data: [{ connectionString: 'Data Source=localhost:1;' }] },
+          };
+        }
+        return { structuredContent: {} };
+      },
+    };
+    const driver = new ModelDriver(client);
+    await driver.ensureConnection();
+    expect(driver.connection).not.toBeNull();
+    resetCb?.(); // simulate a transport drop
+    expect(driver.connection).toBeNull();
   });
 });
