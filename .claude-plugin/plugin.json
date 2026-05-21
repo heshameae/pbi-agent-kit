@@ -6,7 +6,6 @@
   "license": "MIT",
   "skills": "./skills/",
   "mcpServers": "./.mcp.json",
-  "hooks": "./hooks/hooks.json",
   "agents": [
     "./agents/pbi-report-validator.md",
     "./agents/pbi-bind-doctor.md",
