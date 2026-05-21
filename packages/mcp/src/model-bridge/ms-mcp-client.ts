@@ -11,10 +11,10 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 
-// Pinned default. The reference repo left this unpinned; we pin and allow an
-// env override so a known-good version is reproducible. Beta is the only
-// channel Microsoft publishes today.
-export const DEFAULT_MS_MCP_VERSION = '0.5.0-beta.6';
+// Pinned default for the native-Windows npx fallback. The Mac→Parallels bridge
+// instead runs the vendored win32-x64 exe (see scripts/setup-pbi-mcp.sh) — that
+// is the proven path. beta.2 is the reference-proven version; beta.6 is latest.
+export const DEFAULT_MS_MCP_VERSION = '0.5.0-beta.2';
 
 export interface MsMcpSpawnConfig {
   readonly command: string;
