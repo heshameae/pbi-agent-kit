@@ -175,10 +175,11 @@ describe('ModelDriver.getModelSnapshot', () => {
   it('assembles a TMDLModel from live List output (defensive field names)', async () => {
     const client = makeClient({
       'table_operations/List': json({ data: [{ name: 'FactPrimary' }, { name: 'DimShared' }] }),
+      // Live column List is grouped per table with a nested `columns` array.
       'column_operations/List': json({
         data: [
-          { tableName: 'FactPrimary', name: 'ValueMetric', dataType: 'double' },
-          { tableName: 'DimShared', name: 'SharedAxis', dataType: 'string', isKey: true },
+          { tableName: 'FactPrimary', columns: [{ name: 'ValueMetric', dataType: 'double' }] },
+          { tableName: 'DimShared', columns: [{ name: 'SharedAxis', dataType: 'string' }] },
         ],
       }),
       // Live List is names-only; getModelSnapshot enriches via a batched Get

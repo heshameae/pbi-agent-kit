@@ -274,10 +274,9 @@ export class ModelDriver {
     ]);
 
     const columnsByTable = new Map<string, TMDLColumn[]>();
-    for (const c of rawColumns) {
-      const table = str(c, 'tableName', 'table') ?? '';
+    const pushColumn = (table: string, c: Record<string, unknown>): void => {
       const name = str(c, 'name', 'columnName') ?? '';
-      if (!table || !name) continue;
+      if (!table || !name) return;
       const col: TMDLColumn = {
         table,
         name,
@@ -291,6 +290,17 @@ export class ModelDriver {
       const list = columnsByTable.get(table) ?? [];
       list.push(col);
       columnsByTable.set(table, list);
+    };
+    // The live column List is grouped per table: { tableName, columns: [{name, dataType}] }.
+    // Folder/flat sources hand back one column per entry. Handle both.
+    for (const entry of rawColumns) {
+      const table = str(entry, 'tableName', 'table') ?? '';
+      const nested = (entry as { columns?: unknown }).columns;
+      if (Array.isArray(nested)) {
+        for (const c of nested) if (isRecord(c)) pushColumn(table, c);
+      } else {
+        pushColumn(table, entry);
+      }
     }
 
     const measuresByTable = new Map<string, TMDLMeasure[]>();
