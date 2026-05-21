@@ -20,24 +20,33 @@ function mockClient(): McpClientLike & { closed: number } {
 }
 
 describe('resolveSpawnConfig', () => {
-  it('defaults to npx with the pinned version', () => {
-    const cfg = resolveSpawnConfig({});
+  it('defaults to npx with the pinned version on Windows', () => {
+    const cfg = resolveSpawnConfig({}, 'win32');
     expect(cfg.command).toBe('npx');
     expect(cfg.args).toContain(`@microsoft/powerbi-modeling-mcp@${DEFAULT_MS_MCP_VERSION}`);
     expect(cfg.args).toContain('--start');
   });
 
-  it('honors an explicit command + JSON args override (the Parallels bridge)', () => {
-    const cfg = resolveSpawnConfig({
-      PBI_MODELING_MCP_COMMAND: 'bash',
-      PBI_MODELING_MCP_ARGS: '["scripts/pbi-mcp-bridge.sh"]',
-    });
+  it('defaults to the Parallels bridge on macOS (no config needed)', () => {
+    const cfg = resolveSpawnConfig({ CLAUDE_PLUGIN_ROOT: '/plug' }, 'darwin');
+    expect(cfg.command).toBe('bash');
+    expect(cfg.args).toEqual(['/plug/scripts/pbi-mcp-bridge.sh']);
+  });
+
+  it('honors an explicit command + JSON args override (wins on any platform)', () => {
+    const cfg = resolveSpawnConfig(
+      {
+        PBI_MODELING_MCP_COMMAND: 'bash',
+        PBI_MODELING_MCP_ARGS: '["scripts/pbi-mcp-bridge.sh"]',
+      },
+      'darwin',
+    );
     expect(cfg.command).toBe('bash');
     expect(cfg.args).toEqual(['scripts/pbi-mcp-bridge.sh']);
   });
 
-  it('honors a version override', () => {
-    const cfg = resolveSpawnConfig({ PBI_MODELING_MCP_VERSION: '9.9.9' });
+  it('honors a version override on Windows', () => {
+    const cfg = resolveSpawnConfig({ PBI_MODELING_MCP_VERSION: '9.9.9' }, 'win32');
     expect(cfg.args).toContain('@microsoft/powerbi-modeling-mcp@9.9.9');
   });
 

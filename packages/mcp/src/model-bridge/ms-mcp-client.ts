@@ -8,6 +8,8 @@
 // Connection is a lazy singleton: spawn + connect on first use, reuse across
 // calls, and re-spawn if the transport drops (Desktop closed, pipe broken).
 
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 
@@ -51,11 +53,26 @@ function envStringRecord(env: NodeJS.ProcessEnv): Record<string, string> {
   return out;
 }
 
+// Absolute path to the Parallels bridge script. Prefer CLAUDE_PLUGIN_ROOT (set by
+// Claude Code when running as a plugin); fall back to a path relative to this
+// module (packages/mcp/dist/model-bridge/ms-mcp-client.js → plugin root).
+function defaultBridgePath(env: NodeJS.ProcessEnv): string {
+  if (env.CLAUDE_PLUGIN_ROOT?.trim()) {
+    return path.join(env.CLAUDE_PLUGIN_ROOT, 'scripts', 'pbi-mcp-bridge.sh');
+  }
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  return path.resolve(here, '../../../../scripts/pbi-mcp-bridge.sh');
+}
+
 // Resolve how to spawn the Microsoft MCP:
-//   - PBI_MODELING_MCP_COMMAND / _ARGS (JSON array): explicit override, e.g. the
-//     Parallels bridge ("bash", ["scripts/pbi-mcp-bridge.sh"]) — see W1 bridge script.
-//   - else: npx -y @microsoft/powerbi-modeling-mcp@<version> --start
-export function resolveSpawnConfig(env: NodeJS.ProcessEnv = process.env): MsMcpSpawnConfig {
+//   1. PBI_MODELING_MCP_COMMAND / _ARGS (JSON array): explicit override — always wins.
+//   2. macOS: the MS MCP is a Windows-only exe, so go through the Parallels bridge
+//      automatically (no config needed). Live calls need it; folder reads don't use it.
+//   3. Windows/native: npx -y @microsoft/powerbi-modeling-mcp@<version> --start
+export function resolveSpawnConfig(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): MsMcpSpawnConfig {
   const command = env.PBI_MODELING_MCP_COMMAND;
   if (command && command.trim().length > 0) {
     const rawArgs = env.PBI_MODELING_MCP_ARGS;
@@ -68,6 +85,9 @@ export function resolveSpawnConfig(env: NodeJS.ProcessEnv = process.env): MsMcpS
       args = parsed as string[];
     }
     return { command, args, env: envStringRecord(env) };
+  }
+  if (platform === 'darwin') {
+    return { command: 'bash', args: [defaultBridgePath(env)], env: envStringRecord(env) };
   }
   const version = env.PBI_MODELING_MCP_VERSION?.trim() || DEFAULT_MS_MCP_VERSION;
   return {
