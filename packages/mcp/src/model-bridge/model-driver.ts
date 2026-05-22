@@ -43,6 +43,16 @@ export function isConnectionDrop(err: unknown): boolean {
   );
 }
 
+// Deterministic failures from the MS MCP validating the request itself (bad
+// args, already-exists, not-found). Retrying these just burns another request
+// timeout for the same guaranteed failure — never retry them.
+export function isNonRetryable(err: unknown): boolean {
+  const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  return /missing required parameter|invalid (argument|parameter|operation)|already exists|not found|bad request|validation/.test(
+    msg,
+  );
+}
+
 export type ConnectionMode = 'live' | 'folder';
 
 export interface ConnectionInfo {
@@ -166,13 +176,22 @@ export class ModelDriver {
   #connection: ConnectionInfo | null = null;
   #lastOpts: { folderPath?: string } | undefined;
   #connectPending: Promise<ConnectionInfo> | null = null;
+  // Short-lived snapshot cache: reused across reads/gates within one batch,
+  // invalidated on every write and on any connection reset so the DAX gate
+  // always sees prior committed writes. The TTL bounds staleness from edits
+  // made directly in Desktop between calls.
+  #snapshot: { model: TMDLModel; at: number } | null = null;
+  #snapshotPending: Promise<TMDLModel> | null = null;
+  static readonly #SNAPSHOT_TTL_MS = 5_000;
 
   constructor(client: ModelClient) {
     this.#client = client;
     // When the bridged subprocess/transport drops, the client resets — drop our
-    // cached connection so the next call re-discovers and re-Connects.
+    // cached connection (and snapshot) so the next call re-discovers and re-Connects.
     this.#client.onReset?.(() => {
       this.#connection = null;
+      this.#snapshot = null;
+      this.#snapshotPending = null;
     });
   }
 
@@ -222,23 +241,24 @@ export class ModelDriver {
       return this.#connection;
     }
 
-    // Explicit folder request: connect the MS MCP to the folder (for writes)
-    // and skip live discovery entirely. Folder-mode READS use pbi-core's pure
-    // parser (see snapshotModel in the server) and never reach here.
-    if (opts?.folderPath) {
-      await this.call(MS_TOOLS.connection, 'ConnectFolder', { path: opts.folderPath });
-      this.#connection = { mode: 'folder', folderPath: opts.folderPath };
-      return this.#connection;
-    }
-
-    let instances: string[];
+    // LIVE-FIRST: a running Desktop instance always wins, even if the caller
+    // passed a folderPath. Folder/ConnectFolder is the OFFLINE fallback only
+    // (no live instance). Rationale: Desktop does not watch TMDL files, so a
+    // folder write never reaches an already-open Desktop; and discovering live
+    // first means reads/edits bind to Desktop's in-memory model (what the user
+    // sees), instead of disk where unsaved Desktop changes are invisible.
+    let instances: string[] = [];
+    let discoveryError: string | undefined;
     try {
       instances = await this.listLocalInstances();
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      throw new Error(
-        `Could not reach the Power BI modeling MCP to discover a live Desktop instance. Live modeling requires Windows with Power BI Desktop open. (${msg})`,
-      );
+      // If we have a folderPath we can still fall back to offline; otherwise surface it.
+      discoveryError = err instanceof Error ? err.message : String(err);
+      if (!opts?.folderPath) {
+        throw new Error(
+          `Could not reach the Power BI modeling MCP to discover a live Desktop instance. Live modeling requires Windows with Power BI Desktop open. (${discoveryError})`,
+        );
+      }
     }
     if (instances.length === 1) {
       const connectionString = instances[0] as string;
@@ -250,6 +270,15 @@ export class ModelDriver {
       throw new Error(
         `Found ${instances.length} open Power BI Desktop instances. Set PBI_MODELING_MCP_CONNECTION_STRING to choose one.`,
       );
+    }
+
+    // Zero live instances → offline folder fallback (if a folderPath is given).
+    // NOTE: the MS MCP's ConnectFolder param key is `folderPath`, NOT `path`.
+    // Sending `path` yields "Missing required parameters needed for ConnectFolder".
+    if (opts?.folderPath) {
+      await this.call(MS_TOOLS.connection, 'ConnectFolder', { folderPath: opts.folderPath });
+      this.#connection = { mode: 'folder', folderPath: opts.folderPath };
+      return this.#connection;
     }
 
     throw new Error(
@@ -265,11 +294,24 @@ export class ModelDriver {
     try {
       return await fn();
     } catch (err) {
-      if (!isConnectionDrop(err)) throw err;
+      // Never retry a deterministic validation failure — it will just fail again
+      // after burning another request timeout.
+      if (isNonRetryable(err) || !isConnectionDrop(err)) throw err;
       this.#connection = null;
+      this.#snapshot = null;
+      this.#snapshotPending = null;
       this.#client.reset?.();
-      await this.ensureConnection();
-      return await fn();
+      try {
+        await this.ensureConnection();
+        return await fn();
+      } catch (retryErr) {
+        const m = retryErr instanceof Error ? retryErr.message : String(retryErr);
+        throw new Error(
+          redactConnectionSecrets(
+            `Model bridge connection dropped and could not be re-established after one retry. Check that Power BI Desktop is open with the .pbip loaded (live mode), or that the folder path is valid (offline mode). Last error: ${m}`,
+          ),
+        );
+      }
     }
   }
 
@@ -428,23 +470,60 @@ export class ModelDriver {
     return { modelPath, tables, relationships };
   }
 
+  // Snapshot reused across reads and the per-write DAX gate within one batch.
+  // Dedupes concurrent callers and serves a fresh-enough result; otherwise
+  // re-reads. Invalidated by every write (below) and by reset(), so the gate
+  // always sees prior committed writes.
+  async getCachedSnapshot(): Promise<TMDLModel> {
+    const now = Date.now();
+    if (this.#snapshot && now - this.#snapshot.at < ModelDriver.#SNAPSHOT_TTL_MS) {
+      return this.#snapshot.model;
+    }
+    if (this.#snapshotPending) return this.#snapshotPending;
+    this.#snapshotPending = this.getModelSnapshot()
+      .then((model) => {
+        this.#snapshot = { model, at: Date.now() };
+        return model;
+      })
+      .finally(() => {
+        this.#snapshotPending = null;
+      });
+    return this.#snapshotPending;
+  }
+
+  #invalidateSnapshot(): void {
+    this.#snapshot = null;
+    this.#snapshotPending = null;
+  }
+
   // --- writes ------------------------------------------------------------
 
   async createMeasure(def: MeasureWrite): Promise<unknown> {
-    return this.#live(() => this.call(MS_TOOLS.measures, 'Create', { definitions: [def] }));
+    const r = await this.#live(() =>
+      this.call(MS_TOOLS.measures, 'Create', { definitions: [def] }),
+    );
+    this.#invalidateSnapshot();
+    return r;
   }
   async updateMeasure(def: MeasureWrite): Promise<unknown> {
-    return this.#live(() => this.call(MS_TOOLS.measures, 'Update', { definitions: [def] }));
+    const r = await this.#live(() =>
+      this.call(MS_TOOLS.measures, 'Update', { definitions: [def] }),
+    );
+    this.#invalidateSnapshot();
+    return r;
   }
   async deleteMeasure(ref: MeasureRef): Promise<unknown> {
-    return this.#live(() =>
+    const r = await this.#live(() =>
       this.call(MS_TOOLS.measures, 'Delete', { references: [ref], shouldCascadeDelete: false }),
     );
+    this.#invalidateSnapshot();
+    return r;
   }
 
   // Folder-mode persistence. Live mode persists via the user's Ctrl+S in Desktop.
+  // NOTE: the MS MCP's param key is `tmdlFolderPath`, NOT `path`.
   async exportToTmdlFolder(folderPath?: string): Promise<unknown> {
-    const params = folderPath ? { path: folderPath } : undefined;
+    const params = folderPath ? { tmdlFolderPath: folderPath } : undefined;
     return this.#live(() => this.call(MS_TOOLS.database, 'ExportToTmdlFolder', params));
   }
 }

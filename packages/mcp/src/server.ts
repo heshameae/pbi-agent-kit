@@ -225,7 +225,7 @@ tool(
 tool(
   'pbi_report_info',
   'Get Report Info',
-  'Read metadata summary: page count, theme, per-page visual counts.',
+  'Read metadata summary: page count, theme, per-page visual counts. Reads from DISK — unsaved Power BI Desktop edits (new/changed pages or visuals) appear only after the user presses Ctrl+S.',
   { path: PATH_FIELD },
   { readOnlyHint: true, idempotentHint: true },
   (input) => reportInfo(resolvePath(input.path)),
@@ -330,7 +330,7 @@ const MODEL_FOLDER_FIELD = z
   .string()
   .optional()
   .describe(
-    'Folder-mode fallback: a .SemanticModel/definition (or .pbip/containing dir) used only when no live Power BI Desktop instance is open. Omit when Desktop is running.',
+    'OFFLINE fallback only. Leave UNSET whenever Power BI Desktop is open — writes auto-target the live Desktop instance and appear immediately (the user presses Ctrl+S to persist). Set it only for headless/offline editing of a .SemanticModel/definition (or .pbip/containing dir) when no Desktop is running; folder writes land on disk and an already-open Desktop will not see them until the .pbip is reopened.',
   );
 
 function resolveFolderOpt(folderPath?: string): { folderPath: string } | undefined {
@@ -349,7 +349,26 @@ async function snapshotModel(
   }
   const drv = getModelDriver();
   const conn = await drv.ensureConnection();
-  return { mode: conn.mode, model: await drv.getModelSnapshot() };
+  return { mode: conn.mode, model: await drv.getCachedSnapshot() };
+}
+
+// Snapshot for the write gate. Connects FIRST (live-first), then gates against
+// the model the write will actually target: the live in-memory model in live
+// mode, or the resolved folder offline. This keeps the DAX gate consistent with
+// where the write lands — important now that live-first means a write can go
+// live even when the caller passed a folderPath (e.g. Desktop is open).
+async function snapshotForWrite(
+  folderPath?: string,
+): Promise<{ mode: 'live' | 'folder'; model: TMDLModel }> {
+  const drv = getModelDriver();
+  const conn = await drv.ensureConnection(resolveFolderOpt(folderPath));
+  if (conn.mode === 'folder') {
+    return {
+      mode: 'folder',
+      model: parseTMDLFolder(resolveSemanticModelDefinition(folderPath as string)),
+    };
+  }
+  return { mode: 'live', model: await drv.getCachedSnapshot() };
 }
 
 tool(
@@ -439,7 +458,7 @@ tool(
   },
   { destructiveHint: false, idempotentHint: false },
   async (input) => {
-    const { mode, model } = await snapshotModel(input.folderPath);
+    const { mode, model } = await snapshotForWrite(input.folderPath);
     const check = daxReferenceCheck(input.expression, model, { hostTable: input.tableName });
     if (!check.valid) {
       const err = new Error(
@@ -488,7 +507,7 @@ tool(
   },
   { destructiveHint: false, idempotentHint: true },
   async (input) => {
-    const { mode, model } = await snapshotModel(input.folderPath);
+    const { mode, model } = await snapshotForWrite(input.folderPath);
     const check = daxReferenceCheck(input.expression, model, { hostTable: input.tableName });
     if (!check.valid) {
       const err = new Error(
@@ -620,7 +639,7 @@ tool(
 tool(
   'pbi_page_list',
   'List Pages',
-  'List all pages in the report, sorted by pages.json:pageOrder.',
+  'List all pages in the report, sorted by pages.json:pageOrder. Reads from DISK — a page just added in Power BI Desktop appears only after the user presses Ctrl+S.',
   { path: PATH_FIELD },
   { readOnlyHint: true, idempotentHint: true },
   (input) => pageList(resolvePath(input.path)),
@@ -629,7 +648,7 @@ tool(
 tool(
   'pbi_page_get',
   'Get Page Details',
-  'Return one page including filterConfig, visual count, visibility.',
+  'Return one page including filterConfig, visual count, visibility. Reads from DISK — unsaved Power BI Desktop edits appear only after Ctrl+S.',
   { path: PATH_FIELD, name: z.string().describe('Page name/id.') },
   { readOnlyHint: true, idempotentHint: true },
   (input) => pageGet(resolvePath(input.path), input.name),
@@ -709,7 +728,7 @@ const VISUAL_TYPE_FIELD = z
 tool(
   'pbi_visual_list',
   'List Visuals',
-  'List visuals on a page (excluding the visualGroup container type by default).',
+  'List visuals on a page (excluding the visualGroup container type by default). Reads from DISK — visuals just added in Power BI Desktop appear only after Ctrl+S.',
   { path: PATH_FIELD, page: PAGE_FIELD },
   { readOnlyHint: true, idempotentHint: true },
   (input) => visualList(resolvePath(input.path), input.page),
@@ -718,7 +737,7 @@ tool(
 tool(
   'pbi_visual_get',
   'Get Visual Details',
-  'Return visual details including current data bindings.',
+  'Return visual details including current data bindings. Reads from DISK — unsaved Power BI Desktop edits appear only after Ctrl+S.',
   { path: PATH_FIELD, page: PAGE_FIELD, name: VISUAL_FIELD },
   { readOnlyHint: true, idempotentHint: true },
   (input) => visualGet(resolvePath(input.path), input.page, input.name),

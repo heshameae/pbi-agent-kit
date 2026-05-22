@@ -36,6 +36,7 @@ DAX authoring rules, performance patterns, and time-intelligence guidance for wr
 
 ## Critical Rules
 
+- **Connect LIVE by default** — call measure tools (`pbi_measure_create`/`_update`/`_delete`) WITHOUT `folderPath` first. With Power BI Desktop open this writes to the live model and the measure appears immediately (the user presses Ctrl+S to persist). Pass `folderPath` (a `.SemanticModel/definition` folder) only when there is no live Desktop instance — offline/CI — or when a tool's error explicitly says no live instance was found. If a write fails with a ConnectFolder / "needs a live instance" error while Desktop is open, retry once WITHOUT `folderPath`; if it still fails, report the exact error and stop — never silently fall back to hand-writing TMDL.
 - **DIVIDE() over `/`** — except inside iterators where the denominator is guaranteed non-zero (use `/` there for SE-native evaluation, see DAX018)
 - **Never IFERROR** — wraps entire expression in FE callback; use explicit `IF(ISERROR(...), ...)` or restructure
 - **KEEPFILTERS in CALCULATE** — default CALCULATE overwrites filter context; use KEEPFILTERS when intersection is intended

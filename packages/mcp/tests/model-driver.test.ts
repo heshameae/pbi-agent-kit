@@ -137,20 +137,47 @@ describe('ModelDriver.ensureConnection', () => {
     await expect(driver.ensureConnection()).rejects.toThrow(/found 2 open/i);
   });
 
-  it('connects folder mode directly when a folderPath is given (no live probe)', async () => {
-    const client = makeClient();
+  it('falls back to ConnectFolder when a folderPath is given and no live instance is open', async () => {
+    const client = makeClient({ 'connection_operations/ListLocalInstances': json({ data: [] }) });
     const driver = new ModelDriver(client);
 
     const info = await driver.ensureConnection({ folderPath: '/x/Model.SemanticModel/definition' });
 
     expect(info.mode).toBe('folder');
     expect(info.folderPath).toBe('/x/Model.SemanticModel/definition');
-    // folderPath short-circuits: ConnectFolder is called, ListLocalInstances is NOT.
+    // Live-first: probe for a live instance, then fall back to folder when none.
     const ops = client.calls.map(
       (c) => (c.args as { request: { operation: string } }).request.operation,
     );
-    expect(ops).toEqual(['ConnectFolder']);
-    expect(ops).not.toContain('ListLocalInstances');
+    expect(ops).toEqual(['ListLocalInstances', 'ConnectFolder']);
+    // ConnectFolder must use the MS-MCP param key `folderPath`, NOT `path`
+    // (sending `path` is what produced "Missing required parameters").
+    const connectFolder = client.calls.find(
+      (c) => (c.args as { request: { operation: string } }).request.operation === 'ConnectFolder',
+    );
+    expect((connectFolder?.args as { request: Record<string, unknown> }).request).toEqual({
+      operation: 'ConnectFolder',
+      folderPath: '/x/Model.SemanticModel/definition',
+    });
+  });
+
+  it('prefers a live instance over a supplied folderPath (live-first)', async () => {
+    const client = makeClient({
+      'connection_operations/ListLocalInstances': json({
+        data: [{ connectionString: 'Data Source=localhost:59186;' }],
+      }),
+    });
+    const driver = new ModelDriver(client);
+
+    // Even though a folderPath is supplied, an open Desktop instance wins.
+    const info = await driver.ensureConnection({ folderPath: '/x/Model.SemanticModel/definition' });
+
+    expect(info.mode).toBe('live');
+    const ops = client.calls.map(
+      (c) => (c.args as { request: { operation: string } }).request.operation,
+    );
+    expect(ops).toEqual(['ListLocalInstances', 'Connect']);
+    expect(ops).not.toContain('ConnectFolder');
   });
 
   it('throws when no instance and no folderPath', async () => {

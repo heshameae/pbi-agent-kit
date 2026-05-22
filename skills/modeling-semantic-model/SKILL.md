@@ -37,6 +37,7 @@ Ground rules and conventions for authoring Power BI semantic models: TMDL syntax
 
 ## Critical Rules (no exceptions)
 
+- **Connect LIVE by default** — call model tools WITHOUT `folderPath` first. With Power BI Desktop open this edits the live model and changes appear immediately (the user presses Ctrl+S to persist). Pass `folderPath` (a `.SemanticModel/definition` folder) only when there is no live Desktop instance — offline/CI — or when a tool's error explicitly says no live instance was found. If a write fails with a ConnectFolder / "needs a live instance" error while Desktop is open, retry once WITHOUT `folderPath`; if it still fails, report the exact error and stop — do not silently fall back to hand-editing TMDL.
 - **Tab-only indentation** — spaces trigger `TmdlFormatException`; 1 tab per nesting level
 - **`///` sets Description** — must be immediately above the declaration; no blank line between `///` and the object
 - **`//` comments not supported in TMDL** — use only inside M or DAX blocks

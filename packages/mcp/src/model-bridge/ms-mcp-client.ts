@@ -32,12 +32,22 @@ export interface McpToolResult {
 
 // Minimal surface we need from an MCP client — keeps the bridge mockable.
 export interface McpClientLike {
-  callTool(params: {
-    name: string;
-    arguments?: Record<string, unknown>;
-  }): Promise<McpToolResult>;
+  callTool(
+    params: {
+      name: string;
+      arguments?: Record<string, unknown>;
+    },
+    resultSchema?: unknown,
+    options?: { timeout?: number },
+  ): Promise<McpToolResult>;
   close(): Promise<void>;
 }
+
+// Bound each MS MCP request. The SDK default is 60_000ms; a hung call at that
+// default is the main multiplier behind retry-storm latency. Live reads/writes
+// return well under this; discovery / ConnectFolder a little more. 30s is a
+// fail-fast backstop that still tolerates a cold Parallels-VM spawn.
+export const MS_MCP_CALL_TIMEOUT_MS = 30_000;
 
 // Spawns a client and wires `onClose` to fire when the transport drops.
 export type ClientFactory = (
@@ -153,7 +163,9 @@ export class MsMcpClient {
 
   async callTool(name: string, args: Record<string, unknown>): Promise<McpToolResult> {
     const client = await this.get();
-    return client.callTool({ name, arguments: args });
+    return client.callTool({ name, arguments: args }, undefined, {
+      timeout: MS_MCP_CALL_TIMEOUT_MS,
+    });
   }
 
   // Drop the cached client so the next call re-spawns. Fired by the transport
