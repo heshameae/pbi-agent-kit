@@ -12,7 +12,9 @@
     "./agents/pbi-bulk-operator.md",
     "./agents/pbi-report-reviewer.md",
     "./agents/pbi-designer.md",
-    "./agents/pbi-data-architect.md",
-    "./agents/pbi-model-doctor.md"
+    "./agents/pbi-model-doctor.md",
+    "./agents/data-analyst.md",
+    "./agents/model-builder.md",
+    "./agents/model-reviewer.md"
   ]
 }

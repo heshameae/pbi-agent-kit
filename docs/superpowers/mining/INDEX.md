@@ -3,7 +3,8 @@
 Mined 9 GitHub repos for content relevant to **pbi-mcp-ts** (skills, agents, DAX/time-intelligence, model/report review, hooks, plugin packaging). Workflow: repomix pack (scoped to drop example-data/site noise) → 20 mining agents (4 on the priority repo, 2 each on the rest) → 2 review agents that deduped across sources and produced consolidated adoption decisions.
 
 ## START HERE — actionable build map
-- **[ADOPTION-MAP.md](ADOPTION-MAP.md)** ← **read this first.** Destination-first routing table: per agent / skill / hook / MCP tool / packaging, *what content goes there* + the *exact source repo file path* + local packed XML + action (adopt/adapt/ref) + priority (P0/P1/P2). Opens with a one-screen destination index. ~355 rows, all paths grep-verified.
+- **[../plans/2026-05-20-skill-architecture.md](../plans/2026-05-20-skill-architecture.md)** ← **the skill architecture.** Task-grouped taxonomy: 7 lean SKILL.md skills (each with `references/` + `scripts/`), folder trees, agent→skill wiring, migration from the 16 existing skills, build sequencing.
+- **[ADOPTION-MAP.md](ADOPTION-MAP.md)** ← **the routing table** (now grouped by **skill → `references/<file>.md`**): for each reference file, the exact source repo path + packed XML + action (adopt/adapt/ref) + priority (P0/P1/P2). One-screen destination index up top; 208 grep-verified paths. (`ADOPTION-MAP.flat-backup.md` keeps the prior flat-by-topic version.)
 
 ## Background — consolidated decisions (the "why" behind the map)
 - **[review/01-domain-knowledge-adoption.md](review/01-domain-knowledge-adoption.md)** — what content goes into our 14 shared-knowledge skills + BPA engine + model/report reviewers + data-analyst. Includes a canonical-source hierarchy, Top 10 adoptions, hardcoding watchlist, gaps.
