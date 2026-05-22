@@ -76,3 +76,80 @@ Always present a concrete proposal before executing. Include:
 - Do not generate a 10-question interview; three targeted questions are enough
 - Do not build a generic report and call it done; iterate toward specifics
 - Do not assume the user's reluctance means they don't care; they likely can't yet articulate it in report-design terms
+
+---
+
+## Insight Delivery
+
+A finding is only useful once it is framed for a decision. Structure every insight using **What / So What / Now What**, backed by evidence and a confidence rating. Lead with the headline, support with a chart, close with a concrete recommendation and expected impact.
+
+| Part | Meaning |
+|---|---|
+| **Headline** | An action-oriented statement of the finding, not a topic label |
+| **What** | One-sentence description of the observation |
+| **So What** | Why it matters to the business — revenue, retention, cost |
+| **Now What** | Recommended action with expected impact |
+| **Evidence** | The chart or table that supports the finding |
+| **Confidence** | High / Medium / Low |
+
+Template:
+
+> **[Headline: action-oriented finding]**
+> **What:** One-sentence description of the observation.
+> **So What:** Why this matters to the business.
+> **Now What:** Recommended action with expected impact.
+> **Evidence:** [Chart or table supporting the finding]
+> **Confidence:** High / Medium / Low
+
+**Headlines are claims, not labels.** Use the formula `[Specific Number] + [Business Impact] + [Actionable Context]`.
+
+> BAD: "Q4 Sales Analysis"
+> GOOD: "Q4 Sales beat target by 23% — here's why"
+
+For a multi-finding narrative (a QBR, an executive readout), wrap the insights in a **Situation → Complication → Resolution** arc:
+
+1. **Situation** — the context and baseline ("Last quarter we targeted a 10% improvement in retention").
+2. **Complication** — the problem or opportunity the data surfaces.
+3. **Resolution** — the insight and the recommended action, quantified.
+
+A longer presentation can follow the 6-beat narrative arc: **Hook → Context → Rising Action → Climax → Resolution → Call to Action.** Open with the surprising insight, establish the baseline, build through the data, land the key finding, recommend, then ask for the decision.
+
+---
+
+## Analysis Skeleton
+
+The ordered workflow an analyst follows when turning a business question into a delivered answer. Do not skip ahead to visuals before the question is framed and the data is profiled.
+
+1. **Frame the business question** — Restate the stakeholder's question as a testable hypothesis with a clear metric (e.g., "Did the new campaign increase 7-day retention by ≥ 5%?"). Identify the required data sources.
+2. **Write and validate the query** — Filter early, aggregate late. Verify the query is correct and performant before trusting its output.
+3. **Explore and profile the data** — Compute descriptive statistics (count, mean, median, quartiles). Check for nulls, duplicates, and outliers before drawing conclusions.
+4. **Analyze** — Apply the method that fits the question: cohort analysis for retention, funnel analysis for conversion, hypothesis testing for group comparisons, regression for relationships.
+5. **Visualize** — Select the chart type that fits the data question. Start bar-chart Y-axes at zero, use ≤ 7 colors, label axes, and add benchmarks or targets for context.
+6. **Deliver the insight** — Frame the result as What / So What / Now What, leading with the headline and closing with a recommendation and expected impact.
+
+A written analysis artifact mirrors this skeleton:
+
+> # Analysis: [Topic]
+> ## Business Question — what are we trying to answer?
+> ## Hypothesis — what do we expect to find?
+> ## Data Sources — [Source]: [Description]
+> ## Methodology — numbered steps
+> ## Findings — Finding 1, Finding 2 (with supporting data)
+> ## Recommendations — [Action]: [Expected impact]
+> ## Limitations — known caveats
+> ## Next Steps — follow-up actions
+
+---
+
+## Maturity Model
+
+The self-service BI maturity ladder sets scope and expectations: who the audience is determines what they can do with the dashboard, and therefore how much you build for them versus enable them to build themselves.
+
+| Level | Persona | Users can... |
+|---|---|---|
+| **L1 — Consumers** | View & filter | Open dashboards, apply filters, export data |
+| **L2 — Explorers** | Ad-hoc queries | Write simple queries, create basic charts, share findings |
+| **L3 — Builders** | Design dashboards | Combine data sources, create calculated fields, publish reports |
+| **L4 — Modelers** | Define data models | Create semantic models, define metrics, optimize performance |
+
+Plan to the audience's level. L1 consumers need a finished, opinionated dashboard with clear defaults; L3–L4 builders need a clean semantic layer and consistent metrics they can extend. Pitching above the audience's level produces dashboards no one uses.

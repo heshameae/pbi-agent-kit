@@ -30,7 +30,7 @@ Ground rules and conventions for authoring Power BI semantic models: TMDL syntax
 | TMDL syntax, indentation depth table, enum values, file layout | `references/tmdl-grammar.md` |
 | Column properties, relationship rules, cardinality, keys | `references/columns-relationships.md` |
 | Naming conventions — human-readable names, no Fact/Dim prefix, measure construction order, detection patterns, rename impact | `references/naming.md` |
-| Power Query M folding catalog, safe write order, recipes | `references/power-query-m.md` |
+| Power Query M folding catalog, safe write order, recipes | load the `power-query` skill |
 | RLS patterns, filter library, TMDL role syntax, OLS | `references/rls.md` |
 | AI-readiness, Copilot 7-section checklist, before-investing gate, AI instructions guide, data schema scoping | `references/ai-readiness.md` |
 | Performance tools matrix, cache states (Cold/Warm/Hot), testing methodology, common DAX performance issues | `references/performance.md` |
@@ -43,8 +43,12 @@ Ground rules and conventions for authoring Power BI semantic models: TMDL syntax
 - **No hand-written `lineageTag`** — auto-generated; adding by hand causes collisions
 - **Measures before columns** — in every table definition, always
 - **No `dataType` on measures** — inferred from DAX
+- **Set an explicit `formatString` on measures** — see the Format String Quick Reference below; never leave a numeric measure unformatted
+- **`DIVIDE` over `/`** — safe zero-protection for general use; exception: `/` inside row iterators (SUMX/AVERAGEX) where the denominator is guaranteed non-zero, to avoid an FE callback (DAX018) → `references/dax-query-rules.md`
 - **Leave `PBI_*` annotations** — Power BI internal metadata; do not add or remove them
 - **No `Fact`/`Dim` prefixes** — tables use business-friendly names: plural facts (`Sales`), singular dims (`Product`)
+- **`isAvailableInMdx: false` on hidden columns** not used as a `sortByColumn`, hierarchy level, or variation → `references/columns-relationships.md`
+- **Avoid `double`** — use `decimal` or `int64`; floating point causes roundoff errors and degraded performance → `references/columns-relationships.md`
 
 ## Format String Quick Reference
 
