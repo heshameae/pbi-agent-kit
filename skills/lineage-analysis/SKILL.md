@@ -17,7 +17,7 @@ Trace downstream dependencies from a semantic model to all connected reports acr
 
 ## When NOT to Use
 
-- Auditing DAX measure quality or model design — use `pbi-model-doctor` or `modeling-semantic-model`
+- Auditing DAX measure quality or model design — use `reviewing-models` or `modeling-semantic-model`
 - Refreshing or scheduling semantic models — that is a separate concern
 - Impact analysis across dataflows, notebooks, or other non-report Fabric items — see the note on full dependency mapping below
 

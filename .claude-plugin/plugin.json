@@ -7,14 +7,10 @@
   "skills": "./skills/",
   "mcpServers": "./.mcp.json",
   "agents": [
-    "./agents/pbi-report-validator.md",
-    "./agents/pbi-bind-doctor.md",
-    "./agents/pbi-bulk-operator.md",
-    "./agents/pbi-report-reviewer.md",
-    "./agents/pbi-designer.md",
-    "./agents/pbi-model-doctor.md",
     "./agents/data-analyst.md",
     "./agents/model-builder.md",
-    "./agents/model-reviewer.md"
+    "./agents/model-reviewer.md",
+    "./agents/report-reviewer.md",
+    "./agents/report-builder.md"
   ]
 }

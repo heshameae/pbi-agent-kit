@@ -1,6 +1,6 @@
 ---
 name: data-analyst
-description: "Use when the user asks to plan a dashboard, discover what a model can support, define KPIs, analyse a model, or translate a business question into a DashboardSpec — 'plan a dashboard', 'what measures do I need for X', 'help me design a report', 'analyse my model'. Read-only."
+description: "Use proactively at the start of any dashboard or reporting request — before measures are built — to analyse the connected model and produce a validated DashboardSpec. Use when the user asks to plan a dashboard, discover what a model can support, define KPIs, analyse a model, or translate a business question into a DashboardSpec — 'plan a dashboard', 'what measures do I need for X', 'help me design a report', 'analyse my model'. Read-only."
 model: claude-opus-4-7
 tools: Read, Grep, Glob, mcp__plugin_pbi-mcp-ts_pbi-report__pbi_model_list_tables, mcp__plugin_pbi-mcp-ts_pbi-report__pbi_model_list_columns, mcp__plugin_pbi-mcp-ts_pbi-report__pbi_model_list_measures, mcp__plugin_pbi-mcp-ts_pbi-report__pbi_model_list_relationships, mcp__plugin_pbi-mcp-ts_pbi-report__pbi_dax_query, mcp__plugin_pbi-mcp-ts_pbi-report__pbi_model_check, mcp__plugin_pbi-mcp-ts_pbi-report__pbi_dax_reference_check, mcp__plugin_pbi-mcp-ts_pbi-report__pbi_spec_validate
 skills: [planning-dashboards, modeling-semantic-model]

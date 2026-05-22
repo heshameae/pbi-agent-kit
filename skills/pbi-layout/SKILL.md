@@ -1,11 +1,11 @@
 ---
-description: Arrange existing Power BI visuals into grids, rows, or columns. Use when the user mentions arranging visuals, "make a grid", "put these in a row", "stack these vertically", "lay them out", or "tidy up the page". For composing a whole dashboard from scratch, use one of the `pbi-scaffold-*` skills instead.
+description: Arrange existing Power BI visuals into grids, rows, or columns. Use when the user mentions arranging visuals, "make a grid", "put these in a row", "stack these vertically", "lay them out", or "tidy up the page". For composing a whole dashboard from scratch, use the `report-builder` agent instead.
 allowed-tools: mcp__pbi-report__pbi_layout_grid mcp__pbi-report__pbi_layout_row mcp__pbi-report__pbi_layout_column mcp__pbi-report__pbi_visual_list mcp__pbi-report__pbi_page_get
 ---
 
 # Power BI Layout Skill
 
-This skill is **geometry-only** — it positions existing visuals. It does not create visuals, bind data, or pick a dashboard composition. For composition, route to `pbi-scaffold-overview`, `pbi-scaffold-kpi-grid`, or `pbi-scaffold-drill`.
+This skill is **geometry-only** — it positions existing visuals. It does not create visuals, bind data, or pick a dashboard composition. For composition, route to the `report-builder` agent.
 
 ## Three primitives
 

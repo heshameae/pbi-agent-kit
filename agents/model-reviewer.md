@@ -1,6 +1,6 @@
 ---
 name: model-reviewer
-description: "Use when reviewing a semantic model — 'review my model', 'check model quality', 'audit the semantic model', 'is my model AI-ready', or after any model write to catch regressions. Runs pbi_model_check and attributes every finding to its output. Read-only."
+description: "Use proactively after any model write or measure build to catch regressions, and whenever a model is connected before trusting its numbers. Use when reviewing a semantic model — 'review my model', 'check model quality', 'audit the semantic model', 'is my model AI-ready'. Runs pbi_model_check and attributes every finding to its output. Read-only."
 model: claude-sonnet-4-6
 tools: Read, Grep, Glob, mcp__plugin_pbi-mcp-ts_pbi-report__pbi_model_check
 ---
