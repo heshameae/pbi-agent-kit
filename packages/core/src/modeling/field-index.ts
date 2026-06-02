@@ -402,6 +402,120 @@ function outgoingFilterLinks(index: ModelFieldIndex, table: string): string[] {
   return out;
 }
 
+/** A directed active filter-propagation edge between two tables, tagged with the
+ *  relationship that produces it. Direction semantics mirror
+ *  `outgoingFilterLinks`: a single-direction relationship (fact[FK] → dim[key])
+ *  propagates dim(to) → fact(from); a bidirectional one propagates both ways.
+ *  Inactive relationships contribute nothing (role-playing must not create a
+ *  phantom path). Used by MOD017 (diamond detection) and the diamond pre-write
+ *  gate so both reason about the SAME edge set. */
+export interface DirectedFilterEdge {
+  readonly from: string;
+  readonly to: string;
+  readonly relationshipId: string;
+}
+
+export function directedFilterEdges(index: ModelFieldIndex): DirectedFilterEdge[] {
+  return directedFilterEdgesFromRelationships(index.relationships);
+}
+
+// Edge computation that depends ONLY on the relationship list, so callers that
+// have no built index (the pre-write gate, MOD017) avoid the on-disk fingerprint
+// that buildModelFieldIndexFromModel performs.
+export function directedFilterEdgesFromRelationships(
+  relationships: readonly TMDLRelationship[],
+): DirectedFilterEdge[] {
+  const edges: DirectedFilterEdge[] = [];
+  for (const r of relationships) {
+    if (!r.isActive) continue;
+    // Single direction: filters flow from the to-side (dim key) to the
+    // from-side (fact FK), matching outgoingFilterLinks.
+    edges.push({ from: r.toTable, to: r.fromTable, relationshipId: r.id });
+    if (r.crossFilteringBehavior === 'both') {
+      edges.push({ from: r.fromTable, to: r.toTable, relationshipId: r.id });
+    }
+  }
+  return edges;
+}
+
+// Greedily count edge-disjoint directed paths from src to dst: find a path via
+// BFS, delete its edges, repeat. Returns each path as its ordered list of tables
+// (so callers can compare intermediates). Shared by MOD017 (diamond audit) and
+// the diamond pre-write gate so both reason over the SAME detector — lives here
+// (not bpa.ts) because relationship-check.ts must import it WITHOUT creating a
+// cycle (bpa.ts imports typesCompatible from relationship-check.ts).
+export function edgeDisjointDirectedPaths(
+  edges: ReadonlyArray<{ from: string; to: string; relationshipId: string }>,
+  src: string,
+  dst: string,
+): string[][] {
+  // Mutable working copy keyed by from-table; each entry carries a unique edge id.
+  let pool = edges.map((e, i) => ({ from: e.from, to: e.to, eid: `${e.relationshipId}#${i}` }));
+  const paths: string[][] = [];
+  // Cap iterations defensively (a model can't have unbounded disjoint paths).
+  for (let guard = 0; guard < 64; guard++) {
+    const adj = new Map<string, { to: string; eid: string }[]>();
+    for (const e of pool) {
+      const list = adj.get(e.from) ?? [];
+      list.push({ to: e.to, eid: e.eid });
+      adj.set(e.from, list);
+    }
+    // BFS recording the edge taken to reach each node.
+    const prev = new Map<string, { node: string; eid: string }>();
+    const visited = new Set<string>([src]);
+    const queue = [src];
+    let found = false;
+    while (queue.length > 0) {
+      const node = queue.shift();
+      if (node === undefined) break;
+      if (node === dst) {
+        found = true;
+        break;
+      }
+      for (const next of adj.get(node) ?? []) {
+        if (visited.has(next.to)) continue;
+        visited.add(next.to);
+        prev.set(next.to, { node, eid: next.eid });
+        queue.push(next.to);
+      }
+    }
+    if (!found) break;
+    // Reconstruct the path and the edges it used.
+    const pathNodes: string[] = [dst];
+    const usedEids = new Set<string>();
+    let cur = dst;
+    while (cur !== src) {
+      const step = prev.get(cur);
+      if (!step) break;
+      usedEids.add(step.eid);
+      pathNodes.push(step.node);
+      cur = step.node;
+    }
+    pathNodes.reverse();
+    paths.push(pathNodes);
+    // Remove the consumed edges and look for another disjoint path.
+    pool = pool.filter((e) => !usedEids.has(e.eid));
+  }
+  return paths;
+}
+
+// At least two of the found paths differ by ≥1 INTERMEDIATE table (so the
+// same-pair length-1-vs-length-1 case is left to ambiguous-active-path, and a
+// single dim fanning to two facts — two length-1 paths — is not a diamond).
+export function pathsDifferByIntermediate(paths: ReadonlyArray<ReadonlyArray<string>>): boolean {
+  const signatures = paths.map((p) => p.slice(1, -1).join('>')); // intermediates only
+  for (let i = 0; i < signatures.length; i++) {
+    for (let j = i + 1; j < signatures.length; j++) {
+      const a = signatures[i];
+      const b = signatures[j];
+      // A diamond needs at least one route WITH an intermediate, and the two
+      // routes' intermediate signatures must differ.
+      if (a !== b && (a !== '' || b !== '')) return true;
+    }
+  }
+  return false;
+}
+
 function measureDependencies(
   index: Omit<ModelFieldIndex, 'treatasBridgeMeasures'>,
   measure: ModelMeasureField,
