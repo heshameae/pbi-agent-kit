@@ -4,15 +4,34 @@ export type Cardinality = 'manyToOne' | 'oneToMany' | 'oneToOne' | 'manyToMany';
 
 export type CrossFilteringBehavior = 'single' | 'both';
 
+export type StorageMode = 'import' | 'directQuery' | 'dual' | 'directLake';
+
+export interface TMDLRolePermission {
+  readonly table: string;
+  readonly filterExpression: string; // '' = static role / no dynamic predicate
+}
+
+export interface TMDLRole {
+  readonly name: string;
+  readonly tablePermissions: ReadonlyArray<TMDLRolePermission>;
+}
+
 export interface TMDLColumn {
   readonly table: string;
   readonly name: string;
   readonly dataType: string;
   readonly summarizeBy?: string;
   readonly sourceColumn?: string;
+  readonly dataCategory?: string;
+  readonly formatString?: string;
   readonly isHidden: boolean;
   readonly isKey: boolean;
   readonly isCalculated: boolean;
+  readonly expression?: string; // calc-column DAX (RHS of `column 'X' = <DAX>`)
+  readonly description?: string;
+  readonly displayFolder?: string;
+  readonly sortByColumn?: string; // bare column name on the same table
+  readonly isAvailableInMdx?: boolean; // absent ⇒ treated as true; only explicit false is risky
 }
 
 export interface TMDLMeasure {
@@ -22,6 +41,7 @@ export interface TMDLMeasure {
   readonly formatString?: string;
   readonly isHidden: boolean;
   readonly description?: string;
+  readonly displayFolder?: string;
   readonly annotations: Readonly<Record<string, string>>;
 }
 
@@ -32,6 +52,8 @@ export interface TMDLTable {
   readonly isHidden: boolean;
   readonly isCalculated: boolean;
   readonly isAutoDateTable: boolean;
+  readonly description?: string;
+  readonly storageMode?: StorageMode;
 }
 
 export interface TMDLRelationship {
@@ -43,12 +65,14 @@ export interface TMDLRelationship {
   readonly isActive: boolean;
   readonly crossFilteringBehavior: CrossFilteringBehavior;
   readonly cardinality?: Cardinality;
+  readonly relyOnReferentialIntegrity?: boolean;
 }
 
 export interface TMDLModel {
   readonly modelPath: string;
   readonly tables: ReadonlyArray<TMDLTable>;
   readonly relationships: ReadonlyArray<TMDLRelationship>;
+  readonly roles?: ReadonlyArray<TMDLRole>;
 }
 
 export interface BridgeAnalysis {

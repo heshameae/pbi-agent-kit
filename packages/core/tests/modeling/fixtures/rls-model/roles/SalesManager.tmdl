@@ -1,0 +1,4 @@
+role 'Sales Manager'
+	modelPermission: read
+
+	tablePermission Customer = 'Customer'[Region] = "West"

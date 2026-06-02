@@ -1,0 +1,90 @@
+import type { TMDLColumn, TMDLModel, TMDLTable } from './types.js';
+
+export type TableKind = 'fact' | 'dimension' | 'unknown';
+
+export interface TableClassification {
+  readonly kind: TableKind;
+  // 0..1 — how strongly the structural signals point at the assigned kind.
+  // Rules threshold this (e.g. fact-to-fact requires both endpoints high-confidence).
+  readonly confidence: number;
+}
+
+// Heuristic, PURELY STRUCTURAL fact/dimension classifier. There is no native
+// `isFact` flag in Tabular, and several rules (orphan-fact severity,
+// fact-to-fact, snowflake exclusion, conformed-dimension) need to know whether a
+// table is fact-like. DATASET-AGNOSTIC: no hardcoded table/column names — only
+// the model's own relationship topology and column shape.
+//
+// Signals (FINAL contract §classifier):
+//   S1 — has >= 1 measure
+//   S2 — count of summarizable columns (numeric AND summarizeBy != none)
+//   S3 — is the `fromTable` (many side) of >= 1 relationship
+//   S4 — number of distinct relationships where it is the `fromTable` (fan-out)
+//
+// Decision:
+//   fact      = S3 >= 1 AND (S2 >= 1 OR S4 >= 2)
+//   dimension = appears only as a `toTable` (never a from side), OR 0 numerics + 0 measures
+//   unknown   = neither (ambiguous)
+export function classifyTable(model: TMDLModel, tableName: string): TableClassification {
+  const table = model.tables.find((t) => t.name === tableName);
+  if (!table) return { kind: 'unknown', confidence: 0 };
+
+  const s1HasMeasure = table.measures.length > 0;
+  const s2SummarizableCount = table.columns.filter(isSummarizableNumericColumn).length;
+
+  let s3IsFromSide = false;
+  let s4FanOut = 0;
+  let isToSide = false;
+  for (const r of model.relationships) {
+    if (r.fromTable === tableName) {
+      s3IsFromSide = true;
+      s4FanOut += 1;
+    }
+    if (r.toTable === tableName) isToSide = true;
+  }
+
+  const numericCount = table.columns.filter((c) => isNumericDataType(c.dataType)).length;
+
+  // FACT: sits on the many side AND carries aggregatable measures/quantities or
+  // fans out to multiple dimensions.
+  if (s3IsFromSide && (s2SummarizableCount >= 1 || s4FanOut >= 2)) {
+    // More corroborating signals → higher confidence.
+    const signals = [s1HasMeasure, s2SummarizableCount >= 1, s4FanOut >= 2].filter(Boolean).length;
+    return { kind: 'fact', confidence: clamp(0.6 + 0.15 * signals) };
+  }
+
+  // DIMENSION: only ever a target (to side) of relationships, or has no numerics
+  // and no measures (a pure lookup / attribute table).
+  if ((isToSide && !s3IsFromSide) || (numericCount === 0 && !s1HasMeasure)) {
+    // A related, non-numeric lookup table is a stronger dimension signal than a
+    // disconnected attribute-only table.
+    const confidence = isToSide && !s3IsFromSide ? 0.8 : 0.5;
+    return { kind: 'dimension', confidence };
+  }
+
+  return { kind: 'unknown', confidence: 0 };
+}
+
+// Numeric column whose summarizeBy makes it an aggregatable quantity (mirrors
+// field-index.ts isSummarizableColumn, but operates on a raw TMDLColumn so the
+// classifier needs no field-index build).
+function isSummarizableNumericColumn(column: TMDLColumn): boolean {
+  return (
+    column.summarizeBy !== undefined &&
+    column.summarizeBy.toLowerCase() !== 'none' &&
+    isNumericDataType(column.dataType)
+  );
+}
+
+function isNumericDataType(dataType: string): boolean {
+  return ['int64', 'decimal', 'double'].includes(dataType);
+}
+
+function clamp(n: number): number {
+  return Math.max(0, Math.min(1, n));
+}
+
+// Re-exported convenience for rules that just need the table object.
+export function tableByName(model: TMDLModel, name: string): TMDLTable | undefined {
+  return model.tables.find((t) => t.name === name);
+}

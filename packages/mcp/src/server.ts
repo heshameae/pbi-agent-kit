@@ -15,6 +15,7 @@ import { pathToFileURL } from 'node:url';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import {
+  type RelationshipReason,
   type TMDLModel,
   VERSION,
   bookmarkAdd,
@@ -46,6 +47,7 @@ import {
   pageSetBackground,
   pageSetVisibility,
   parseTMDLFolder,
+  relationshipCheck,
   reportConvert,
   reportCreate,
   reportInfo,
@@ -72,7 +74,7 @@ import {
   visualWhere,
 } from 'pbi-core';
 import { z } from 'zod';
-import { ModelDriver } from './model-bridge/model-driver.js';
+import { type ConnectOpts, ModelDriver } from './model-bridge/model-driver.js';
 import { getMsMcpClient } from './model-bridge/ms-mcp-client.js';
 
 const server = new McpServer({
@@ -333,9 +335,23 @@ const MODEL_FOLDER_FIELD = z
     'OFFLINE fallback only. Leave UNSET whenever Power BI Desktop is open — writes auto-target the live Desktop instance and appear immediately (the user presses Ctrl+S to persist). Set it only for headless/offline editing of a .SemanticModel/definition (or .pbip/containing dir) when no Desktop is running; folder writes land on disk and an already-open Desktop will not see them until the .pbip is reopened.',
   );
 
-function resolveFolderOpt(folderPath?: string): { folderPath: string } | undefined {
-  if (!folderPath) return undefined;
-  return { folderPath: resolveSemanticModelDefinition(folderPath) };
+const MODEL_SELECT_FIELD = z
+  .string()
+  .optional()
+  .describe(
+    'When MULTIPLE Power BI Desktop instances are open, the target model/file name (e.g. "Sales"; path and .pbix/.SemanticModel suffix are ignored, case-insensitive). Omit when only one instance is open or when the connection is env-pinned.',
+  );
+
+// Build the driver ConnectOpts from the two optional selectors. Returns undefined
+// only when BOTH are absent (live-first, first-connection-wins). When a folderPath
+// is given it is resolved to a .SemanticModel/definition; `model` selects which open
+// Desktop instance to target when several are running.
+function resolveConnectOpts(folderPath?: string, model?: string): ConnectOpts | undefined {
+  if (!folderPath && !model) return undefined;
+  return {
+    folderPath: folderPath ? resolveSemanticModelDefinition(folderPath) : undefined,
+    model,
+  };
 }
 
 // Read a model snapshot. Folder mode uses pbi-core's pure-TS TMDL parser
@@ -343,12 +359,13 @@ function resolveFolderOpt(folderPath?: string): { folderPath: string } | undefin
 // goes through the wrapped MS MCP. Both yield the same TMDLModel.
 async function snapshotModel(
   folderPath?: string,
+  model?: string,
 ): Promise<{ mode: 'live' | 'folder'; model: TMDLModel }> {
   if (folderPath) {
     return { mode: 'folder', model: parseTMDLFolder(resolveSemanticModelDefinition(folderPath)) };
   }
   const drv = getModelDriver();
-  const conn = await drv.ensureConnection();
+  const conn = await drv.ensureConnection(resolveConnectOpts(folderPath, model));
   return { mode: conn.mode, model: await drv.getCachedSnapshot() };
 }
 
@@ -359,9 +376,10 @@ async function snapshotModel(
 // live even when the caller passed a folderPath (e.g. Desktop is open).
 async function snapshotForWrite(
   folderPath?: string,
+  model?: string,
 ): Promise<{ mode: 'live' | 'folder'; model: TMDLModel }> {
   const drv = getModelDriver();
-  const conn = await drv.ensureConnection(resolveFolderOpt(folderPath));
+  const conn = await drv.ensureConnection(resolveConnectOpts(folderPath, model));
   if (conn.mode === 'folder') {
     return {
       mode: 'folder',
@@ -375,19 +393,19 @@ tool(
   'pbi_model_snapshot',
   'Read Live Model',
   'Connect to the model (live Power BI Desktop instance, else folder fallback) and return the full semantic model: tables, columns, measures, relationships. Read-only.',
-  { folderPath: MODEL_FOLDER_FIELD },
+  { folderPath: MODEL_FOLDER_FIELD, model: MODEL_SELECT_FIELD },
   { readOnlyHint: true, idempotentHint: true },
-  async (input) => snapshotModel(input.folderPath),
+  async (input) => snapshotModel(input.folderPath, input.model),
 );
 
 tool(
   'pbi_model_list_tables',
   'List Tables',
   'List the tables in the model (live Desktop instance, else folder). Read-only.',
-  { folderPath: MODEL_FOLDER_FIELD },
+  { folderPath: MODEL_FOLDER_FIELD, model: MODEL_SELECT_FIELD },
   { readOnlyHint: true, idempotentHint: true },
   async (input) => {
-    const { mode, model } = await snapshotModel(input.folderPath);
+    const { mode, model } = await snapshotModel(input.folderPath, input.model);
     return { mode, tables: model.tables };
   },
 );
@@ -396,10 +414,10 @@ tool(
   'pbi_model_list_columns',
   'List Columns',
   'List the columns in the model (live Desktop instance, else folder). Read-only.',
-  { folderPath: MODEL_FOLDER_FIELD },
+  { folderPath: MODEL_FOLDER_FIELD, model: MODEL_SELECT_FIELD },
   { readOnlyHint: true, idempotentHint: true },
   async (input) => {
-    const { mode, model } = await snapshotModel(input.folderPath);
+    const { mode, model } = await snapshotModel(input.folderPath, input.model);
     return { mode, columns: model.tables.flatMap((t) => t.columns) };
   },
 );
@@ -408,10 +426,10 @@ tool(
   'pbi_model_list_measures',
   'List Measures',
   'List the measures in the model (live Desktop instance, else folder). Read-only.',
-  { folderPath: MODEL_FOLDER_FIELD },
+  { folderPath: MODEL_FOLDER_FIELD, model: MODEL_SELECT_FIELD },
   { readOnlyHint: true, idempotentHint: true },
   async (input) => {
-    const { mode, model } = await snapshotModel(input.folderPath);
+    const { mode, model } = await snapshotModel(input.folderPath, input.model);
     return { mode, measures: model.tables.flatMap((t) => t.measures) };
   },
 );
@@ -420,10 +438,10 @@ tool(
   'pbi_model_list_relationships',
   'List Relationships',
   'List the relationships in the model (live Desktop instance, else folder). Read-only.',
-  { folderPath: MODEL_FOLDER_FIELD },
+  { folderPath: MODEL_FOLDER_FIELD, model: MODEL_SELECT_FIELD },
   { readOnlyHint: true, idempotentHint: true },
   async (input) => {
-    const { mode, model } = await snapshotModel(input.folderPath);
+    const { mode, model } = await snapshotModel(input.folderPath, input.model);
     return { mode, relationships: model.relationships };
   },
 );
@@ -435,11 +453,12 @@ tool(
   {
     query: z.string().describe('A DAX query (e.g. EVALUATE ...).'),
     folderPath: MODEL_FOLDER_FIELD,
+    model: MODEL_SELECT_FIELD,
   },
   { readOnlyHint: true, idempotentHint: true },
   async (input) => {
     const drv = getModelDriver();
-    await drv.ensureConnection(resolveFolderOpt(input.folderPath));
+    await drv.ensureConnection(resolveConnectOpts(input.folderPath, input.model));
     return drv.daxQuery(input.query);
   },
 );
@@ -455,10 +474,11 @@ tool(
     formatString: z.string().optional().describe('Format string (bare TMDL backslash form).'),
     description: z.string().optional().describe('Optional measure description.'),
     folderPath: MODEL_FOLDER_FIELD,
+    model: MODEL_SELECT_FIELD,
   },
   { destructiveHint: false, idempotentHint: false },
   async (input) => {
-    const { mode, model } = await snapshotForWrite(input.folderPath);
+    const { mode, model } = await snapshotForWrite(input.folderPath, input.model);
     const check = daxReferenceCheck(input.expression, model, { hostTable: input.tableName });
     if (!check.valid) {
       const err = new Error(
@@ -473,7 +493,7 @@ tool(
       throw err;
     }
     const drv = getModelDriver();
-    await drv.ensureConnection(resolveFolderOpt(input.folderPath));
+    await drv.ensureConnection(resolveConnectOpts(input.folderPath, input.model));
     const result = await drv.createMeasure({
       tableName: input.tableName,
       name: input.name,
@@ -504,10 +524,11 @@ tool(
     formatString: z.string().optional(),
     description: z.string().optional(),
     folderPath: MODEL_FOLDER_FIELD,
+    model: MODEL_SELECT_FIELD,
   },
   { destructiveHint: false, idempotentHint: true },
   async (input) => {
-    const { mode, model } = await snapshotForWrite(input.folderPath);
+    const { mode, model } = await snapshotForWrite(input.folderPath, input.model);
     const check = daxReferenceCheck(input.expression, model, { hostTable: input.tableName });
     if (!check.valid) {
       const err = new Error(
@@ -522,7 +543,7 @@ tool(
       throw err;
     }
     const drv = getModelDriver();
-    await drv.ensureConnection(resolveFolderOpt(input.folderPath));
+    await drv.ensureConnection(resolveConnectOpts(input.folderPath, input.model));
     const result = await drv.updateMeasure({
       tableName: input.tableName,
       name: input.name,
@@ -542,12 +563,519 @@ tool(
     tableName: z.string().describe('Home table of the measure.'),
     name: z.string().describe('Measure name to delete.'),
     folderPath: MODEL_FOLDER_FIELD,
+    model: MODEL_SELECT_FIELD,
   },
   { destructiveHint: true, idempotentHint: false },
   async (input) => {
     const drv = getModelDriver();
-    const conn = await drv.ensureConnection(resolveFolderOpt(input.folderPath));
+    const conn = await drv.ensureConnection(resolveConnectOpts(input.folderPath, input.model));
     const result = await drv.deleteMeasure({ tableName: input.tableName, name: input.name });
+    return { deleted: true, mode: conn.mode, result };
+  },
+);
+
+// --- LIVE WRITE: TABLES --------------------------------------------------
+
+tool(
+  'pbi_table_create',
+  'Create Table',
+  'Create a table on the connected model. Pass `mExpression` for a Power Query (M) partition, or `expression` for a DAX calculated table (e.g. CALENDAR/SUMMARIZE/ADDCOLUMNS). A calculated-table expression defines the table AND its columns in its own row context, so it is validated by the modeling engine on create (invalid DAX is rejected with a clear error and nothing is written) — no pre-flight reference gate runs. On success in live mode the table appears in Desktop immediately; press Ctrl+S to persist. In folder mode, call pbi_model_export.',
+  {
+    name: z.string().describe('Table name (must be unique in the model).'),
+    mode: z
+      .string()
+      .optional()
+      .describe('Storage mode (e.g. "import"). Defaults to the model default when omitted.'),
+    mExpression: z
+      .string()
+      .optional()
+      .describe('Power Query (M) partition expression for an imported/query table.'),
+    expression: z
+      .string()
+      .optional()
+      .describe(
+        'DAX expression for a calculated table (e.g. CALENDAR(...)). Defines the table and its columns; validated by the engine on create.',
+      ),
+    description: z.string().optional().describe('Optional table description.'),
+    folderPath: MODEL_FOLDER_FIELD,
+    model: MODEL_SELECT_FIELD,
+  },
+  { destructiveHint: false, idempotentHint: false },
+  async (input) => {
+    const drv = getModelDriver();
+    const conn = await drv.ensureConnection(resolveConnectOpts(input.folderPath, input.model));
+    const mode = conn.mode;
+    const result = await drv.createTable({
+      name: input.name,
+      mode: input.mode,
+      mExpression: input.mExpression,
+      expression: input.expression,
+      description: input.description,
+    });
+    return {
+      created: true,
+      mode,
+      persist:
+        mode === 'live'
+          ? 'Table is live in Power BI Desktop — press Ctrl+S to persist to the .pbip.'
+          : 'Call pbi_model_export to write the TMDL to disk.',
+      result,
+    };
+  },
+);
+
+tool(
+  'pbi_table_update',
+  'Update Table',
+  'Update an existing table: rename, edit description, or toggle visibility. On success in live mode the change appears in Desktop immediately; press Ctrl+S to persist. In folder mode, call pbi_model_export.',
+  {
+    name: z.string().describe('Table name to update.'),
+    newName: z.string().optional().describe('New table name (rename).'),
+    description: z.string().optional().describe('New table description.'),
+    isHidden: z.boolean().optional().describe('Hide or show the table.'),
+    dataCategory: z
+      .string()
+      .optional()
+      // UNVERIFIED: MS-MCP `dataCategory` (table Update) key inferred (see TableUpdate in model-driver).
+      .describe(
+        'Table semantic category. Set `"Time"` together with `isKey` on the date column to mark this as the model date table (use pbi_table_mark_as_date for the convenience path) — required for time intelligence.',
+      ),
+    folderPath: MODEL_FOLDER_FIELD,
+    model: MODEL_SELECT_FIELD,
+  },
+  { destructiveHint: false, idempotentHint: true },
+  async (input) => {
+    const drv = getModelDriver();
+    const conn = await drv.ensureConnection(resolveConnectOpts(input.folderPath, input.model));
+    const mode = conn.mode;
+    const result = await drv.updateTable({
+      name: input.name,
+      newName: input.newName,
+      description: input.description,
+      isHidden: input.isHidden,
+      dataCategory: input.dataCategory,
+    });
+    return {
+      updated: true,
+      mode,
+      persist:
+        mode === 'live'
+          ? 'Table is live in Power BI Desktop — press Ctrl+S to persist to the .pbip.'
+          : 'Call pbi_model_export to write the TMDL to disk.',
+      result,
+    };
+  },
+);
+
+tool(
+  'pbi_table_mark_as_date',
+  'Mark As Date Table',
+  'Mark a table as the model date table so time-intelligence (DATEADD/SAMEPERIODLASTYEAR/TOTALYTD, etc.) works. Sets the table `dataCategory` to "Time" and sets `isKey` on the given date column. Idempotent — re-marking an already-marked table is a no-op. On success in live mode the change appears in Desktop immediately; press Ctrl+S to persist. In folder mode, call pbi_model_export.',
+  {
+    tableName: z.string().describe('Table to mark as the date table.'),
+    dateColumn: z
+      .string()
+      .describe('The continuous daily date column on that table to mark as the key (isKey).'),
+    folderPath: MODEL_FOLDER_FIELD,
+    model: MODEL_SELECT_FIELD,
+  },
+  { destructiveHint: false, idempotentHint: true },
+  async (input) => {
+    const drv = getModelDriver();
+    const conn = await drv.ensureConnection(resolveConnectOpts(input.folderPath, input.model));
+    const mode = conn.mode;
+    const result = await drv.markAsDateTable(input.tableName, input.dateColumn);
+    return {
+      marked: true,
+      mode,
+      persist:
+        mode === 'live'
+          ? 'Date table is live in Power BI Desktop — press Ctrl+S to persist to the .pbip.'
+          : 'Call pbi_model_export to write the TMDL to disk.',
+      result,
+    };
+  },
+);
+
+tool(
+  'pbi_table_delete',
+  'Delete Table',
+  'Delete a table (and its columns/measures) from the connected model.',
+  {
+    name: z.string().describe('Table name to delete.'),
+    folderPath: MODEL_FOLDER_FIELD,
+    model: MODEL_SELECT_FIELD,
+  },
+  { destructiveHint: true, idempotentHint: false },
+  async (input) => {
+    const drv = getModelDriver();
+    const conn = await drv.ensureConnection(resolveConnectOpts(input.folderPath, input.model));
+    const result = await drv.deleteTable({ name: input.name });
+    return { deleted: true, mode: conn.mode, result };
+  },
+);
+
+// --- LIVE WRITE: COLUMNS -------------------------------------------------
+
+tool(
+  'pbi_column_create',
+  'Create Column',
+  'Create a column on a table. Pass `sourceColumn` for a data column, or `expression` for a DAX calculated column. Calculated columns (via `expression`) are supported on imported (Power Query / M) tables too — not just calculated tables. A calculated-column expression runs in the host table’s row context and is validated by the modeling engine on create (invalid DAX is rejected with a clear error and nothing is written) — no pre-flight reference gate runs. On success in live mode the column appears in Desktop immediately; press Ctrl+S to persist. In folder mode, call pbi_model_export.',
+  {
+    tableName: z.string().describe('Table that hosts the column.'),
+    name: z.string().describe('Column name (must be unique on the table).'),
+    dataType: z
+      .string()
+      .optional()
+      .describe('Column data type (e.g. "int64", "string", "double", "dateTime").'),
+    sourceColumn: z
+      .string()
+      .optional()
+      .describe('Source column name for a data column (omit for a calculated column).'),
+    expression: z
+      .string()
+      .optional()
+      .describe(
+        'DAX expression for a calculated column (runs in the host table’s row context). Validated by the engine on create.',
+      ),
+    formatString: z.string().optional().describe('Format string (bare TMDL backslash form).'),
+    summarizeBy: z
+      .string()
+      .optional()
+      .describe('Default aggregation (e.g. "none", "sum", "count").'),
+    isHidden: z.boolean().optional().describe('Hide the column from the field list.'),
+    isKey: z
+      .boolean()
+      .optional()
+      // UNVERIFIED: MS-MCP `isKey` write key inferred (see ColumnWrite in model-driver).
+      .describe(
+        'Mark this column as the table primary key. Combined with `dataCategory:"Time"` on the table, marks a date table (use pbi_table_mark_as_date for the convenience path).',
+      ),
+    dataCategory: z
+      .string()
+      .optional()
+      // UNVERIFIED: MS-MCP `dataCategory` write key inferred (see ColumnWrite in model-driver).
+      .describe(
+        'Semantic data category (e.g. "City", "Country", "Latitude", "Longitude"). Geo categories drive map visuals.',
+      ),
+    description: z.string().optional().describe('Optional column description.'),
+    folderPath: MODEL_FOLDER_FIELD,
+    model: MODEL_SELECT_FIELD,
+  },
+  { destructiveHint: false, idempotentHint: false },
+  async (input) => {
+    const drv = getModelDriver();
+    const conn = await drv.ensureConnection(resolveConnectOpts(input.folderPath, input.model));
+    const mode = conn.mode;
+    const result = await drv.createColumn({
+      tableName: input.tableName,
+      name: input.name,
+      dataType: input.dataType,
+      sourceColumn: input.sourceColumn,
+      expression: input.expression,
+      formatString: input.formatString,
+      summarizeBy: input.summarizeBy,
+      isHidden: input.isHidden,
+      isKey: input.isKey,
+      dataCategory: input.dataCategory,
+      description: input.description,
+    });
+    return {
+      created: true,
+      mode,
+      persist:
+        mode === 'live'
+          ? 'Column is live in Power BI Desktop — press Ctrl+S to persist to the .pbip.'
+          : 'Call pbi_model_export to write the TMDL to disk.',
+      result,
+    };
+  },
+);
+
+tool(
+  'pbi_column_update',
+  'Update Column',
+  'Update an existing column: rename, change data type/format/summarizeBy/visibility, or edit a calculated column expression. A new `expression` (calculated column) is validated by the modeling engine on update (invalid DAX is rejected and nothing is written). On success in live mode the change appears in Desktop immediately; press Ctrl+S to persist. In folder mode, call pbi_model_export.',
+  {
+    tableName: z.string().describe('Table that hosts the column.'),
+    name: z.string().describe('Column name to update.'),
+    newName: z.string().optional().describe('New column name (rename).'),
+    dataType: z.string().optional().describe('New data type.'),
+    expression: z
+      .string()
+      .optional()
+      .describe('New DAX expression for a calculated column. Validated by the engine on update.'),
+    formatString: z.string().optional().describe('Format string (bare TMDL backslash form).'),
+    summarizeBy: z.string().optional().describe('Default aggregation.'),
+    isHidden: z.boolean().optional().describe('Hide or show the column.'),
+    isKey: z
+      .boolean()
+      .optional()
+      // UNVERIFIED: MS-MCP `isKey` Update key inferred (see ColumnUpdate in model-driver).
+      .describe(
+        'Mark/unmark this column as the table primary key. With `dataCategory:"Time"` on the table this marks a date table (see pbi_table_mark_as_date).',
+      ),
+    dataCategory: z
+      .string()
+      .optional()
+      // UNVERIFIED: MS-MCP `dataCategory` Update key inferred (see ColumnUpdate in model-driver).
+      .describe('Semantic data category (e.g. "City", "Country", "Latitude", "Longitude").'),
+    description: z.string().optional().describe('New column description.'),
+    folderPath: MODEL_FOLDER_FIELD,
+    model: MODEL_SELECT_FIELD,
+  },
+  { destructiveHint: false, idempotentHint: true },
+  async (input) => {
+    const drv = getModelDriver();
+    const conn = await drv.ensureConnection(resolveConnectOpts(input.folderPath, input.model));
+    const mode = conn.mode;
+    const result = await drv.updateColumn({
+      tableName: input.tableName,
+      name: input.name,
+      newName: input.newName,
+      dataType: input.dataType,
+      expression: input.expression,
+      formatString: input.formatString,
+      summarizeBy: input.summarizeBy,
+      isHidden: input.isHidden,
+      isKey: input.isKey,
+      dataCategory: input.dataCategory,
+      description: input.description,
+    });
+    return {
+      updated: true,
+      mode,
+      persist:
+        mode === 'live'
+          ? 'Column is live in Power BI Desktop — press Ctrl+S to persist to the .pbip.'
+          : 'Call pbi_model_export to write the TMDL to disk.',
+      result,
+    };
+  },
+);
+
+tool(
+  'pbi_column_delete',
+  'Delete Column',
+  'Delete a column from a table on the connected model.',
+  {
+    tableName: z.string().describe('Table that hosts the column.'),
+    name: z.string().describe('Column name to delete.'),
+    folderPath: MODEL_FOLDER_FIELD,
+    model: MODEL_SELECT_FIELD,
+  },
+  { destructiveHint: true, idempotentHint: false },
+  async (input) => {
+    const drv = getModelDriver();
+    const conn = await drv.ensureConnection(resolveConnectOpts(input.folderPath, input.model));
+    const result = await drv.deleteColumn({ tableName: input.tableName, name: input.name });
+    return { deleted: true, mode: conn.mode, result };
+  },
+);
+
+// --- LIVE WRITE: RELATIONSHIPS -------------------------------------------
+
+tool(
+  'pbi_relationship_create',
+  'Create Relationship (validity-gated)',
+  'Create a relationship between two columns. HARD GATE: an in-code relationship check runs first against the live model — if an endpoint table/column is missing, the key types mismatch, the edge is a self-loop, or it would add a second active path between the same table pair, the create is REFUSED and nothing is written. Bidirectional cross-filtering is allowed but returned as an advisory warning. On success in live mode the relationship appears in Desktop immediately; press Ctrl+S to persist. In folder mode, call pbi_model_export.',
+  {
+    fromTable: z.string().describe('Many-side table (the foreign-key side).'),
+    fromColumn: z.string().describe('Foreign-key column on fromTable.'),
+    toTable: z.string().describe('One-side table (the primary-key side).'),
+    toColumn: z.string().describe('Key column on toTable.'),
+    crossFilteringBehavior: z
+      .enum(['single', 'both'])
+      .optional()
+      .describe('Filter propagation: "single" (default) or "both" (bidirectional).'),
+    isActive: z.boolean().optional().describe('Whether the relationship is active (default true).'),
+    folderPath: MODEL_FOLDER_FIELD,
+    model: MODEL_SELECT_FIELD,
+  },
+  { destructiveHint: false, idempotentHint: false },
+  async (input) => {
+    const { mode, model } = await snapshotForWrite(input.folderPath, input.model);
+    const candidate = {
+      fromTable: input.fromTable,
+      fromColumn: input.fromColumn,
+      toTable: input.toTable,
+      toColumn: input.toColumn,
+      isActive: input.isActive,
+      crossFilteringBehavior: input.crossFilteringBehavior,
+    };
+    const check = relationshipCheck(candidate, model);
+    if (!check.valid) {
+      const err = new Error(
+        `Refused: relationship ${input.fromTable}[${input.fromColumn}] → ${input.toTable}[${input.toColumn}] is not valid for the model.`,
+      ) as Error & { report?: unknown };
+      err.report = {
+        gate: 'relationship-check',
+        blocking: check.blocking,
+        warnings: check.warnings,
+      };
+      throw err;
+    }
+    const drv = getModelDriver();
+    await drv.ensureConnection(resolveConnectOpts(input.folderPath, input.model));
+    const result = await drv.createRelationship({
+      fromTable: input.fromTable,
+      fromColumn: input.fromColumn,
+      toTable: input.toTable,
+      toColumn: input.toColumn,
+      crossFilteringBehavior: input.crossFilteringBehavior,
+      isActive: input.isActive,
+    });
+    return {
+      created: true,
+      mode,
+      persist:
+        mode === 'live'
+          ? 'Relationship is live in Power BI Desktop — press Ctrl+S to persist to the .pbip.'
+          : 'Call pbi_model_export to write the TMDL to disk.',
+      result,
+      warnings: check.warnings,
+    };
+  },
+);
+
+tool(
+  'pbi_relationship_update',
+  'Update Relationship (validity-gated)',
+  'Update an existing relationship by id: re-point endpoints, change cross-filtering, or toggle active. The same in-code relationship check as create runs first (the edited row is excluded from the active-path ambiguity check). On a structural violation the update is REFUSED; bidirectional cross-filtering is allowed but returned as an advisory warning. On success in live mode the change appears in Desktop immediately; press Ctrl+S to persist. In folder mode, call pbi_model_export.',
+  {
+    id: z.string().describe('Relationship id to update.'),
+    fromTable: z.string().optional().describe('New many-side table.'),
+    fromColumn: z.string().optional().describe('New foreign-key column.'),
+    toTable: z.string().optional().describe('New one-side table.'),
+    toColumn: z.string().optional().describe('New key column.'),
+    crossFilteringBehavior: z
+      .enum(['single', 'both'])
+      .optional()
+      .describe('Filter propagation: "single" or "both" (bidirectional).'),
+    isActive: z.boolean().optional().describe('Whether the relationship is active.'),
+    folderPath: MODEL_FOLDER_FIELD,
+    model: MODEL_SELECT_FIELD,
+  },
+  { destructiveHint: false, idempotentHint: true },
+  async (input) => {
+    const { mode, model } = await snapshotForWrite(input.folderPath, input.model);
+    const existing = model.relationships.find((r) => r.id === input.id);
+    let warnings: RelationshipReason[] = [];
+    if (existing) {
+      const candidate = {
+        fromTable: input.fromTable ?? existing.fromTable,
+        fromColumn: input.fromColumn ?? existing.fromColumn,
+        toTable: input.toTable ?? existing.toTable,
+        toColumn: input.toColumn ?? existing.toColumn,
+        isActive: input.isActive ?? existing.isActive,
+        crossFilteringBehavior: input.crossFilteringBehavior ?? existing.crossFilteringBehavior,
+      };
+      const check = relationshipCheck(candidate, model, { ignoreRelationshipId: input.id });
+      if (!check.valid) {
+        const err = new Error(
+          `Refused: updated relationship "${input.id}" is not valid for the model.`,
+        ) as Error & { report?: unknown };
+        err.report = {
+          gate: 'relationship-check',
+          blocking: check.blocking,
+          warnings: check.warnings,
+        };
+        throw err;
+      }
+      warnings = [...check.warnings];
+    }
+    const drv = getModelDriver();
+    await drv.ensureConnection(resolveConnectOpts(input.folderPath, input.model));
+    const result = await drv.updateRelationship({
+      id: input.id,
+      fromTable: input.fromTable,
+      fromColumn: input.fromColumn,
+      toTable: input.toTable,
+      toColumn: input.toColumn,
+      crossFilteringBehavior: input.crossFilteringBehavior,
+      isActive: input.isActive,
+    });
+    return {
+      updated: true,
+      mode,
+      persist:
+        mode === 'live'
+          ? 'Relationship is live in Power BI Desktop — press Ctrl+S to persist to the .pbip.'
+          : 'Call pbi_model_export to write the TMDL to disk.',
+      result,
+      warnings,
+    };
+  },
+);
+
+tool(
+  'pbi_relationship_activate',
+  'Activate Relationship',
+  'Mark a relationship active by id. On success in live mode the change appears in Desktop immediately; press Ctrl+S to persist. In folder mode, call pbi_model_export.',
+  {
+    id: z.string().describe('Relationship id to activate.'),
+    folderPath: MODEL_FOLDER_FIELD,
+    model: MODEL_SELECT_FIELD,
+  },
+  { destructiveHint: false, idempotentHint: true },
+  async (input) => {
+    const drv = getModelDriver();
+    const conn = await drv.ensureConnection(resolveConnectOpts(input.folderPath, input.model));
+    const mode = conn.mode;
+    const result = await drv.activateRelationship({ id: input.id });
+    return {
+      updated: true,
+      mode,
+      persist:
+        mode === 'live'
+          ? 'Relationship is live in Power BI Desktop — press Ctrl+S to persist to the .pbip.'
+          : 'Call pbi_model_export to write the TMDL to disk.',
+      result,
+    };
+  },
+);
+
+tool(
+  'pbi_relationship_deactivate',
+  'Deactivate Relationship',
+  'Mark a relationship inactive by id. On success in live mode the change appears in Desktop immediately; press Ctrl+S to persist. In folder mode, call pbi_model_export.',
+  {
+    id: z.string().describe('Relationship id to deactivate.'),
+    folderPath: MODEL_FOLDER_FIELD,
+    model: MODEL_SELECT_FIELD,
+  },
+  { destructiveHint: false, idempotentHint: true },
+  async (input) => {
+    const drv = getModelDriver();
+    const conn = await drv.ensureConnection(resolveConnectOpts(input.folderPath, input.model));
+    const mode = conn.mode;
+    const result = await drv.deactivateRelationship({ id: input.id });
+    return {
+      updated: true,
+      mode,
+      persist:
+        mode === 'live'
+          ? 'Relationship is live in Power BI Desktop — press Ctrl+S to persist to the .pbip.'
+          : 'Call pbi_model_export to write the TMDL to disk.',
+      result,
+    };
+  },
+);
+
+tool(
+  'pbi_relationship_delete',
+  'Delete Relationship',
+  'Delete a relationship by id from the connected model.',
+  {
+    id: z.string().describe('Relationship id to delete.'),
+    folderPath: MODEL_FOLDER_FIELD,
+    model: MODEL_SELECT_FIELD,
+  },
+  { destructiveHint: true, idempotentHint: false },
+  async (input) => {
+    const drv = getModelDriver();
+    const conn = await drv.ensureConnection(resolveConnectOpts(input.folderPath, input.model));
+    const result = await drv.deleteRelationship({ id: input.id });
     return { deleted: true, mode: conn.mode, result };
   },
 );
@@ -556,11 +1084,11 @@ tool(
   'pbi_model_export',
   'Export TMDL to Folder (folder-mode persistence)',
   'Persist the connected model to its .SemanticModel/definition TMDL on disk. Used in folder mode; in live mode persistence is the user pressing Ctrl+S in Desktop.',
-  { folderPath: MODEL_FOLDER_FIELD },
+  { folderPath: MODEL_FOLDER_FIELD, model: MODEL_SELECT_FIELD },
   { destructiveHint: false, idempotentHint: true },
   async (input) => {
     const drv = getModelDriver();
-    await drv.ensureConnection(resolveFolderOpt(input.folderPath));
+    await drv.ensureConnection(resolveConnectOpts(input.folderPath, input.model));
     return { exported: true, result: await drv.exportToTmdlFolder() };
   },
 );

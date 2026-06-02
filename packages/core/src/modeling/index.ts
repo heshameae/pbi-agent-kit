@@ -3,6 +3,7 @@ export {
   parseTMDLFolder,
   parseTableFile,
   parseRelationshipsFile,
+  parseRoleFile,
 } from './tmdl-parser.js';
 export {
   buildModelFieldIndex,
@@ -42,9 +43,18 @@ export {
   isKeyLikeColumn,
   validateBridge,
 } from './grain.js';
+export { deriveCardinality } from './cardinality.js';
+export { classifyTable } from './fact-classifier.js';
+export type { TableClassification, TableKind } from './fact-classifier.js';
 export { BPA_RULES, runBPA } from './bpa.js';
 export type { BPARule, BPARuleCategory } from './bpa.js';
-export { checkRelationships } from './relationship-check.js';
+export { checkRelationships, relationshipCheck } from './relationship-check.js';
+export type {
+  RelationshipCandidate,
+  RelationshipCheckOptions,
+  RelationshipCheckResult,
+  RelationshipReason,
+} from './relationship-check.js';
 export { modelDoctor, modelDoctorFromFolder } from './doctor.js';
 export type { ModelDoctorOptions } from './doctor.js';
 export { daxReferenceCheck } from './dax-reference-check.js';

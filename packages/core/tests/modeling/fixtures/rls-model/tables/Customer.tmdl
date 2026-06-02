@@ -1,0 +1,19 @@
+table Customer
+	lineageTag: 20000000-0000-0000-0000-000000000001
+
+	column CustomerKey
+		dataType: int64
+		summarizeBy: none
+		sourceColumn: CustomerKey
+		isKey: true
+
+	column Name
+		dataType: string
+		summarizeBy: none
+		sourceColumn: Name
+
+	column Region
+		dataType: string
+		summarizeBy: none
+		sourceColumn: Region
+		description: Sales region the customer belongs to.

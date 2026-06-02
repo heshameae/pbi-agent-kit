@@ -44,10 +44,7 @@ export function daxReferenceCheck(
     }
   }
   for (const uncommitted of uncommittedMeasures) {
-    measureCountsByName.set(
-      uncommitted.name,
-      (measureCountsByName.get(uncommitted.name) ?? 0) + 1,
-    );
+    measureCountsByName.set(uncommitted.name, (measureCountsByName.get(uncommitted.name) ?? 0) + 1);
   }
 
   const missing: DaxReference[] = [];

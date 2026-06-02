@@ -1,0 +1,6 @@
+relationship rel-sales-customer
+	fromColumn: Sales.CustomerKey
+	toColumn: Customer.CustomerKey
+	fromCardinality: many
+	toCardinality: one
+	relyOnReferentialIntegrity: true

@@ -1,16 +1,51 @@
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
+import { deriveCardinality } from './cardinality.js';
 import type {
-  Cardinality,
   CrossFilteringBehavior,
+  StorageMode,
   TMDLColumn,
   TMDLMeasure,
   TMDLModel,
   TMDLRelationship,
+  TMDLRole,
+  TMDLRolePermission,
   TMDLTable,
 } from './types.js';
 
 const AUTO_DATE_PREFIXES = ['LocalDateTable_', 'DateTableTemplate_'];
+
+// Map a TMDL partition `mode:` token to a StorageMode (case-insensitive).
+function normalizeStorageMode(value: string): StorageMode | undefined {
+  switch (value.trim().toLowerCase()) {
+    case 'import':
+      return 'import';
+    case 'directquery':
+      return 'directQuery';
+    case 'dual':
+      return 'dual';
+    case 'directlake':
+      return 'directLake';
+    default:
+      return undefined;
+  }
+}
+
+// Scan upward from a header line for the nearest `///` description block.
+function scanDescriptionAbove(
+  allLines: ReadonlyArray<string>,
+  headerIndex: number,
+): string | undefined {
+  for (let k = headerIndex - 1; k >= 0; k--) {
+    const above = (allLines[k] ?? '').trim();
+    if (!above) continue;
+    if (above.startsWith('///')) {
+      return above.replace(/^\/\/\/\s?/, '').trim();
+    }
+    break;
+  }
+  return undefined;
+}
 
 export function parseTMDLFolder(definitionPath: string): TMDLModel {
   if (!existsSync(definitionPath) || !statSync(definitionPath).isDirectory()) {
@@ -34,7 +69,24 @@ export function parseTMDLFolder(definitionPath: string): TMDLModel {
     ? parseRelationshipsFile(readFileSync(relationshipsFile, 'utf8'))
     : [];
 
-  return { modelPath: definitionPath, tables, relationships };
+  // RLS roles are serialized one file per role under a sibling `roles/` dir.
+  const rolesDir = path.join(definitionPath, 'roles');
+  const roles: TMDLRole[] = [];
+  if (existsSync(rolesDir) && statSync(rolesDir).isDirectory()) {
+    for (const entry of readdirSync(rolesDir)) {
+      if (!entry.endsWith('.tmdl')) continue;
+      const parsed = parseRoleFile(readFileSync(path.join(rolesDir, entry), 'utf8'));
+      if (parsed) roles.push(parsed);
+    }
+  }
+
+  // Omit `roles` entirely when the model has no RLS so it stays undefined.
+  return {
+    modelPath: definitionPath,
+    tables,
+    relationships,
+    ...(roles.length > 0 ? { roles } : {}),
+  };
 }
 
 export function parseTableFile(content: string): TMDLTable | null {
@@ -42,6 +94,8 @@ export function parseTableFile(content: string): TMDLTable | null {
   let tableName: string | null = null;
   let tableIsHidden = false;
   let tableIsCalculated = false;
+  let tableDescription: string | undefined;
+  let storageMode: StorageMode | undefined;
   const columns: TMDLColumn[] = [];
   const measures: TMDLMeasure[] = [];
 
@@ -63,6 +117,8 @@ export function parseTableFile(content: string): TMDLTable | null {
       const parsedTableName = m?.[1];
       if (parsedTableName) {
         tableName = unquoteIdent(parsedTableName.trim());
+        // `///` description above the `table` header.
+        tableDescription = scanDescriptionAbove(lines, i);
         i++;
         continue;
       }
@@ -71,14 +127,30 @@ export function parseTableFile(content: string): TMDLTable | null {
     if (tableName !== null) {
       if (/^isHidden:\s*true$/i.test(line)) tableIsHidden = true;
       if (/^calculated$/i.test(line)) tableIsCalculated = true;
+      const descMatch = /^description:\s*(.+)$/i.exec(line);
+      if (descMatch?.[1] !== undefined) tableDescription = descMatch[1].trim();
+      // storageMode lives on the table's partition `mode:` sub-block, not the
+      // table object. A table has one storage mode in practice — first wins.
+      if (storageMode === undefined) {
+        const modeMatch = /^mode:\s*(\w+)/i.exec(line);
+        if (modeMatch?.[1]) storageMode = normalizeStorageMode(modeMatch[1]);
+      }
     }
 
     const colMatch = /^column\s+(.+)$/.exec(line);
-    const parsedColumnName = colMatch?.[1];
-    if (parsedColumnName && tableName !== null) {
-      const colName = unquoteIdent(parsedColumnName.trim());
+    const parsedColumnHeader = colMatch?.[1];
+    if (parsedColumnHeader && tableName !== null) {
+      const { name: colName, inlineExpression, hasEquals } = parseColumnHeader(parsedColumnHeader);
       const block = collectBlock(lines, i);
-      const col = buildColumn(tableName, colName, block.body);
+      const col = buildColumn(
+        tableName,
+        colName,
+        inlineExpression,
+        hasEquals,
+        block.body,
+        lines,
+        i,
+      );
       columns.push(col);
       i = block.nextIndex;
       continue;
@@ -108,6 +180,8 @@ export function parseTableFile(content: string): TMDLTable | null {
     isHidden: tableIsHidden,
     isCalculated: tableIsCalculated,
     isAutoDateTable: AUTO_DATE_PREFIXES.some((p) => finalTableName.startsWith(p)),
+    ...(tableDescription !== undefined ? { description: tableDescription } : {}),
+    ...(storageMode !== undefined ? { storageMode } : {}),
   };
 }
 
@@ -136,6 +210,67 @@ export function parseRelationshipsFile(content: string): TMDLRelationship[] {
   }
 
   return out;
+}
+
+// Parse a single TMDL role file (`<definition>/roles/<RoleName>.tmdl`):
+//   role 'Sales Manager'
+//     modelPermission: read
+//     tablePermission Sales = 'Sales'[Region] = "West"
+//     tablePermission Customer =
+//       'Customer'[Country] IN VALUES(...)
+// A static role has `tablePermission X =` with no filter (or no permission lines).
+export function parseRoleFile(content: string): TMDLRole | null {
+  const lines = content.split(/\r?\n/);
+  let roleName: string | null = null;
+  const tablePermissions: TMDLRolePermission[] = [];
+
+  let i = 0;
+  while (i < lines.length) {
+    const raw = lines[i];
+    if (raw === undefined) {
+      i++;
+      continue;
+    }
+    const line = raw.trim();
+    if (!line || line.startsWith('///')) {
+      i++;
+      continue;
+    }
+
+    if (roleName === null) {
+      const m = /^role\s+(.+)$/.exec(line);
+      const parsed = m?.[1];
+      if (parsed) {
+        roleName = unquoteIdent(parsed.trim());
+        i++;
+        continue;
+      }
+    }
+
+    const permMatch = /^tablePermission\s+(.+)$/.exec(line);
+    const permHeader = permMatch?.[1];
+    if (permHeader && roleName !== null) {
+      const { name: table, inlineExpression } = splitHeaderOnEquals(permHeader);
+      const block = collectBlock(lines, i);
+      const exprLines: string[] = [];
+      if (inlineExpression !== undefined) exprLines.push(inlineExpression);
+      for (const bodyRaw of block.body) {
+        const bodyLine = bodyRaw.trim();
+        if (!bodyLine) continue;
+        exprLines.push(bodyLine);
+      }
+      if (table) {
+        tablePermissions.push({ table, filterExpression: exprLines.join('\n').trim() });
+      }
+      i = block.nextIndex;
+      continue;
+    }
+
+    i++;
+  }
+
+  if (roleName === null) return null;
+  return { name: roleName, tablePermissions };
 }
 
 interface CollectedBlock {
@@ -196,26 +331,75 @@ function unquoteAnnotationValue(s: string): string {
   return t;
 }
 
-function parseMeasureHeader(rest: string): { name: string; inlineExpression?: string } {
+// Split a header `rest` (everything after `measure `/`column `) on the first
+// `=` into an identifier name and an optional inline expression (RHS DAX).
+// `hasEquals` distinguishes `column X =` (calc, multi-line continuation to
+// follow) from `column X` (a plain data column) even when the inline RHS is empty.
+function splitHeaderOnEquals(rest: string): {
+  name: string;
+  inlineExpression?: string;
+  hasEquals: boolean;
+} {
   const eqIdx = rest.indexOf('=');
   if (eqIdx < 0) {
-    return { name: unquoteIdent(rest.trim()) };
+    return { name: unquoteIdent(rest.trim()), hasEquals: false };
   }
   const namePart = rest.slice(0, eqIdx).trim();
   const exprPart = rest.slice(eqIdx + 1).trim();
   return {
     name: unquoteIdent(namePart),
     inlineExpression: exprPart.length > 0 ? exprPart : undefined,
+    hasEquals: true,
   };
 }
 
-function buildColumn(table: string, name: string, body: ReadonlyArray<string>): TMDLColumn {
+function parseMeasureHeader(rest: string): { name: string; inlineExpression?: string } {
+  return splitHeaderOnEquals(rest);
+}
+
+// A calc column header is `column 'X' = <DAX>` (inline) or `column X =` then an
+// indented continuation. Mirrors parseMeasureHeader exactly.
+function parseColumnHeader(rest: string): {
+  name: string;
+  inlineExpression?: string;
+  hasEquals: boolean;
+} {
+  return splitHeaderOnEquals(rest);
+}
+
+function buildColumn(
+  table: string,
+  name: string,
+  inlineExpression: string | undefined,
+  hasEquals: boolean,
+  body: ReadonlyArray<string>,
+  allLines: ReadonlyArray<string>,
+  headerIndex: number,
+): TMDLColumn {
   let dataType = 'string';
   let summarizeBy: string | undefined;
   let sourceColumn: string | undefined;
+  let dataCategory: string | undefined;
+  let formatString: string | undefined;
   let isHidden = false;
   let isKey = false;
   let isCalculated = false;
+  let description: string | undefined;
+  let displayFolder: string | undefined;
+  let sortByColumn: string | undefined;
+  let isAvailableInMdx: boolean | undefined;
+
+  // An `=` on the header means this IS a calculated column even if the
+  // `calculated` token is absent (Desktop emits it, but be tolerant). This holds
+  // for both the inline form (`column X = <DAX>`) and the multi-line form
+  // (`column X =` then indented continuation), so key off `hasEquals`.
+  const exprLines: string[] = [];
+  if (inlineExpression !== undefined) exprLines.push(inlineExpression);
+  if (hasEquals) isCalculated = true;
+  // Guard: only absorb trailing non-prop body lines as DAX continuation once a
+  // calc signal (header `=` or the `calculated` token) has been seen, so a
+  // malformed data-column body can't accidentally swallow a stray line.
+  let sawCalcSignal = hasEquals;
 
   for (const raw of body) {
     const line = raw.trim();
@@ -228,12 +412,31 @@ function buildColumn(table: string, name: string, body: ReadonlyArray<string>): 
       if (key === 'dataType') dataType = value;
       else if (key === 'summarizeBy') summarizeBy = value;
       else if (key === 'sourceColumn') sourceColumn = unquoteIdent(value);
+      else if (key === 'dataCategory') dataCategory = unquoteIdent(value);
+      else if (key === 'formatString') formatString = value;
       else if (key === 'isHidden' && /true/i.test(value)) isHidden = true;
       else if (key === 'isKey' && /true/i.test(value)) isKey = true;
+      else if (key === 'description') description = value;
+      else if (key === 'displayFolder') displayFolder = value;
+      else if (key === 'sortByColumn') sortByColumn = unquoteIdent(value);
+      else if (key === 'isAvailableInMDX') isAvailableInMdx = /true/i.test(value);
       continue;
     }
-    if (/^calculated$/i.test(line)) isCalculated = true;
+    if (/^calculated$/i.test(line)) {
+      isCalculated = true;
+      sawCalcSignal = true;
+      continue;
+    }
+    // A non-prop, non-token line is a DAX continuation — only when calculated.
+    if (sawCalcSignal) exprLines.push(line);
   }
+
+  // `///` description above the column header wins over a body description:
+  // line when both exist (mirrors the measure path).
+  const aboveDescription = scanDescriptionAbove(allLines, headerIndex);
+  if (aboveDescription !== undefined) description = aboveDescription;
+
+  const expression = exprLines.join('\n').trim() || undefined;
 
   return {
     table,
@@ -241,9 +444,16 @@ function buildColumn(table: string, name: string, body: ReadonlyArray<string>): 
     dataType,
     summarizeBy,
     sourceColumn,
+    dataCategory,
+    formatString,
     isHidden,
     isKey,
     isCalculated,
+    ...(expression !== undefined ? { expression } : {}),
+    ...(description !== undefined ? { description } : {}),
+    ...(displayFolder !== undefined ? { displayFolder } : {}),
+    ...(sortByColumn !== undefined ? { sortByColumn } : {}),
+    ...(isAvailableInMdx !== undefined ? { isAvailableInMdx } : {}),
   };
 }
 
@@ -258,6 +468,7 @@ function buildMeasure(
   let formatString: string | undefined;
   let isHidden = false;
   let description: string | undefined;
+  let displayFolder: string | undefined;
   const annotations: Record<string, string> = {};
 
   const exprLines: string[] = [];
@@ -289,6 +500,8 @@ function buildMeasure(
     if (line.startsWith('displayFolder:') || line.startsWith('description:')) {
       if (line.startsWith('description:')) {
         description = line.slice('description:'.length).trim();
+      } else {
+        displayFolder = line.slice('displayFolder:'.length).trim();
       }
       continue;
     }
@@ -296,14 +509,10 @@ function buildMeasure(
     exprLines.push(line);
   }
 
-  for (let k = headerIndex - 1; k >= 0; k--) {
-    const above = (allLines[k] ?? '').trim();
-    if (!above) continue;
-    if (above.startsWith('///')) {
-      description = above.replace(/^\/\/\/\s?/, '').trim();
-    }
-    break;
-  }
+  // `///` description above the measure header (preserves prior behavior:
+  // an above-header `///` wins over a body description: line when both exist).
+  const aboveDescription = scanDescriptionAbove(allLines, headerIndex);
+  if (aboveDescription !== undefined) description = aboveDescription;
 
   return {
     table,
@@ -312,6 +521,7 @@ function buildMeasure(
     formatString,
     isHidden,
     description,
+    ...(displayFolder !== undefined ? { displayFolder } : {}),
     annotations,
   };
 }
@@ -323,7 +533,9 @@ function buildRelationship(id: string, body: ReadonlyArray<string>): TMDLRelatio
   let toColumn: string | null = null;
   let isActive = true;
   let crossFilteringBehavior: CrossFilteringBehavior = 'single';
-  let cardinality: Cardinality | undefined;
+  let fromCardinality: string | undefined;
+  let toCardinality: string | undefined;
+  let relyOnReferentialIntegrity: boolean | undefined;
 
   for (const raw of body) {
     const line = raw.trim();
@@ -349,8 +561,12 @@ function buildRelationship(id: string, body: ReadonlyArray<string>): TMDLRelatio
       isActive = false;
     } else if (key === 'crossFilteringBehavior') {
       crossFilteringBehavior = /both/i.test(value) ? 'both' : 'single';
-    } else if (key === 'fromCardinality' || key === 'toCardinality') {
-      if (/many/i.test(value)) cardinality = 'manyToMany';
+    } else if (key === 'fromCardinality') {
+      fromCardinality = value;
+    } else if (key === 'toCardinality') {
+      toCardinality = value;
+    } else if (key === 'relyOnReferentialIntegrity') {
+      relyOnReferentialIntegrity = /true/i.test(value);
     }
   }
 
@@ -364,7 +580,9 @@ function buildRelationship(id: string, body: ReadonlyArray<string>): TMDLRelatio
     toColumn,
     isActive,
     crossFilteringBehavior,
-    cardinality,
+    // Derive from BOTH sides via the shared helper; absent → manyToOne (PBI default).
+    cardinality: deriveCardinality(fromCardinality, toCardinality),
+    ...(relyOnReferentialIntegrity !== undefined ? { relyOnReferentialIntegrity } : {}),
   };
 }
 

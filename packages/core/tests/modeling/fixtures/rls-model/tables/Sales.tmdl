@@ -1,0 +1,32 @@
+/// Sales fact table (one row per order line).
+table Sales
+	lineageTag: 10000000-0000-0000-0000-000000000001
+
+	measure 'Total Amount' = SUM(Sales[Amount])
+		formatString: \$#,0;(\$#,0);\$#,0
+		displayFolder: KPIs
+		lineageTag: 10000000-0000-0000-0000-000000000002
+
+	column OrderId
+		dataType: int64
+		summarizeBy: none
+		sourceColumn: OrderId
+		isHidden: true
+		isKey: true
+
+	column Amount
+		dataType: decimal
+		summarizeBy: sum
+		sourceColumn: Amount
+
+	column CustomerKey
+		dataType: int64
+		summarizeBy: none
+		sourceColumn: CustomerKey
+		isHidden: true
+
+	/// Net amount after discount.
+	column 'Net Amount' = Sales[Amount] * 0.9
+		dataType: decimal
+		summarizeBy: sum
+		displayFolder: Calculations
