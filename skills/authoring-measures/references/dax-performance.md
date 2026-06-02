@@ -467,6 +467,8 @@ MEASURE 'Sales'[Total Revenue Filtered] =
 
 Grouping by a high-cardinality column (e.g., `Calendar[Date]` → 365 rows) when the user only needs monthly data (12 rows) inflates SE row count ~30×.
 
+> The same four options also fix the **target-vs-actual grain mismatch** (a monthly target going BLANK on a daily axis) — see the modeling framing in `../../modeling-semantic-model/references/grain.md` (G2).
+
 **Detection:** Groupby on a date or high-cardinality column producing far more rows than the visual needs.
 
 **Option A — coarser groupby:**

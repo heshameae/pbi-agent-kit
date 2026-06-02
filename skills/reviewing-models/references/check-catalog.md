@@ -28,6 +28,8 @@ Issues that cause incorrect results, errors, or broken model behavior. Fix befor
 
 **Recommendation:** Use single-direction filtering unless bidirectional is explicitly required. Consider using CROSSFILTER() in DAX instead.
 
+**Tool rules:** `MOD004` (bidirectional outside an m:m bridge, **warning**). When row-level security is present, `MOD025` (bidirectional cross-filter into a *secured* table, **warning** — bidirectional filtering can bypass the RLS boundary and leak rows) also fires; cite it for any bidi edge touching a secured table.
+
 **Severity:** Critical
 
 ### Check 1.2 — Circular Dependencies
@@ -35,6 +37,8 @@ Issues that cause incorrect results, errors, or broken model behavior. Fix befor
 **Problem:** Circular measure references cause calculation errors.
 
 **Check:** Parse measure definitions and build a dependency graph. Flag any cycles.
+
+**Tool rule:** ambiguous multi-hop filter paths are caught by `MOD017` (a "diamond" — two tables connected by ≥2 different active routes through different intermediate tables, **error**), complementing the same-pair ambiguous-path check. Cite MOD017 for diamond findings.
 
 **Severity:** Critical
 
@@ -52,7 +56,9 @@ Issues that cause incorrect results, errors, or broken model behavior. Fix befor
 
 **Check:** Analyze the relationship graph; flag tables with no incoming or outgoing relationships (excluding field parameter tables and calculation groups, which are intentionally disconnected).
 
-**Severity:** Critical
+**Tool rule:** `MOD008` (orphan/disconnected table, tri-state) — cite it for every finding. The tool reports **error** for an orphan *fact* table, **warning** for a non-fact orphan, and **info** for a deliberately disconnected table (single-column / what-if / field-parameter / calc-group). Do not re-derive orphans from TMDL you read yourself; report what MOD008 emits.
+
+**Severity:** Critical (when MOD008 fires as error on a fact table)
 
 ---
 
@@ -87,6 +93,8 @@ Issues that inflate model size, slow refresh, or degrade query performance throu
 **Check:** Look for hidden columns or high-cardinality columns that do NOT have `isAvailableInMDX: false`. Every hidden column and every column not needed in Excel PivotTables should have this set.
 
 **Recommendation:** Set `isAvailableInMDX: false` on all hidden columns and high-cardinality columns not used in Excel PivotTables.
+
+**Tool rule:** `E4` catches the inverse hazard — a column with `isAvailableInMDX: false` that is the **sort-by target** of another column (or carries a sortByColumn itself), which errors in Excel/MDX clients and breaks the sort (**error**). Never set `isAvailableInMDX: false` on a sort-by key.
 
 **Severity:** Warning
 
@@ -258,7 +266,9 @@ Issues with how measures are defined, scoped, and structured.
 
 **Recommendation:** Create explicit DAX measures for all key metrics. Use `summarizeBy: none` on numeric columns that should not be auto-aggregated.
 
-**Severity:** Warning (Critical if AI/Copilot readiness is a goal)
+**Tool rule:** `MOD014` (numeric key/ID column with `summarizeBy != none`, **error**) catches the highest-risk subset — a visible numeric key/ID/year/postal column that silently auto-sums. Cite MOD014 for those findings; the broader "missing explicit measure" judgement remains a narrative call.
+
+**Severity:** Warning (Critical if AI/Copilot readiness is a goal); MOD014 itself is an error
 
 ### Check 5.2 — Report-Scoped Extension Measures
 
@@ -332,7 +342,9 @@ Structural design issues that affect correctness, maintainability, or query perf
 
 **Check:** Analyze the relationship graph. Flag dimension tables with outgoing relationships. Flag relationships between fact tables.
 
-**Severity:** Warning
+**Tool rules:** `MOD012` (snowflake — a table that is both a from-side and a to-side, excluding facts, **warning**) and `MOD009` (fact-to-fact relationship, **error**). Cite MOD009 for fact→fact and MOD012 for dim→dim chains. Fix fact-to-fact by bridging via a conformed dimension (see `../modeling-semantic-model/references/columns-relationships.md`).
+
+**Severity:** Warning (MOD012); Error (MOD009)
 
 ### Check 7.2 — Missing or Misconfigured Date Table
 
@@ -344,7 +356,9 @@ Structural design issues that affect correctness, maintainability, or query perf
 - A single-column relationship to each fact table
 - The table marked as a date table
 
-**Severity:** Critical (if time intelligence measures exist in the model)
+**Tool rules:** `MODB1` (model has no date table, **warning**) and `MODB2` (a date/calendar-named table is not marked as a date table, **warning**). Cite MODB1/MODB2 for the marking findings; the continuity/coverage/single-column-relationship checks above remain narrative (the tool does not scan data). Fix by marking the table — `pbi_table_mark_as_date` (`dataCategory:Time` + `isKey` on the date column).
+
+**Severity:** Critical (if time intelligence measures exist in the model); the tool emits MODB1/MODB2 as warnings
 
 ### Check 7.3 — Excessive Columns Per Table
 
@@ -369,6 +383,8 @@ Structural design issues that affect correctness, maintainability, or query perf
 **Problem:** Multiple fact tables relating to the same dimension via different keys without a shared conformed dimension causes slicers on one fact to not filter the other.
 
 **Check:** Identify fact tables that share dimension-like tables but connect via different key columns.
+
+**Tool rule:** `MOD010` (missing conformed dimension — 2+ fact tables share a same-named categorical column with no shared dimension path, **warning**). Cite MOD010; a `TREATAS` bridge standing in for the missing dimension is the related `MOD016` (info). Fix with the conformed-dimension build recipe in `../modeling-semantic-model/references/columns-relationships.md`.
 
 **Severity:** Warning
 
@@ -455,3 +471,99 @@ Only audit this category if the user has confirmed conversational BI is a target
 **Check:** Assess whether the AI data schema (Prep for AI configuration) is scoped to only relevant tables, columns, and measures. See the full AI Data Schema checklist in `../modeling-semantic-model/references/ai-readiness.md`.
 
 **Severity:** Warning (if AI/Copilot is a target)
+
+---
+
+## Appendix: Tool Rule Reference (`pbi_model_check`)
+
+Every model-side BPA rule the tool emits, by category. Always attribute a finding to the rule that produced it — never re-derive it from TMDL you read yourself. Severities are the tool's calibrated severities (canonical BPA severity is not portable; the tool calibrates to real correctness impact).
+
+### Modeling
+
+| ID | Severity | What it flags |
+|----|----------|---------------|
+| MOD001 | warning | Auto date/time tables (`LocalDateTable_*` / `DateTableTemplate_*`). |
+| MOD002 | warning / **error** | Inactive relationship not activated by any USERELATIONSHIP. **Error** when a sibling active relationship joins the same table pair on different columns (a dead role-playing alternate — queries silently fall back to the active key). |
+| MOD003 | warning / **error** | Many-to-many cardinality. **Error** when bidirectional AND neither endpoint is a bridge table (ambiguous propagation corrupts results); warning for a bidi m:m through a real bridge. |
+| MOD004 | warning | Bidirectional filter outside a many-to-many bridge. |
+| MOD005 | warning | Foreign-key column on the many side is visible. |
+| MOD006 | info | String column with `summarizeBy != none`. |
+| MOD008 | error / warning / info | Orphan/disconnected table (tri-state: error for an isolated fact, warning for a non-fact orphan, info for a deliberate single-column/what-if/param table). |
+| MOD009 | error | Direct fact-to-fact relationship. |
+| MOD010 | warning | Missing conformed dimension (2+ facts share a same-named categorical column with no shared dimension path). |
+| MOD011 | warning / **error** | Relationship key data types differ. **Error** for a hard-incompatible mismatch (e.g. string↔int64); warning for a same-family widening (e.g. int64↔decimal). |
+| MOD012 | warning | Snowflake (a dimension chained onto another dimension). |
+| MOD013 | warning | Excessive bidirectional / many-to-many ratio (>30%). |
+| MOD014 | error | Numeric key/identifier column with `summarizeBy != none` (summing a key gives meaningless totals). |
+| MOD015 | info | Relationship key column is not an integer. |
+| MOD016 | info | TREATAS bridge between two facts (consider a conformed dimension). |
+| MOD017 | error | Ambiguous multi-hop (diamond) filter path — two tables connected by ≥2 active routes through different intermediates. |
+| MOD018 | error | Time-intelligence DAX is used but no table is marked as a date table (TI returns BLANK). |
+| MOD019 | warning | Target-vs-actual grain mismatch (heuristic): one fact relates to a date dim at day grain, another at a coarser grain — confirm the intended grains. |
+| MOD020 | info | The one-side (dimension) column of a relationship is not marked `isKey`. |
+| MOD021 | info | One-to-one relationship (rare — consider consolidating unless a deliberate PII split). |
+| MOD022 | info | Non-key numeric column auto-aggregates (`summarizeBy != none`) — prefer `summarizeBy: none` + an explicit measure. Companion to MOD014 (which owns key-named columns); the two never double-report. |
+| MOD023 | error | A measure uses USERELATIONSHIP against a table that also has row-level security (errors at visual evaluation). |
+| MOD024 | warning | Many-to-many relationship touching a table secured by *dynamic* RLS (USERNAME/USERPRINCIPALNAME) — severe query-performance degradation. |
+| MOD025 | warning | Bidirectional cross-filter into a secured table (RLS row-leak risk). |
+| MOD028 | warning | "Assume referential integrity" enabled on a DirectQuery source (INNER join silently drops fact rows with no matching dimension key). |
+| MODB1 | warning | Model has no marked date table (but date columns exist). |
+| MODB2 | warning | A date/calendar-named table is not marked as a date table. |
+
+### DAX
+
+| ID | Severity | What it flags |
+|----|----------|---------------|
+| DAX001 | warning | Uses `/` instead of DIVIDE() (checked over measures AND calculated columns). |
+| DAX002 | error | USERELATIONSHIP outside CALCULATE/CALCULATETABLE. |
+| DAX003 | warning | IFERROR (slower than IF + ISBLANK). |
+| DAX004 | info | CALCULATE with no filter arguments. |
+| DAX005 | warning | Reference to a non-existent measure or column (checked over measures AND calculated columns). |
+| DAX006 | error | Column reference not fully qualified. |
+| DAX007 | error | Measure reference is table-qualified. |
+| DAX008 | warning | Duplicate measure definitions. |
+| DAX009 | warning | Uses INTERSECT (prefer TREATAS). |
+| DAX010 | warning | Measure is a bare direct reference to another measure. |
+| DAX011 | warning | Whole-table FILTER inside CALCULATE. |
+| DAX012 | warning | EVALUATEANDLOG (a debugging function) in a production measure. |
+| DAX013 | warning | Literal-number divide syntax (`1-(x/y)` / `1±DIVIDE(...)`) — brittle when the denominator is blank/zero. |
+| DAX014 | warning | BLANK-suppression (`+0` / `COALESCE(...,0)` / `IF(ISBLANK,0,...)`) inflates result sets with spurious all-zero rows. |
+
+### Formatting
+
+| ID | Severity | What it flags |
+|----|----------|---------------|
+| FMT001 | error | Visible measure has no format string. |
+| FMT002 | error | Format string wrapped in quotes (renders as text). |
+| FMT003 | warning | Visible numeric column has no format string. |
+| FMT004 | warning | Column uses the double (floating-point) data type. |
+| FMT005 | warning | Percentage-named measure (`...%`/`...percent`) whose format string has no `%`. |
+| FMT006 | info | Geography column (country/continent/city/lat/long) with no `dataCategory`. |
+| FMT007 | warning | String month column with no `sortByColumn` (sorts alphabetically). |
+
+### Naming
+
+| ID | Severity | What it flags |
+|----|----------|---------------|
+| NAM001 | error | Measure name collides with a column on its host table. |
+| NAM002 | error / warning | Object-name hygiene: **error** for leading/trailing whitespace or control characters; **warning** for a DAX reserved word (Date/Time/Year/…), a Fact/Dim prefix, or special characters. |
+
+### Error Prevention
+
+| ID | Severity | What it flags |
+|----|----------|---------------|
+| E1 | error | Data (non-calculated) column has no `sourceColumn`. |
+| E2 | error | Measure has a blank expression. |
+| E3 | error | Calculated column has a blank expression. |
+| E4 | error | `isAvailableInMDX: false` on a sort-by target column (errors in Excel/MDX clients). |
+| E5 | error | Control characters in a measure description (corrupts serialization). |
+
+### Maintenance
+
+| ID | Severity | What it flags |
+|----|----------|---------------|
+| MOD007 | info | Empty table (no columns, no measures). |
+| MOD026 | info | Visible table/column/measure has no description (AI/Copilot readiness). |
+| MOD027 | info | Table has >10 visible measures, none in a display folder. |
+
+**Gating note (live snapshots):** MOD023/MOD024/MOD025 require captured roles; MOD026 requires at least one description; MOD027 requires at least one display folder; MOD028 requires both the Assume-RI flag and a DirectQuery storage mode; E3 requires at least one captured calc-column expression; E4 fires only on an *explicit* `isAvailableInMDX: false`. When the underlying metadata isn't captured, these rules stay silent rather than emit false positives — so absence of a finding is not proof of absence of the issue on an incompletely-captured live model.

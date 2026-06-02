@@ -128,8 +128,14 @@ Recommended next step:
 
 | Rule | Recommendation |
 |---|---|
+| `FMT001` measure missing formatString (error) | Add a `formatString` (bare TMDL form, e.g. `\$#,##0.00` / `0.0%` / `#,##0`) — a visible measure must never be unformatted |
 | `FMT002` triple-quoted formatString | Use bare TMDL form: `\$#,##0.00` (no surrounding quotes) |
 | `NAM001` measure/column collision | Rename the measure (e.g., add "Total " prefix) |
 | `MOD003` / `MOD004` m:m or bidirectional | Confirm with user; usually restructure to star-schema dim |
+| `MOD008` orphan / disconnected table | If it is a fact (error): build a relationship to a shared dimension. If deliberate (param/what-if/calc-group): leave it. Otherwise relate it or remove it |
+| `MOD009` fact-to-fact relationship (error) | Remove the direct fact→fact relationship and bridge the two facts via a conformed (shared) dimension related to both |
+| `MOD011` relationship key datatype mismatch (error) | Align the two key columns to the **same** `dataType` (typically both `int64`) on each endpoint |
+| `MOD014` numeric key/ID `summarizeBy != none` (error) | Set `summarizeBy: none` on the key/ID/year/postal column (or hide it and expose a measure) so it stops auto-summing |
+| `MODB1` / `MODB2` no date table / date table not marked | Add a proper Date dimension and mark it (`pbi_table_mark_as_date`, i.e. `dataCategory:Time` + `isKey` on the date column) so time intelligence resolves |
 | `DAX002` missing relationship path | Add relationship or use TREATAS — surface to `data-analyst` |
 | Bridge blocked axis | Do NOT bind bridged measure on that axis; bind actuals-only measure instead |
