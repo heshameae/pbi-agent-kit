@@ -8,7 +8,7 @@ Tier 3 model patterns (MDL001–MDL010) and Tier 4 Direct Lake patterns (DL001�
 
 ## Section 5: Tier 3 Model Optimization Patterns
 
-> **STOP — Requires user approval before applying any change. Warn that model changes can break downstream reports. Suggest working on a model copy. Implement via `powerbi-semantic-model` skill; upstream source changes (Lakehouse, Warehouse, Power Query) require `fabric-cli` or pipeline coordination.**
+> **STOP — Requires user approval before applying any change. Warn that model changes can break downstream reports. Suggest working on a model copy. Use the available semantic-model MCP tools for model edits; upstream source changes (Lakehouse, Warehouse, Power Query) require the user's data-engineering workflow or an explicitly available Fabric/source-control tool.**
 
 ### General Data Layout Best Practices
 
@@ -135,8 +135,13 @@ WHERE [RIVIOLATION_COUNT] > 0
 Replace old key values beyond a retention window with a single placeholder to collapse cardinality and shrink dictionaries. This can be done in both facts and dimensions.
 
 ```sql
-CASE WHEN SaleDate >= DATEADD(year, -1, GETDATE()) THEN SalesKey ELSE 'Historical Key' END
+CASE WHEN <DateColumn> >= <RetentionCutoffDateParameter>
+     THEN <HighCardinalityKey>
+     ELSE '<HistoricalBucketLabel>'
+END
 ```
+
+Use a governed retention cutoff supplied by policy/user configuration. Do not anchor retention logic to the current system date.
 
 ---
 

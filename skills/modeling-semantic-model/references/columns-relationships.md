@@ -2,6 +2,8 @@
 
 Rules for column properties and relationship/star-schema design in Power BI semantic models (TMDL format). For canonical TMDL syntax, indentation, property-ordering, and enum value sets, see `references/tmdl-grammar.md` — this file covers the *meaning* and *correct values* of column and relationship properties, not the grammar.
 
+Concrete table/column names in this reference are illustrative syntax only. For production writes, replace every identifier with fields returned by the deterministic planner, validated spec, or live model inventory. Do not copy sample names into a user model.
+
 ---
 
 ## Column Properties
@@ -39,12 +41,12 @@ column 'Product Name'
 	sourceColumn: Product Name
 
 // When column is name-inferred (auto-generated from source)
-column Date
+column '<InferredColumnName>'
 	isNameInferred
-	sourceColumn: [Date]
+	sourceColumn: [<SourceColumnName>]
 ```
 
-`isNameInferred` indicates the column name was automatically derived from the source. The `sourceColumn` value in square brackets (`[Date]`) is the M expression format.
+`isNameInferred` indicates the column name was automatically derived from the source. A `sourceColumn` value in square brackets is the M expression format.
 
 ### summarizeBy
 
@@ -116,9 +118,9 @@ This saves memory and processing time. Do not disable it on a column that anothe
 Tags a column with a semantic category. Set it for:
 
 - Geographic columns — e.g. `City`, `Country`, `Continent` map to `dataCategory: City`, `Country`, etc., plus latitude / longitude columns.
-- The Date table — set `dataCategory: Time` on the calendar **table** (required for time intelligence).
+- The Date table — mark it with `pbi_table_mark_as_date(tableName, dateColumn, facts)` after `pbi_model_plan_date_table` proves continuity and fact coverage. Primitive `dataCategory: Time` writes are refused because they bypass the Date-table proof gate.
 
-**Marking the date table (mechanism).** A model needs its date/calendar table marked as a date table or time intelligence (`DATEADD`/`SAMEPERIODLASTYEAR`/`TOTALYTD`) returns BLANK. The marking is: `dataCategory: Time` on the **table** plus `isKey` on its date column. Use the convenience tool `pbi_table_mark_as_date(tableName, dateColumn)` (it sets both), or set them individually via `pbi_table_update(dataCategory:"Time")` + `pbi_column_update(isKey:true)`. An unmarked date/calendar table is flagged as **MODB2**; a model with no date table at all as **MODB1** (`dg4:30105`, `dg4:30095`).
+**Marking the date table (mechanism).** A model needs its date/calendar table marked as a date table or time intelligence (`DATEADD`/`SAMEPERIODLASTYEAR`/`TOTALYTD`) returns BLANK. The underlying model metadata is `dataCategory: Time` on the **table** plus `isKey` on its date column, but agents must use `pbi_table_mark_as_date(tableName, dateColumn, facts)` so the live continuity and fact-coverage gate runs. Direct `pbi_table_update(dataCategory:"Time")` and date-key/category column writes are refused. An unmarked date/calendar table is flagged as **MODB2**; a model with no date table at all as **MODB1** (`dg4:30105`, `dg4:30095`).
 
 ### sortByColumn
 
@@ -142,15 +144,15 @@ column 'Calendar Month'
 A flag property marking the column as the table's primary key.
 
 ```tmdl
-column Date
+column '<DimensionKeyColumn>'
 	isKey
 	summarizeBy: none
-	sourceColumn: [Date]
+	sourceColumn: [<DimensionKeySourceColumn>]
 ```
 
 - Only **one** column per table may have `isKey`.
 - It enables certain DAX optimizations.
-- It is required on the Date table (`dataCategory: Time`).
+- On the Date table, `isKey` and `dataCategory: Time` are applied only through `pbi_table_mark_as_date(tableName, dateColumn, facts)` after `pbi_model_plan_date_table` succeeds. Do not write Date-table key/category metadata through primitive update tools.
 - On a dimension table, mark the unique key column with `isKey` (see Relationships below).
 
 > Property ordering within a column block (`dataType` → `formatString` → `lineageTag` → `displayFolder` → `summarizeBy` → `isHidden` → `isKey` → `sortByColumn` → `sourceColumn` → `annotation`), `lineageTag`, `displayFolder`, and annotation rules live in `references/tmdl-grammar.md`.
@@ -168,37 +170,57 @@ When modeling data, **always default to a star schema**: a single fact table sur
 
 ### Conformed (shared) dimensions
 
-When **two or more fact tables share the same categorical column** (e.g. an Orders fact and a Targets fact both carry `Category` and `Segment`), do **not** relate the facts to each other and do **not** duplicate the dimension. Extract **one** conformed dimension table (a single `Category` table, a single `Segment` table) and relate **both** facts to it. Shared dimensions are how separate facts are sliced and compared consistently.
+When **two or more fact tables share the same categorical attribute**, do **not** relate the facts to each other and do **not** duplicate the dimension. Extract **one** conformed dimension table for each shared attribute returned by `pbi_model_plan_star_schema_join`, and relate **both** facts to it. Shared dimensions are how separate facts are sliced and compared consistently.
 
 > **A relationship whose both endpoints are fact tables is an ERROR, not just a smell** — route both facts through a shared dimension instead. The model checker flags fact-to-fact relationships as MOD009 (error) (`awesome-copilot-pbi-data.xml:11851`). (Sharing a dimension at *different grains* is a related concern — see `references/grain.md` for the target-vs-actual grain-mismatch case.)
 
 **A `TREATAS` (or other virtual-relationship) bridge in a measure is a SMELL** that a real shared dimension is missing. If a measure uses `TREATAS(VALUES(FactA[Col]), FactB[Col])` to align two facts on a shared column, the proper fix is to extract `Col` into a conformed dimension and create real relationships from both facts — the measure then drops the `TREATAS` and aggregates across the relationship. **Propose this rather than leaving the bridge in place.** (The model checker surfaces this bridge as MOD016, and two facts that share a categorical column with no shared dimension path as MOD010.)
 
-#### Conformed-dimension build recipe (4 steps)
+#### Conformed-dimension build path
 
 When you find the same categorical column on two facts (or a `TREATAS` bridge), build the real shared dimension:
 
-1. **Create the dimension table.** Easiest as a DAX calculated table that pulls the distinct domain *from the fact(s)* — `DISTINCT`, `SELECTCOLUMNS`, or `SUMMARIZE` over the fact column(s). Use `pbi_table_create` with the `expression` parameter:
+Before writing anything for a cross-fact shared-dimension fix, call `pbi_model_plan_star_schema_join` with the actual two table names and explicit shared axes. Treat its `proposedDimensions`, `keyColumnWrites`, `relationshipWrites`, `relationshipRepairWrites`, `hideFkWrites`, and `blockers` as the deterministic source of truth. Stop on `relationship-repair-unsupported` or `relationship-write-blocked`; those are not prompt-level judgment calls. Do not invent a `Dim X` table name or create a direct fact-to-fact relationship unless the planner explicitly returns `directFactRelationshipAllowed: true` (for cross-fact joins, expect `false`).
+
+For live model writes, call `pbi_model_apply_star_schema_join` with explicit axes. Use `dryRun: true` when you need to show or verify the executable sequence without changing the model; use the same apply tool without `dryRun` to write. It re-plans from the live model, refuses blockers, creates/reuses calculated dimensions, refreshes calculated metadata, hardens dimension key metadata, creates/repairs single-direction many-to-one relationships, hides fact-side FK fields, and validates the final state. Do not manually replay the table/key/relationship/hide-FK primitives; if the apply tool is unavailable or unsupported, stop and report the operation as unsupported.
+
+If the bridge also involves date filters, a governed Date table, or a target/actual measure, call `pbi_model_plan_date_table` before calendar/date-table changes and `pbi_model_plan_date_grain` before activating date relationships or removing date-related `USERELATIONSHIP`/`TREATAS`. A star-schema categorical fix does not prove whether the Date table covers fact min/max dates or whether the target date column is daily, month-start, submonthly, or unknown.
+
+The apply tool executes this conceptual recipe:
+
+1. **Create the dimension table.** The planner uses a calculated table that pulls the distinct domain *from the two tables in the planner request* — `DISTINCT`, `SELECTCOLUMNS`, or `SUMMARIZE` over the fact column(s). For the current two-table planner, use the union of both planned source domains so one table does not create orphan keys in the other. A one-table `DISTINCT` is only acceptable when an upstream constraint proves the other table cannot contain extra keys.
    ```dax
-   -- One row per distinct Category, sourced from the fact
-   Category = DISTINCT ( 'Sales'[Category] )
-   -- Two columns (key + label) from the fact:
-   -- Segment = SELECTCOLUMNS ( DISTINCT ( 'Sales'[SegmentKey] ), "SegmentKey", 'Sales'[SegmentKey] )
-   -- Union of the domain across two facts (so neither fact has orphan keys):
-   -- Category = DISTINCT ( UNION ( DISTINCT ( 'Sales'[Category] ), DISTINCT ( 'Targets'[Category] ) ) )
+   -- Illustrative only: replace every placeholder from planner output.
+   <DimensionTable> =
+       DISTINCT (
+           UNION (
+               DISTINCT ( '<LeftFactTable>'[<SharedKeyColumn>] ),
+               DISTINCT ( '<RightFactTable>'[<SharedKeyColumn>] )
+           )
+       )
+
+   -- For key + label shapes, use planner-confirmed source columns only.
+   <DimensionTable> =
+       SELECTCOLUMNS (
+           DISTINCT ( '<SourceTable>'[<SharedKeyColumn>] ),
+           "<SharedKeyColumn>", '<SourceTable>'[<SharedKeyColumn>]
+       )
    ```
    (Or build it in Power Query / M if the domain has attributes the facts don't carry.) Mark its key column `isKey: true`.
-2. **Relate BOTH facts to it.** Create one `pbi_relationship_create` from each fact's key column to the new dimension key (fact = many-side, dimension = one-side). The gate verifies endpoints and key types.
-3. **Hide the FK columns** on both facts (`isHidden`) — the dimension is now the user-facing slicer; the raw keys should not appear in the field list.
-4. **Simplify / drop the `TREATAS`.** Rewrite the affected measure to aggregate across the new relationship and remove the virtual-relationship bridge.
+2. **Relate BOTH facts to it.** The apply tool creates or repairs one relationship from each fact's key column to the shared dimension key (fact = many-side, dimension = one-side, `cardinality: "manyToOne"`). The gate verifies endpoints, key types, active paths, and date-relationship rules.
+3. **Hide the FK columns** on both facts (`isHidden`) — the dimension is now the user-facing source of truth; the raw many-side keys must not appear in the field list. Leaving both the dimension field and fact FK visible creates duplicate fields and lets report authors accidentally slice only one fact table. The apply tool treats skipped hide-FK writes as incomplete.
+4. **Simplify / drop the `TREATAS`.** Rewrite the affected measure to aggregate across the new relationship and remove the virtual-relationship bridge. If the `TREATAS` includes date truncation or date-key remapping, only remove it when `pbi_model_plan_date_table` proves Date-table coverage and `pbi_model_plan_date_grain` proves the target fact is at the required date grain; otherwise use the grain-alignment patterns in `references/grain.md`.
 
 ### Role-playing dimensions
 
-When one fact has **multiple columns that reference the same dimension** (e.g. `Order Date` and `Ship Date` both → `Date`), create **one active** relationship for the primary axis (Order Date) and **one inactive** relationship per extra role (Ship Date) — reusing the single dimension, not a physical copy per role. Activate the inactive one inside specific measures with `USERELATIONSHIP`:
+When one fact has **multiple columns that reference the same dimension**, create **one active** relationship for the planner-confirmed primary axis and **one inactive** relationship per extra role — reusing the single dimension, not a physical copy per role. Activate the inactive one inside specific measures with `USERELATIONSHIP`:
 
 ```dax
-Sales by Ship Date =
-CALCULATE( [Total Sales], USERELATIONSHIP( Sales[Ship Date], Date[Date] ) )
+<MeasureName> =
+CALCULATE (
+    [<BaseMeasure>],
+    USERELATIONSHIP ( '<FactTable>'[<AlternateRoleDateColumn>], '<DateTable>'[<DateKeyColumn>] )
+)
 ```
 
 ### Relationship direction & cardinality
@@ -212,9 +234,9 @@ CALCULATE( [Total Sales], USERELATIONSHIP( Sales[Ship Date], Date[Date] ) )
 | Mark the PK | Set `isKey: true` on the primary key column of the dimension table |
 
 ```tmdl
-relationship 'Sales to Date'
-	fromColumn: Sales.'Order Date'   // many-side (fact FK)
-	toColumn: Date.Date              // one-side (dimension PK)
+relationship '<FactToDimensionRelationshipName>'
+	fromColumn: '<FactTable>'.'<ForeignKeyColumn>'        // many-side (fact FK)
+	toColumn: '<DimensionTable>'.'<DimensionKeyColumn>'   // one-side (dimension PK)
 ```
 
 (For inactive-relationship and `crossFilteringBehavior` enum syntax, see `references/tmdl-grammar.md`.)

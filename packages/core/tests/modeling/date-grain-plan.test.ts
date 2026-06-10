@@ -1,0 +1,1918 @@
+import { describe, expect, it } from 'vitest';
+import {
+  buildDateGrainProbeQuery,
+  buildDateTableCoverageProbeQuery,
+  classifyObservedDateGrain,
+  deriveRequiredDateCoverageFacts,
+  findCalendarSourceRisks,
+  parseDateGrainProbeResult,
+  parseDateTableCoverageProbeResult,
+  planDateGrain,
+  planDateTableCoverage,
+} from '../../src/modeling/date-grain-plan.js';
+import type {
+  TMDLColumn,
+  TMDLMeasure,
+  TMDLModel,
+  TMDLRelationship,
+  TMDLTable,
+} from '../../src/modeling/types.js';
+
+function col(
+  table: string,
+  name: string,
+  dataType: string,
+  overrides: Partial<TMDLColumn> = {},
+): TMDLColumn {
+  return {
+    table,
+    name,
+    dataType,
+    isHidden: false,
+    isKey: false,
+    isCalculated: false,
+    ...overrides,
+  };
+}
+
+function measure(table: string, name: string, expression: string): TMDLMeasure {
+  return {
+    table,
+    name,
+    expression,
+    isHidden: false,
+    annotations: {},
+  };
+}
+
+function tbl(
+  name: string,
+  columns: TMDLColumn[] = [],
+  measures: TMDLMeasure[] = [],
+  overrides: Partial<TMDLTable> = {},
+): TMDLTable {
+  return {
+    name,
+    columns,
+    measures,
+    isHidden: false,
+    isCalculated: false,
+    isAutoDateTable: false,
+    ...overrides,
+  };
+}
+
+function model(tables: TMDLTable[], relationships: TMDLRelationship[] = []): TMDLModel {
+  return {
+    modelPath: '/',
+    tables,
+    relationships: relationships.map((relationship) =>
+      relationship.identityProven === undefined
+        ? { ...relationship, identityProven: true }
+        : relationship,
+    ),
+  };
+}
+
+const relationship: TMDLRelationship = {
+  id: 'Forecast_Date_Calendar_Date',
+  fromTable: 'Forecast',
+  fromColumn: 'Forecast Date',
+  toTable: 'Calendar',
+  toColumn: 'Date',
+  isActive: false,
+  crossFilteringBehavior: 'single',
+  cardinality: 'manyToOne',
+};
+
+describe('date grain planner', () => {
+  it('builds one batched read-only DAX probe for multiple temporal fact date columns', () => {
+    const m = model([
+      tbl('Actual', [col('Actual', 'Event Date', 'dateTime')]),
+      tbl('Forecast', [col('Forecast', 'Forecast Date', 'date')]),
+    ]);
+
+    const query = buildDateGrainProbeQuery(m, [
+      { tableName: 'Actual', dateColumn: 'Event Date' },
+      { tableName: 'Forecast', dateColumn: 'Forecast Date' },
+    ]);
+
+    expect(query).toContain('EVALUATE');
+    expect(query).toContain('UNION(');
+    expect(query).toContain("'Actual'[Event Date]");
+    expect(query).toContain("'Forecast'[Forecast Date]");
+    expect(query).toContain('distinctMonthStartCount');
+    expect(query).toContain('nonMidnightTimeCount');
+    expect(query).toMatch(/"gapCount",[\s\S]+,\n\s+"minDate"/);
+  });
+
+  it('classifies non-month-start fact dates as day grain and allows plain additive measures', () => {
+    const m = model(
+      [
+        tbl('Forecast', [
+          col('Forecast', 'Forecast Date', 'dateTime'),
+          col('Forecast', 'Amount', 'decimal', { summarizeBy: 'sum' }),
+        ]),
+        tbl('Calendar', [col('Calendar', 'Date', 'dateTime', { isKey: true })], [], {
+          dataCategory: 'Time',
+        }),
+      ],
+      [relationship],
+    );
+
+    const result = planDateGrain(
+      m,
+      {
+        facts: [{ tableName: 'Forecast', dateColumn: 'Forecast Date' }],
+        dateTable: 'Calendar',
+        dateColumn: 'Date',
+        dateTableCoverageEvidence: {
+          dateTable: {
+            tableName: 'Calendar',
+            dateColumn: 'Date',
+            rowCount: 59,
+            nonBlankDateCount: 59,
+            distinctDateCount: 59,
+            blankDateCount: 0,
+            duplicateDateCount: 0,
+            gapCount: 0,
+            nonMidnightTimeCount: 0,
+            minDate: '2025-01-01T00:00:00',
+            maxDate: '2025-02-28T00:00:00',
+          },
+          facts: [
+            {
+              tableName: 'Forecast',
+              dateColumn: 'Forecast Date',
+              rowCount: 59,
+              nonBlankDateCount: 59,
+              distinctDateCount: 59,
+              distinctMonthStartCount: 2,
+              nonMonthStartDateCount: 57,
+              monthsWithMultipleDates: 2,
+              maxDistinctDatesPerMonth: 31,
+              blankDateCount: 0,
+              duplicateDateCount: 0,
+              gapCount: 0,
+              nonMidnightTimeCount: 0,
+              minDate: '2025-01-01T00:00:00',
+              maxDate: '2025-02-28T00:00:00',
+            },
+          ],
+        },
+      },
+      [
+        {
+          tableName: 'Forecast',
+          dateColumn: 'Forecast Date',
+          rowCount: 59,
+          nonBlankDateCount: 59,
+          distinctDateCount: 59,
+          distinctMonthStartCount: 2,
+          nonMonthStartDateCount: 57,
+          monthsWithMultipleDates: 2,
+          maxDistinctDatesPerMonth: 31,
+          blankDateCount: 0,
+          duplicateDateCount: 0,
+          gapCount: 0,
+          nonMidnightTimeCount: 0,
+          minDate: '2025-01-01T00:00:00',
+          maxDate: '2025-02-28T00:00:00',
+        },
+      ],
+    );
+
+    expect(result.facts[0]?.observedGrain).toBe('day');
+    expect(result.facts[0]?.measureGuidance.plainSumSafe).toBe(true);
+    expect(result.facts[0]?.measureGuidance.safeVisualDateGrain).toBe('day-or-above');
+    expect(result.facts[0]?.writePlan).toEqual([
+      {
+        action: 'activate-date-relationship',
+        id: 'Forecast_Date_Calendar_Date',
+        description:
+          'Observed day-level date values support activating the existing date relationship.',
+      },
+    ]);
+  });
+
+  it('does not treat DateTime day-grain evidence as exact proof when time-component proof is missing', () => {
+    const m = model(
+      [
+        tbl('Forecast', [
+          col('Forecast', 'Forecast Date', 'dateTime'),
+          col('Forecast', 'Amount', 'decimal', { summarizeBy: 'sum' }),
+        ]),
+        tbl('Calendar', [col('Calendar', 'Date', 'dateTime', { isKey: true })], [], {
+          dataCategory: 'Time',
+        }),
+      ],
+      [relationship],
+    );
+
+    const result = planDateGrain(
+      m,
+      {
+        facts: [{ tableName: 'Forecast', dateColumn: 'Forecast Date' }],
+        dateTable: 'Calendar',
+        dateColumn: 'Date',
+        dateTableCoverageEvidence: {
+          dateTable: {
+            tableName: 'Calendar',
+            dateColumn: 'Date',
+            rowCount: 59,
+            nonBlankDateCount: 59,
+            distinctDateCount: 59,
+            blankDateCount: 0,
+            duplicateDateCount: 0,
+            gapCount: 0,
+            nonMidnightTimeCount: 0,
+            minDate: '2025-01-01T00:00:00',
+            maxDate: '2025-02-28T00:00:00',
+          },
+          facts: [
+            {
+              tableName: 'Forecast',
+              dateColumn: 'Forecast Date',
+              rowCount: 59,
+              nonBlankDateCount: 59,
+              distinctDateCount: 59,
+              distinctMonthStartCount: 2,
+              nonMonthStartDateCount: 57,
+              monthsWithMultipleDates: 2,
+              maxDistinctDatesPerMonth: 31,
+              blankDateCount: 0,
+              duplicateDateCount: 0,
+              gapCount: 0,
+              minDate: '2025-01-01T00:00:00',
+              maxDate: '2025-02-28T00:00:00',
+            },
+          ],
+        },
+      },
+      [
+        {
+          tableName: 'Forecast',
+          dateColumn: 'Forecast Date',
+          rowCount: 59,
+          nonBlankDateCount: 59,
+          distinctDateCount: 59,
+          distinctMonthStartCount: 2,
+          nonMonthStartDateCount: 57,
+          monthsWithMultipleDates: 2,
+          maxDistinctDatesPerMonth: 31,
+          blankDateCount: 0,
+          duplicateDateCount: 0,
+          gapCount: 0,
+          minDate: '2025-01-01T00:00:00',
+          maxDate: '2025-02-28T00:00:00',
+        },
+      ],
+    );
+
+    expect(result.facts[0]?.measureGuidance.plainSumSafe).toBe(false);
+    expect(result.facts[0]?.writePlan).toEqual([]);
+  });
+
+  it('requires gap-free exact daily proof before marking a plain additive target measure safe', () => {
+    const m = model([
+      tbl('Forecast', [
+        col('Forecast', 'Forecast Date', 'dateTime'),
+        col('Forecast', 'Amount', 'decimal', { summarizeBy: 'sum' }),
+      ]),
+    ]);
+
+    const result = planDateGrain(
+      m,
+      {
+        facts: [{ tableName: 'Forecast', dateColumn: 'Forecast Date' }],
+      },
+      [
+        {
+          tableName: 'Forecast',
+          dateColumn: 'Forecast Date',
+          rowCount: 10,
+          nonBlankDateCount: 10,
+          distinctDateCount: 10,
+          distinctMonthStartCount: 1,
+          nonMonthStartDateCount: 9,
+          monthsWithMultipleDates: 1,
+          maxDistinctDatesPerMonth: 10,
+          blankDateCount: 0,
+          duplicateDateCount: 0,
+          gapCount: 1,
+          nonMidnightTimeCount: 0,
+          minDate: '2025-01-01T00:00:00',
+          maxDate: '2025-01-10T00:00:00',
+        },
+      ],
+    );
+
+    expect(result.facts[0]?.observedGrain).toBe('day');
+    expect(result.facts[0]?.measureGuidance.plainSumSafe).toBe(false);
+    expect(result.facts[0]?.writePlan).toEqual([]);
+  });
+
+  it('treats observed day grain as descriptive when DateTime keys include non-midnight times', () => {
+    const m = model(
+      [
+        tbl('Forecast', [
+          col('Forecast', 'Forecast Date', 'dateTime'),
+          col('Forecast', 'Amount', 'decimal', { summarizeBy: 'sum' }),
+        ]),
+        tbl('Calendar', [col('Calendar', 'Date', 'dateTime', { isKey: true })], [], {
+          dataCategory: 'Time',
+        }),
+      ],
+      [relationship],
+    );
+
+    const result = planDateGrain(
+      m,
+      {
+        facts: [{ tableName: 'Forecast', dateColumn: 'Forecast Date' }],
+        dateTable: 'Calendar',
+        dateColumn: 'Date',
+        dateTableCoverageEvidence: {
+          dateTable: {
+            tableName: 'Calendar',
+            dateColumn: 'Date',
+            rowCount: 31,
+            nonBlankDateCount: 31,
+            distinctDateCount: 31,
+            blankDateCount: 0,
+            duplicateDateCount: 0,
+            gapCount: 0,
+            nonMidnightTimeCount: 0,
+            minDate: '2025-01-01T00:00:00',
+            maxDate: '2025-01-31T00:00:00',
+          },
+          facts: [
+            {
+              tableName: 'Forecast',
+              dateColumn: 'Forecast Date',
+              rowCount: 31,
+              nonBlankDateCount: 31,
+              distinctDateCount: 31,
+              distinctMonthStartCount: 1,
+              nonMonthStartDateCount: 30,
+              monthsWithMultipleDates: 1,
+              maxDistinctDatesPerMonth: 31,
+              blankDateCount: 0,
+              duplicateDateCount: 0,
+              gapCount: 0,
+              nonMidnightTimeCount: 1,
+              minDate: '2025-01-01T00:00:00',
+              maxDate: '2025-01-31T13:15:00',
+            },
+          ],
+        },
+      },
+      [
+        {
+          tableName: 'Forecast',
+          dateColumn: 'Forecast Date',
+          rowCount: 31,
+          nonBlankDateCount: 31,
+          distinctDateCount: 31,
+          distinctMonthStartCount: 1,
+          nonMonthStartDateCount: 30,
+          monthsWithMultipleDates: 1,
+          maxDistinctDatesPerMonth: 31,
+          blankDateCount: 0,
+          duplicateDateCount: 0,
+          gapCount: 0,
+          nonMidnightTimeCount: 1,
+          minDate: '2025-01-01T00:00:00',
+          maxDate: '2025-01-31T13:15:00',
+        },
+      ],
+    );
+
+    expect(result.facts[0]?.observedGrain).toBe('day');
+    expect(result.facts[0]?.measureGuidance.plainSumSafe).toBe(false);
+    expect(result.facts[0]?.writePlan).toEqual([]);
+    expect(result.dateTableCoverage?.blockers).toContainEqual(
+      expect.objectContaining({
+        code: 'fact-date-has-time-component',
+        factTable: 'Forecast',
+        factColumn: 'Forecast Date',
+      }),
+    );
+  });
+
+  it('classifies month-start-only fact dates separately and blocks daily-grain simplification', () => {
+    const m = model(
+      [
+        tbl('Plan', [col('Plan', 'Plan Date', 'dateTime')]),
+        tbl('Calendar', [col('Calendar', 'Date', 'dateTime', { isKey: true })], [], {
+          dataCategory: 'Time',
+        }),
+      ],
+      [
+        {
+          ...relationship,
+          id: 'Plan_Date_Calendar_Date',
+          fromTable: 'Plan',
+          fromColumn: 'Plan Date',
+        },
+      ],
+    );
+
+    const result = planDateGrain(
+      m,
+      {
+        facts: [{ tableName: 'Plan', dateColumn: 'Plan Date' }],
+        dateTable: 'Calendar',
+        dateColumn: 'Date',
+      },
+      [
+        {
+          tableName: 'Plan',
+          dateColumn: 'Plan Date',
+          rowCount: 12,
+          nonBlankDateCount: 12,
+          distinctDateCount: 12,
+          distinctMonthStartCount: 12,
+          nonMonthStartDateCount: 0,
+          monthsWithMultipleDates: 0,
+          maxDistinctDatesPerMonth: 1,
+          blankDateCount: 0,
+          duplicateDateCount: 0,
+          gapCount: 323,
+          nonMidnightTimeCount: 0,
+          minDate: '2025-01-01T00:00:00',
+          maxDate: '2025-12-01T00:00:00',
+        },
+      ],
+    );
+
+    expect(result.facts[0]?.observedGrain).toBe('month-start');
+    expect(result.facts[0]?.measureGuidance.plainSumSafe).toBe(false);
+    expect(result.facts[0]?.measureGuidance.safeVisualDateGrain).toBe('month-or-above');
+    expect(result.facts[0]?.writePlan).toEqual([]);
+  });
+
+  it('does not emit date relationship writes without Date-table coverage proof', () => {
+    const m = model(
+      [
+        tbl('Forecast', [
+          col('Forecast', 'Forecast Date', 'dateTime'),
+          col('Forecast', 'Amount', 'decimal', { summarizeBy: 'sum' }),
+        ]),
+        tbl('Calendar', [col('Calendar', 'Date', 'dateTime', { isKey: true })], [], {
+          dataCategory: 'Time',
+        }),
+      ],
+      [relationship],
+    );
+
+    const result = planDateGrain(
+      m,
+      {
+        facts: [{ tableName: 'Forecast', dateColumn: 'Forecast Date' }],
+        dateTable: 'Calendar',
+        dateColumn: 'Date',
+      },
+      [
+        {
+          tableName: 'Forecast',
+          dateColumn: 'Forecast Date',
+          rowCount: 45,
+          nonBlankDateCount: 45,
+          distinctDateCount: 40,
+          distinctMonthStartCount: 2,
+          nonMonthStartDateCount: 43,
+          monthsWithMultipleDates: 2,
+          maxDistinctDatesPerMonth: 21,
+          blankDateCount: 0,
+          duplicateDateCount: 5,
+          gapCount: 19,
+          nonMidnightTimeCount: 0,
+          minDate: '2025-01-01T00:00:00',
+          maxDate: '2025-02-28T00:00:00',
+        },
+      ],
+    );
+
+    expect(result.facts[0]?.observedGrain).toBe('day');
+    expect(result.facts[0]?.writePlan).toEqual([]);
+  });
+
+  it('does not emit date relationship writes to an unmarked date endpoint', () => {
+    const m = model(
+      [
+        tbl('Forecast', [col('Forecast', 'Forecast Date', 'dateTime')]),
+        tbl('Calendar', [col('Calendar', 'Date', 'dateTime', { isKey: true })]),
+      ],
+      [relationship],
+    );
+
+    const result = planDateGrain(
+      m,
+      {
+        facts: [{ tableName: 'Forecast', dateColumn: 'Forecast Date' }],
+        dateTable: 'Calendar',
+        dateColumn: 'Date',
+      },
+      [
+        {
+          tableName: 'Forecast',
+          dateColumn: 'Forecast Date',
+          rowCount: 45,
+          nonBlankDateCount: 45,
+          distinctDateCount: 40,
+          distinctMonthStartCount: 2,
+          nonMonthStartDateCount: 43,
+          monthsWithMultipleDates: 2,
+          maxDistinctDatesPerMonth: 21,
+          blankDateCount: 0,
+          duplicateDateCount: 5,
+          gapCount: 19,
+          nonMidnightTimeCount: 0,
+          minDate: '2025-01-01T00:00:00',
+          maxDate: '2025-02-28T00:00:00',
+        },
+      ],
+    );
+
+    expect(result.facts[0]?.observedGrain).toBe('day');
+    expect(result.facts[0]?.writePlan).toEqual([]);
+  });
+
+  it('classifies one non-start date per month as month-grain, not daily', () => {
+    const m = model([
+      tbl('Plan', [col('Plan', 'Plan Date', 'dateTime')]),
+      tbl('Calendar', [col('Calendar', 'Date', 'dateTime', { isKey: true })]),
+    ]);
+
+    const result = planDateGrain(
+      m,
+      {
+        facts: [{ tableName: 'Plan', dateColumn: 'Plan Date' }],
+        dateTable: 'Calendar',
+        dateColumn: 'Date',
+      },
+      [
+        {
+          tableName: 'Plan',
+          dateColumn: 'Plan Date',
+          rowCount: 12,
+          nonBlankDateCount: 12,
+          distinctDateCount: 12,
+          distinctMonthStartCount: 12,
+          nonMonthStartDateCount: 12,
+          monthsWithMultipleDates: 0,
+          maxDistinctDatesPerMonth: 1,
+          blankDateCount: 0,
+          duplicateDateCount: 0,
+          gapCount: 323,
+          nonMidnightTimeCount: 0,
+          minDate: '2025-01-15T00:00:00',
+          maxDate: '2025-12-15T00:00:00',
+        },
+      ],
+    );
+
+    expect(result.facts[0]?.observedGrain).toBe('month-single-date');
+    expect(result.facts[0]?.measureGuidance.plainSumSafe).toBe(false);
+    expect(result.facts[0]?.measureGuidance.safeVisualDateGrain).toBe('month-or-above');
+  });
+
+  it('classifies one correction date inside a monthly table as submonthly, not daily', () => {
+    const m = model(
+      [
+        tbl('Plan', [col('Plan', 'Plan Date', 'dateTime')]),
+        tbl('Calendar', [col('Calendar', 'Date', 'dateTime', { isKey: true })], [], {
+          dataCategory: 'Time',
+        }),
+      ],
+      [
+        {
+          ...relationship,
+          id: 'Plan_Date_Calendar_Date',
+          fromTable: 'Plan',
+          fromColumn: 'Plan Date',
+        },
+      ],
+    );
+
+    const result = planDateGrain(
+      m,
+      {
+        facts: [{ tableName: 'Plan', dateColumn: 'Plan Date' }],
+        dateTable: 'Calendar',
+        dateColumn: 'Date',
+      },
+      [
+        {
+          tableName: 'Plan',
+          dateColumn: 'Plan Date',
+          rowCount: 13,
+          nonBlankDateCount: 13,
+          distinctDateCount: 13,
+          distinctMonthStartCount: 12,
+          nonMonthStartDateCount: 1,
+          monthsWithMultipleDates: 1,
+          maxDistinctDatesPerMonth: 2,
+          blankDateCount: 0,
+          duplicateDateCount: 0,
+          gapCount: 322,
+          nonMidnightTimeCount: 0,
+          minDate: '2025-01-01T00:00:00',
+          maxDate: '2025-12-15T00:00:00',
+        },
+      ],
+    );
+
+    expect(result.facts[0]?.observedGrain).toBe('submonthly');
+    expect(result.facts[0]?.measureGuidance.plainSumSafe).toBe(false);
+    expect(result.facts[0]?.writePlan).toEqual([]);
+  });
+
+  it('does not auto-activate an inactive role-playing date relationship', () => {
+    const m = model(
+      [
+        tbl('Actual', [
+          col('Actual', 'Order Date', 'dateTime'),
+          col('Actual', 'Ship Date', 'dateTime'),
+        ]),
+        tbl('Calendar', [col('Calendar', 'Date', 'dateTime', { isKey: true })], [], {
+          dataCategory: 'Time',
+        }),
+      ],
+      [
+        {
+          id: 'Actual_Order_Calendar',
+          fromTable: 'Actual',
+          fromColumn: 'Order Date',
+          toTable: 'Calendar',
+          toColumn: 'Date',
+          isActive: true,
+          crossFilteringBehavior: 'single',
+          cardinality: 'manyToOne',
+        },
+        {
+          id: 'Actual_Ship_Calendar',
+          fromTable: 'Actual',
+          fromColumn: 'Ship Date',
+          toTable: 'Calendar',
+          toColumn: 'Date',
+          isActive: false,
+          crossFilteringBehavior: 'single',
+          cardinality: 'manyToOne',
+        },
+      ],
+    );
+
+    const result = planDateGrain(
+      m,
+      {
+        facts: [{ tableName: 'Actual', dateColumn: 'Ship Date' }],
+        dateTable: 'Calendar',
+        dateColumn: 'Date',
+      },
+      [
+        {
+          tableName: 'Actual',
+          dateColumn: 'Ship Date',
+          rowCount: 40,
+          nonBlankDateCount: 10,
+          distinctDateCount: 10,
+          distinctMonthStartCount: 1,
+          nonMonthStartDateCount: 9,
+          monthsWithMultipleDates: 1,
+          maxDistinctDatesPerMonth: 10,
+          blankDateCount: 30,
+          duplicateDateCount: 0,
+          gapCount: 0,
+          minDate: '2025-01-01T00:00:00',
+          maxDate: '2025-01-10T00:00:00',
+        },
+      ],
+    );
+
+    const relationship = result.facts[0]?.relationship;
+    expect(relationship).toMatchObject({
+      status: 'inactive',
+      id: 'Actual_Ship_Calendar',
+      canActivate: false,
+      activationBlocking: [
+        {
+          code: 'ambiguous-active-path',
+          message:
+            'Another active relationship already exists between "Actual" and "Calendar". Only one active relationship is allowed per table pair; make this one inactive or deactivate the other.',
+        },
+      ],
+    });
+    expect(result.facts[0]?.writePlan).toEqual([]);
+  });
+
+  it('matches requested dateColumn against the dimension endpoint, not the fact endpoint', () => {
+    const m = model(
+      [
+        tbl('Fact', [col('Fact', 'Date', 'dateTime')]),
+        tbl('Fiscal Calendar', [col('Fiscal Calendar', 'Fiscal Date', 'dateTime')]),
+      ],
+      [
+        {
+          id: 'Fact_Date_Fiscal',
+          fromTable: 'Fact',
+          fromColumn: 'Date',
+          toTable: 'Fiscal Calendar',
+          toColumn: 'Fiscal Date',
+          isActive: false,
+          crossFilteringBehavior: 'single',
+          cardinality: 'manyToOne',
+        },
+      ],
+    );
+
+    const result = planDateGrain(m, {
+      facts: [{ tableName: 'Fact', dateColumn: 'Date' }],
+      dateColumn: 'Date',
+    });
+
+    expect(result.facts[0]?.relationship).toEqual({
+      status: 'unknown',
+      reason: 'no matching date relationship found and dateTable/dateColumn were not supplied',
+    });
+  });
+
+  it('reports auto date tables without treating them as the governed date dimension', () => {
+    const m = model([
+      tbl('Fact', [col('Fact', 'Date', 'dateTime')]),
+      tbl('Calendar', [col('Calendar', 'Date', 'dateTime')]),
+      tbl('LocalDateTable_1', [col('LocalDateTable_1', 'Date', 'dateTime')], [], {
+        isAutoDateTable: true,
+      }),
+    ]);
+
+    const result = planDateGrain(m, {
+      facts: [{ tableName: 'Fact', dateColumn: 'Date' }],
+      dateTable: 'Calendar',
+      dateColumn: 'Date',
+    });
+
+    expect(result.autoDateTables).toEqual({
+      count: 1,
+      names: ['LocalDateTable_1'],
+      recommendation:
+        'Disable Auto Date/Time and use the governed date table; auto date tables add repeated calendar structures and slow model inspection.',
+    });
+  });
+
+  it('detects date-truncating TREATAS candidates when observed dates are daily', () => {
+    const m = model([
+      tbl('Target', [col('Target', 'Target Date', 'dateTime')]),
+      tbl(
+        'Measures',
+        [],
+        [
+          measure(
+            'Measures',
+            'Target Amount',
+            "CALCULATE(SUM(Target[Amount]), TREATAS(SELECTCOLUMNS(VALUES('Calendar'[Date]), \"MonthKey\", DATE(YEAR('Target'[Target Date]), MONTH('Target'[Target Date]), 1)), Target[Target Date]))",
+          ),
+        ],
+      ),
+    ]);
+
+    const result = planDateGrain(
+      m,
+      { facts: [{ tableName: 'Target', dateColumn: 'Target Date' }] },
+      [
+        {
+          tableName: 'Target',
+          dateColumn: 'Target Date',
+          rowCount: 59,
+          nonBlankDateCount: 59,
+          distinctDateCount: 59,
+          distinctMonthStartCount: 2,
+          nonMonthStartDateCount: 57,
+          monthsWithMultipleDates: 2,
+          maxDistinctDatesPerMonth: 31,
+          blankDateCount: 0,
+          duplicateDateCount: 0,
+          gapCount: 0,
+          nonMidnightTimeCount: 0,
+          minDate: '2025-01-01T00:00:00',
+          maxDate: '2025-02-28T00:00:00',
+        },
+      ],
+    );
+
+    expect(result.facts[0]?.measureGuidance.removeDateTruncatingTreatas).toBe(true);
+    expect(result.facts[0]?.measureGuidance.dateTruncatingMeasureCandidates).toEqual([
+      {
+        table: 'Measures',
+        name: 'Target Amount',
+        reason: 'treatas-date-truncation-pattern',
+      },
+    ]);
+  });
+
+  it('parses common DAX result envelopes and bracketed row keys', () => {
+    const parsed = parseDateGrainProbeResult({
+      results: [
+        {
+          tables: [
+            {
+              rows: [
+                {
+                  '[__table]': 'Target',
+                  '[__column]': 'Target Date',
+                  '[rowCount]': 42,
+                  '[nonBlankDateCount]': 40,
+                  '[distinctDateCount]': 35,
+                  '[distinctMonthStartCount]': 2,
+                  '[nonMonthStartDateCount]': 38,
+                  '[monthsWithMultipleDates]': 2,
+                  '[maxDistinctDatesPerMonth]': 18,
+                  '[blankDateCount]': 2,
+                  '[duplicateDateCount]': 5,
+                  '[gapCount]': 23,
+                  '[nonMidnightTimeCount]': 4,
+                  '[minDate]': '2025-01-02T00:00:00',
+                  '[maxDate]': '2025-02-28T00:00:00',
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(parsed).toEqual([
+      {
+        tableName: 'Target',
+        dateColumn: 'Target Date',
+        rowCount: 42,
+        nonBlankDateCount: 40,
+        distinctDateCount: 35,
+        distinctMonthStartCount: 2,
+        nonMonthStartDateCount: 38,
+        monthsWithMultipleDates: 2,
+        maxDistinctDatesPerMonth: 18,
+        blankDateCount: 2,
+        duplicateDateCount: 5,
+        gapCount: 23,
+        nonMidnightTimeCount: 4,
+        minDate: '2025-01-02T00:00:00',
+        maxDate: '2025-02-28T00:00:00',
+      },
+    ]);
+    expect(classifyObservedDateGrain(parsed[0])).toBe('day');
+  });
+
+  it('builds one date-table coverage probe for the governed date key and facts', () => {
+    const m = model([
+      tbl('Fact', [col('Fact', 'Date', 'dateTime')]),
+      tbl('Calendar', [col('Calendar', 'Date', 'dateTime', { isKey: true })], [], {
+        dataCategory: 'Time',
+      }),
+    ]);
+
+    const query = buildDateTableCoverageProbeQuery(m, {
+      dateTable: 'Calendar',
+      dateColumn: 'Date',
+      facts: [{ tableName: 'Fact', dateColumn: 'Date' }],
+    });
+
+    expect(query).toContain('UNION(');
+    expect(query).toContain('"__kind", "date-table"');
+    expect(query).toContain('"blankDateCount"');
+    expect(query).toContain('"gapCount"');
+  });
+
+  it('blocks a date table that does not cover observed fact min/max dates', () => {
+    const m = model([
+      tbl('Fact', [col('Fact', 'Date', 'dateTime')]),
+      tbl('Calendar', [col('Calendar', 'Date', 'dateTime', { isKey: true })], [], {
+        dataCategory: 'Time',
+      }),
+    ]);
+
+    const result = planDateTableCoverage(
+      m,
+      {
+        dateTable: 'Calendar',
+        dateColumn: 'Date',
+        facts: [{ tableName: 'Fact', dateColumn: 'Date' }],
+      },
+      {
+        dateTable: {
+          tableName: 'Calendar',
+          dateColumn: 'Date',
+          rowCount: 366,
+          nonBlankDateCount: 366,
+          distinctDateCount: 366,
+          blankDateCount: 0,
+          duplicateDateCount: 0,
+          gapCount: 0,
+          nonMidnightTimeCount: 0,
+          minDate: '2020-01-01T00:00:00',
+          maxDate: '2020-12-31T00:00:00',
+        },
+        facts: [
+          {
+            tableName: 'Fact',
+            dateColumn: 'Date',
+            rowCount: 100,
+            nonBlankDateCount: 100,
+            distinctDateCount: 100,
+            distinctMonthStartCount: 12,
+            nonMonthStartDateCount: 96,
+            monthsWithMultipleDates: 12,
+            maxDistinctDatesPerMonth: 10,
+            blankDateCount: 0,
+            duplicateDateCount: 0,
+            gapCount: 1361,
+            nonMidnightTimeCount: 2,
+            minDate: '2017-01-03T00:00:00',
+            maxDate: '2020-12-30T00:00:00',
+          },
+        ],
+      },
+    );
+
+    expect(result.status).toBe('blocked');
+    expect(result.blockers.map((blocker) => blocker.code)).toContain(
+      'date-table-start-after-fact-min',
+    );
+    expect(result.blockers.map((blocker) => blocker.code)).toContain(
+      'fact-date-has-time-component',
+    );
+    expect(result.factCoverage[0]).toMatchObject({
+      tableName: 'Fact',
+      dateColumn: 'Date',
+      covered: false,
+      factMinDate: '2017-01-03T00:00:00',
+      factMaxDate: '2020-12-30T00:00:00',
+    });
+    expect(result.recommendedRange).toMatchObject({
+      observedFactMinDate: '2017-01-03',
+      observedFactMaxDate: '2020-12-30',
+      calendarStartDate: '2017-01-03',
+      calendarEndDate: '2020-12-30',
+      requiresExplicitForecastHorizon: true,
+    });
+    expect(result.recommendedRange.message).toContain('observed fact min/max');
+  });
+
+  it('expands direct Date-table coverage plans to omitted model-derived fact dates', () => {
+    const m = model(
+      [
+        tbl('Actual', [col('Actual', 'Actual Date', 'dateTime')]),
+        tbl('Plan', [col('Plan', 'Plan Date', 'dateTime')]),
+        tbl('Calendar', [col('Calendar', 'Date', 'dateTime', { isKey: true })], [], {
+          dataCategory: 'Time',
+        }),
+      ],
+      [
+        {
+          id: 'Actual_Date_Calendar_Date',
+          fromTable: 'Actual',
+          fromColumn: 'Actual Date',
+          toTable: 'Calendar',
+          toColumn: 'Date',
+          isActive: true,
+          crossFilteringBehavior: 'single',
+          cardinality: 'manyToOne',
+        },
+        {
+          id: 'Plan_Date_Calendar_Date',
+          fromTable: 'Plan',
+          fromColumn: 'Plan Date',
+          toTable: 'Calendar',
+          toColumn: 'Date',
+          isActive: true,
+          crossFilteringBehavior: 'single',
+          cardinality: 'manyToOne',
+        },
+      ],
+    );
+
+    const result = planDateTableCoverage(
+      m,
+      {
+        dateTable: 'Calendar',
+        dateColumn: 'Date',
+        facts: [{ tableName: 'Actual', dateColumn: 'Actual Date' }],
+      },
+      {
+        dateTable: {
+          tableName: 'Calendar',
+          dateColumn: 'Date',
+          rowCount: 366,
+          nonBlankDateCount: 366,
+          distinctDateCount: 366,
+          blankDateCount: 0,
+          duplicateDateCount: 0,
+          gapCount: 0,
+          nonMidnightTimeCount: 0,
+          minDate: '2020-01-01T00:00:00',
+          maxDate: '2020-12-31T00:00:00',
+        },
+        facts: [
+          {
+            tableName: 'Actual',
+            dateColumn: 'Actual Date',
+            rowCount: 366,
+            nonBlankDateCount: 366,
+            distinctDateCount: 366,
+            distinctMonthStartCount: 12,
+            nonMonthStartDateCount: 354,
+            monthsWithMultipleDates: 12,
+            maxDistinctDatesPerMonth: 31,
+            blankDateCount: 0,
+            duplicateDateCount: 0,
+            gapCount: 0,
+            minDate: '2020-01-01T00:00:00',
+            maxDate: '2020-12-31T00:00:00',
+          },
+        ],
+      },
+    );
+
+    expect(result.status).toBe('unknown');
+    expect(result.factCoverage.map((coverage) => coverage.tableName)).toEqual(['Actual', 'Plan']);
+    expect(result.blockers).toContainEqual(
+      expect.objectContaining({
+        code: 'fact-date-proof-missing',
+        factTable: 'Plan',
+        factColumn: 'Plan Date',
+      }),
+    );
+  });
+
+  it('blocks volatile TODAY or NOW calendar anchors instead of accepting current-date bounds', () => {
+    const m = model([
+      tbl('Fact', [col('Fact', 'Date', 'dateTime')]),
+      tbl('Calendar', [col('Calendar', 'Date', 'dateTime', { isKey: true })], [], {
+        dataCategory: 'Time',
+        expression: 'CALENDAR(DATE(2017,1,1), DATE(YEAR(TODAY()) + 1, 12, 31))',
+      }),
+    ]);
+
+    const result = planDateTableCoverage(
+      m,
+      {
+        dateTable: 'Calendar',
+        dateColumn: 'Date',
+        facts: [{ tableName: 'Fact', dateColumn: 'Date' }],
+      },
+      {
+        dateTable: {
+          tableName: 'Calendar',
+          dateColumn: 'Date',
+          blankDateCount: 0,
+          duplicateDateCount: 0,
+          gapCount: 0,
+          minDate: '2017-01-01T00:00:00',
+          maxDate: '2026-12-31T00:00:00',
+        },
+        facts: [
+          {
+            tableName: 'Fact',
+            dateColumn: 'Date',
+            minDate: '2017-01-03T00:00:00',
+            maxDate: '2020-12-30T00:00:00',
+          },
+        ],
+      },
+    );
+
+    expect(result.status).toBe('blocked');
+    expect(result.dateTable.hasVolatileAnchor).toBe(true);
+    expect(result.blockers.map((blocker) => blocker.code)).toContain('volatile-calendar-anchor');
+  });
+
+  it('blocks literal hardcoded calendar bounds in Date table source expressions', () => {
+    const m = model([
+      tbl('Fact', [col('Fact', 'Date', 'dateTime')]),
+      tbl('Calendar', [col('Calendar', 'Date', 'dateTime', { isKey: true })], [], {
+        dataCategory: 'Time',
+        expression: 'CALENDAR(DATE(2020,1,1), DATE(2026,12,31))',
+      }),
+    ]);
+
+    const result = planDateTableCoverage(m, {
+      dateTable: 'Calendar',
+      dateColumn: 'Date',
+      facts: [{ tableName: 'Fact', dateColumn: 'Date' }],
+    });
+
+    expect(result.status).toBe('blocked');
+    expect(result.blockers.map((blocker) => blocker.code)).toContain('literal-calendar-range');
+  });
+
+  it('detects volatile and literal M date-generation sources', () => {
+    const risks = findCalendarSourceRisks([
+      {
+        kind: 'm',
+        expression:
+          'let Source = List.Dates(#date(2020, 1, 1), Duration.Days(DateTime.LocalNow() - #date(2020, 1, 1)), #duration(1,0,0,0)) in Source',
+      },
+    ]);
+
+    expect(risks.map((risk) => risk.code)).toEqual([
+      'volatile-calendar-anchor',
+      'literal-calendar-range',
+    ]);
+  });
+
+  it('derives complete required fact-date coverage from relationships and fact-like tables', () => {
+    const m = model(
+      [
+        tbl('Actual', [
+          col('Actual', 'Date', 'dateTime'),
+          col('Actual', 'Amount', 'decimal', { summarizeBy: 'sum' }),
+        ]),
+        tbl('Target', [
+          col('Target', 'Date', 'dateTime'),
+          col('Target', 'Target Amount', 'decimal', { summarizeBy: 'sum' }),
+        ]),
+        tbl('Calendar', [col('Calendar', 'Date', 'dateTime', { isKey: true })], [], {
+          dataCategory: 'Time',
+        }),
+      ],
+      [
+        {
+          id: 'Actual_Date_Calendar_Date',
+          fromTable: 'Actual',
+          fromColumn: 'Date',
+          toTable: 'Calendar',
+          toColumn: 'Date',
+          isActive: true,
+          crossFilteringBehavior: 'single',
+          cardinality: 'manyToOne',
+        },
+        {
+          id: 'Target_Date_Calendar_Date',
+          fromTable: 'Target',
+          fromColumn: 'Date',
+          toTable: 'Calendar',
+          toColumn: 'Date',
+          isActive: false,
+          crossFilteringBehavior: 'single',
+          cardinality: 'manyToOne',
+        },
+      ],
+    );
+
+    expect(
+      deriveRequiredDateCoverageFacts(m, {
+        dateTable: 'Calendar',
+        dateColumn: 'Date',
+        facts: [{ tableName: 'Actual', dateColumn: 'Date' }],
+      }),
+    ).toEqual([
+      { tableName: 'Actual', dateColumn: 'Date' },
+      { tableName: 'Target', dateColumn: 'Date' },
+    ]);
+  });
+
+  it('returns blocked, not unknown, when the requested governed date table is missing', () => {
+    const m = model([tbl('Fact', [col('Fact', 'Date', 'dateTime')])]);
+
+    const result = planDateTableCoverage(m, {
+      dateTable: 'Calendar',
+      dateColumn: 'Date',
+      facts: [{ tableName: 'Fact', dateColumn: 'Date' }],
+    });
+
+    expect(result.status).toBe('blocked');
+    expect(result.blockers.map((blocker) => blocker.code)).toContain('date-table-not-found');
+  });
+
+  it('does not report valid coverage when a requested fact date proof is missing', () => {
+    const m = model([
+      tbl('Fact', [col('Fact', 'Date', 'dateTime')]),
+      tbl('Calendar', [col('Calendar', 'Date', 'dateTime', { isKey: true })], [], {
+        dataCategory: 'Time',
+      }),
+    ]);
+
+    const result = planDateTableCoverage(
+      m,
+      {
+        dateTable: 'Calendar',
+        dateColumn: 'Date',
+        facts: [{ tableName: 'Fact', dateColumn: 'Date' }],
+      },
+      {
+        dateTable: {
+          tableName: 'Calendar',
+          dateColumn: 'Date',
+          blankDateCount: 0,
+          duplicateDateCount: 0,
+          gapCount: 0,
+          minDate: '2017-01-01T00:00:00',
+          maxDate: '2020-12-31T00:00:00',
+        },
+        facts: [],
+      },
+    );
+
+    expect(result.status).toBe('unknown');
+    expect(result.factCoverage[0]?.covered).toBe(false);
+    expect(result.blockers.map((blocker) => blocker.code)).toContain('fact-date-proof-missing');
+    expect(result.recommendedRange.requiresExplicitForecastHorizon).toBe(true);
+    expect(result.recommendedRange.message).toContain('not fully proven');
+  });
+
+  it('parses date-table coverage proof rows separately from fact grain rows', () => {
+    const parsed = parseDateTableCoverageProbeResult({
+      results: [
+        {
+          tables: [
+            {
+              rows: [
+                {
+                  '[__kind]': 'date-table',
+                  '[__table]': 'Calendar',
+                  '[__column]': 'Date',
+                  '[blankDateCount]': 0,
+                  '[duplicateDateCount]': 0,
+                  '[gapCount]': 0,
+                  '[minDate]': '2017-01-01T00:00:00',
+                  '[maxDate]': '2020-12-31T00:00:00',
+                },
+                {
+                  '[__kind]': 'fact',
+                  '[__table]': 'Fact',
+                  '[__column]': 'Date',
+                  '[distinctDateCount]': 10,
+                  '[distinctMonthStartCount]': 1,
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(parsed.dateTable).toMatchObject({
+      tableName: 'Calendar',
+      dateColumn: 'Date',
+      blankDateCount: 0,
+      duplicateDateCount: 0,
+      gapCount: 0,
+    });
+    expect(parsed.facts).toHaveLength(1);
+  });
+
+  it('treats partial grain proof as unknown instead of inferring from defaults', () => {
+    expect(
+      classifyObservedDateGrain({
+        tableName: 'Fact',
+        dateColumn: 'Date',
+        nonBlankDateCount: 10,
+        distinctDateCount: 10,
+      }),
+    ).toBe('unknown');
+  });
+
+  it('blocks coverage when date-table proof is partial even if min/max are present', () => {
+    const m = model([
+      tbl('Fact', [col('Fact', 'Date', 'dateTime')]),
+      tbl('Calendar', [col('Calendar', 'Date', 'dateTime', { isKey: true })], [], {
+        dataCategory: 'Time',
+      }),
+    ]);
+
+    const result = planDateTableCoverage(
+      m,
+      {
+        dateTable: 'Calendar',
+        dateColumn: 'Date',
+        facts: [{ tableName: 'Fact', dateColumn: 'Date' }],
+      },
+      {
+        dateTable: {
+          tableName: 'Calendar',
+          dateColumn: 'Date',
+          minDate: '2020-01-01T00:00:00',
+          maxDate: '2020-12-31T00:00:00',
+        },
+        facts: [
+          {
+            tableName: 'Fact',
+            dateColumn: 'Date',
+            rowCount: 10,
+            nonBlankDateCount: 10,
+            distinctDateCount: 10,
+            distinctMonthStartCount: 1,
+            nonMonthStartDateCount: 9,
+            monthsWithMultipleDates: 1,
+            maxDistinctDatesPerMonth: 10,
+            blankDateCount: 0,
+            duplicateDateCount: 0,
+            gapCount: 0,
+            minDate: '2020-01-01T00:00:00',
+            maxDate: '2020-01-10T00:00:00',
+          },
+        ],
+      },
+    );
+
+    expect(result.status).toBe('unknown');
+    expect(result.blockers.map((blocker) => blocker.code)).toContain('date-table-proof-missing');
+    expect(result.factCoverage[0]?.covered).toBe(false);
+  });
+
+  it('preserves caller-supplied fact dates and blocks missing fact metadata', () => {
+    const m = model([
+      tbl('Calendar', [col('Calendar', 'Date', 'dateTime', { isKey: true })], [], {
+        dataCategory: 'Time',
+      }),
+    ]);
+
+    const result = planDateTableCoverage(
+      m,
+      {
+        dateTable: 'Calendar',
+        dateColumn: 'Date',
+        facts: [{ tableName: 'Missing Fact', dateColumn: 'Missing Date' }],
+      },
+      {
+        dateTable: {
+          tableName: 'Calendar',
+          dateColumn: 'Date',
+          rowCount: 10,
+          nonBlankDateCount: 10,
+          distinctDateCount: 10,
+          blankDateCount: 0,
+          duplicateDateCount: 0,
+          gapCount: 0,
+          nonMidnightTimeCount: 0,
+          minDate: '2025-01-01T00:00:00',
+          maxDate: '2025-01-10T00:00:00',
+        },
+        facts: [],
+      },
+    );
+
+    expect(result.status).toBe('blocked');
+    expect(result.factCoverage).toEqual([
+      expect.objectContaining({
+        tableName: 'Missing Fact',
+        dateColumn: 'Missing Date',
+        covered: false,
+      }),
+    ]);
+    expect(result.blockers.map((blocker) => blocker.code)).toEqual(
+      expect.arrayContaining(['fact-table-not-found', 'fact-date-proof-missing']),
+    );
+  });
+
+  it('derives hidden temporal fact columns so coverage cannot silently omit them', () => {
+    const m = model(
+      [
+        tbl('Actual', [
+          col('Actual', 'Date', 'dateTime', { isHidden: true }),
+          col('Actual', 'Amount', 'decimal', { summarizeBy: 'sum' }),
+        ]),
+        tbl('Calendar', [col('Calendar', 'Date', 'dateTime', { isKey: true })], [], {
+          dataCategory: 'Time',
+        }),
+      ],
+      [
+        {
+          id: 'Actual_Date_Calendar_Date',
+          fromTable: 'Actual',
+          fromColumn: 'Date',
+          toTable: 'Calendar',
+          toColumn: 'Date',
+          isActive: true,
+          crossFilteringBehavior: 'single',
+          cardinality: 'manyToOne',
+        },
+      ],
+    );
+
+    expect(
+      deriveRequiredDateCoverageFacts(m, {
+        dateTable: 'Calendar',
+        dateColumn: 'Date',
+        facts: [],
+      }),
+    ).toEqual([{ tableName: 'Actual', dateColumn: 'Date' }]);
+  });
+
+  it('blocks live Date-table reliance when the source expression is not proven', () => {
+    const m = {
+      ...model([
+        tbl('Actual', [
+          col('Actual', 'Date', 'dateTime'),
+          col('Actual', 'Amount', 'decimal', { summarizeBy: 'sum' }),
+        ]),
+        tbl('Calendar', [col('Calendar', 'Date', 'dateTime', { isKey: true })], [], {
+          dataCategory: 'Time',
+        }),
+      ]),
+      modelPath: '(live)',
+    };
+
+    const result = planDateTableCoverage(
+      m,
+      {
+        dateTable: 'Calendar',
+        dateColumn: 'Date',
+        facts: [{ tableName: 'Actual', dateColumn: 'Date' }],
+      },
+      {
+        dateTable: {
+          tableName: 'Calendar',
+          dateColumn: 'Date',
+          rowCount: 10,
+          nonBlankDateCount: 10,
+          distinctDateCount: 10,
+          blankDateCount: 0,
+          duplicateDateCount: 0,
+          gapCount: 0,
+          nonMidnightTimeCount: 0,
+          minDate: '2025-01-01T00:00:00',
+          maxDate: '2025-01-10T00:00:00',
+        },
+        facts: [
+          {
+            tableName: 'Actual',
+            dateColumn: 'Date',
+            rowCount: 10,
+            nonBlankDateCount: 10,
+            distinctDateCount: 10,
+            distinctMonthStartCount: 1,
+            nonMonthStartDateCount: 9,
+            monthsWithMultipleDates: 1,
+            maxDistinctDatesPerMonth: 10,
+            blankDateCount: 0,
+            duplicateDateCount: 0,
+            gapCount: 0,
+            minDate: '2025-01-01T00:00:00',
+            maxDate: '2025-01-10T00:00:00',
+          },
+        ],
+      },
+    );
+
+    expect(result.status).toBe('blocked');
+    expect(result.blockers.map((blocker) => blocker.code)).toContain(
+      'calendar-source-proof-missing',
+    );
+  });
+
+  it('rejects Date-table coverage proof for a different table identity', () => {
+    const m = model([
+      tbl('Fact', [col('Fact', 'Date', 'dateTime')]),
+      tbl('Calendar', [col('Calendar', 'Date', 'dateTime', { isKey: true })], [], {
+        dataCategory: 'Time',
+      }),
+    ]);
+
+    const result = planDateTableCoverage(
+      m,
+      {
+        dateTable: 'Calendar',
+        dateColumn: 'Date',
+        facts: [],
+      },
+      {
+        dateTable: {
+          tableName: 'Other Calendar',
+          dateColumn: 'Date',
+          rowCount: 10,
+          nonBlankDateCount: 10,
+          distinctDateCount: 10,
+          blankDateCount: 0,
+          duplicateDateCount: 0,
+          gapCount: 0,
+          nonMidnightTimeCount: 0,
+          minDate: '2025-01-01T00:00:00',
+          maxDate: '2025-01-10T00:00:00',
+        },
+        facts: [],
+      },
+    );
+
+    expect(result.status).toBe('blocked');
+    expect(result.blockers.map((blocker) => blocker.code)).toEqual(
+      expect.arrayContaining(['date-table-proof-mismatch', 'date-table-proof-missing']),
+    );
+  });
+
+  it('blocks literal hardcoded calendar bounds from partition source provenance', () => {
+    const m = model([
+      tbl('Fact', [col('Fact', 'Date', 'dateTime')]),
+      tbl('Calendar', [col('Calendar', 'Date', 'dateTime', { isKey: true })], [], {
+        dataCategory: 'Time',
+        partitionSources: [
+          {
+            kind: 'm',
+            expression:
+              'let Source = List.Dates(#date(2020, 1, 1), 366, #duration(1,0,0,0)) in Source',
+          },
+        ],
+      }),
+    ]);
+
+    const result = planDateTableCoverage(m, {
+      dateTable: 'Calendar',
+      dateColumn: 'Date',
+      facts: [{ tableName: 'Fact', dateColumn: 'Date' }],
+    });
+
+    expect(result.status).toBe('blocked');
+    expect(result.blockers.map((blocker) => blocker.code)).toContain('literal-calendar-range');
+  });
+
+  it('blocks literal hardcoded calendar bounds in List.Generate date sources', () => {
+    const m = model([
+      tbl('Fact', [col('Fact', 'Date', 'dateTime')]),
+      tbl('Calendar', [col('Calendar', 'Date', 'dateTime', { isKey: true })], [], {
+        dataCategory: 'Time',
+        partitionSources: [
+          {
+            kind: 'm',
+            expression:
+              'let Source = List.Generate(() => #date(2020, 1, 1), each _ <= #date(2020, 12, 31), each Date.AddDays(_, 1)) in Source',
+          },
+        ],
+      }),
+    ]);
+
+    const result = planDateTableCoverage(m, {
+      dateTable: 'Calendar',
+      dateColumn: 'Date',
+      facts: [{ tableName: 'Fact', dateColumn: 'Date' }],
+    });
+
+    expect(result.status).toBe('blocked');
+    expect(result.blockers.map((blocker) => blocker.code)).toContain('literal-calendar-range');
+  });
+
+  it('blocks literal hardcoded calendar bounds in List.Generate datetime sources', () => {
+    const m = model([
+      tbl('Fact', [col('Fact', 'Date', 'dateTime')]),
+      tbl('Calendar', [col('Calendar', 'Date', 'dateTime', { isKey: true })], [], {
+        dataCategory: 'Time',
+        partitionSources: [
+          {
+            kind: 'm',
+            expression:
+              'let Source = List.Generate(() => #datetime(2020, 1, 1, 0, 0, 0), each _ <= #datetimezone(2020, 12, 31, 0, 0, 0, 0, 0), each DateTime.AddZone(_, 0)) in Source',
+          },
+        ],
+      }),
+    ]);
+
+    const result = planDateTableCoverage(m, {
+      dateTable: 'Calendar',
+      dateColumn: 'Date',
+      facts: [{ tableName: 'Fact', dateColumn: 'Date' }],
+    });
+
+    expect(result.status).toBe('blocked');
+    expect(result.blockers.map((blocker) => blocker.code)).toContain('literal-calendar-range');
+  });
+
+  it('does not emit an activation write for a relationship without proven identity', () => {
+    const m = model(
+      [
+        tbl('Forecast', [col('Forecast', 'Forecast Date', 'dateTime')]),
+        tbl('Calendar', [col('Calendar', 'Date', 'dateTime', { isKey: true })], [], {
+          dataCategory: 'Time',
+        }),
+      ],
+      [
+        {
+          ...relationship,
+          id: 'rel_0',
+          identityProven: false,
+        },
+      ],
+    );
+
+    const result = planDateGrain(
+      m,
+      {
+        facts: [{ tableName: 'Forecast', dateColumn: 'Forecast Date' }],
+        dateTable: 'Calendar',
+        dateColumn: 'Date',
+      },
+      [
+        {
+          tableName: 'Forecast',
+          dateColumn: 'Forecast Date',
+          rowCount: 10,
+          nonBlankDateCount: 10,
+          distinctDateCount: 10,
+          distinctMonthStartCount: 1,
+          nonMonthStartDateCount: 9,
+          monthsWithMultipleDates: 1,
+          maxDistinctDatesPerMonth: 10,
+          blankDateCount: 0,
+          duplicateDateCount: 0,
+          gapCount: 0,
+          minDate: '2025-01-01T00:00:00',
+          maxDate: '2025-01-10T00:00:00',
+        },
+      ],
+    );
+
+    expect(result.facts[0]?.relationship).toEqual(
+      expect.objectContaining({
+        status: 'inactive',
+        id: 'rel_0',
+        canActivate: false,
+        activationBlocking: expect.arrayContaining([
+          expect.objectContaining({ code: 'relationship-id-missing' }),
+        ]),
+      }),
+    );
+    expect(result.facts[0]?.writePlan).toEqual([]);
+  });
+
+  it('does not emit an activation write when relationship identity provenance is omitted', () => {
+    const m: TMDLModel = {
+      modelPath: '/',
+      tables: [
+        tbl('Forecast', [col('Forecast', 'Forecast Date', 'dateTime')]),
+        tbl('Calendar', [col('Calendar', 'Date', 'dateTime', { isKey: true })], [], {
+          dataCategory: 'Time',
+        }),
+      ],
+      relationships: [
+        {
+          id: 'rel_omitted',
+          fromTable: 'Forecast',
+          fromColumn: 'Forecast Date',
+          toTable: 'Calendar',
+          toColumn: 'Date',
+          isActive: false,
+          crossFilteringBehavior: 'single',
+          cardinality: 'manyToOne',
+        },
+      ],
+    };
+
+    const result = planDateGrain(
+      m,
+      {
+        facts: [{ tableName: 'Forecast', dateColumn: 'Forecast Date' }],
+        dateTable: 'Calendar',
+        dateColumn: 'Date',
+      },
+      [
+        {
+          tableName: 'Forecast',
+          dateColumn: 'Forecast Date',
+          rowCount: 10,
+          nonBlankDateCount: 10,
+          distinctDateCount: 10,
+          distinctMonthStartCount: 1,
+          nonMonthStartDateCount: 9,
+          monthsWithMultipleDates: 1,
+          maxDistinctDatesPerMonth: 10,
+          blankDateCount: 0,
+          duplicateDateCount: 0,
+          gapCount: 0,
+          minDate: '2025-01-01T00:00:00',
+          maxDate: '2025-01-10T00:00:00',
+        },
+      ],
+    );
+
+    expect(result.facts[0]?.relationship).toMatchObject({
+      status: 'inactive',
+      canActivate: false,
+      activationBlocking: expect.arrayContaining([
+        expect.objectContaining({ code: 'relationship-id-missing' }),
+      ]),
+    });
+    expect(result.facts[0]?.writePlan).toEqual([]);
+  });
+
+  it('does not emit date relationship writes when coverage proof omits another related fact', () => {
+    const m = model(
+      [
+        tbl('Forecast', [col('Forecast', 'Forecast Date', 'dateTime')]),
+        tbl('Actual', [col('Actual', 'Order Date', 'dateTime')]),
+        tbl('Calendar', [col('Calendar', 'Date', 'dateTime', { isKey: true })], [], {
+          dataCategory: 'Time',
+        }),
+      ],
+      [
+        relationship,
+        {
+          id: 'Actual_Date_Calendar_Date',
+          fromTable: 'Actual',
+          fromColumn: 'Order Date',
+          toTable: 'Calendar',
+          toColumn: 'Date',
+          isActive: true,
+          crossFilteringBehavior: 'single',
+          cardinality: 'manyToOne',
+        },
+      ],
+    );
+
+    const exactForecast = {
+      tableName: 'Forecast',
+      dateColumn: 'Forecast Date',
+      rowCount: 10,
+      nonBlankDateCount: 10,
+      distinctDateCount: 10,
+      distinctMonthStartCount: 1,
+      nonMonthStartDateCount: 9,
+      monthsWithMultipleDates: 1,
+      maxDistinctDatesPerMonth: 10,
+      blankDateCount: 0,
+      duplicateDateCount: 0,
+      gapCount: 0,
+      minDate: '2025-01-01T00:00:00',
+      maxDate: '2025-01-10T00:00:00',
+    };
+
+    const result = planDateGrain(
+      m,
+      {
+        facts: [{ tableName: 'Forecast', dateColumn: 'Forecast Date' }],
+        dateTable: 'Calendar',
+        dateColumn: 'Date',
+        dateTableCoverageEvidence: {
+          dateTable: {
+            tableName: 'Calendar',
+            dateColumn: 'Date',
+            rowCount: 10,
+            nonBlankDateCount: 10,
+            distinctDateCount: 10,
+            blankDateCount: 0,
+            duplicateDateCount: 0,
+            gapCount: 0,
+            nonMidnightTimeCount: 0,
+            minDate: '2025-01-01T00:00:00',
+            maxDate: '2025-01-10T00:00:00',
+          },
+          facts: [exactForecast],
+        },
+      },
+      [exactForecast],
+    );
+
+    expect(result.facts[0]?.writePlan).toEqual([]);
+  });
+});
+
+// Count parens outside of double-quoted DAX string literals. A non-zero result
+// means the generated DAX is unbalanced and the engine will reject it.
+function unbalancedParenDelta(dax: string): number {
+  let delta = 0;
+  let inString = false;
+  for (let i = 0; i < dax.length; i += 1) {
+    const ch = dax[i];
+    if (ch === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (inString) continue;
+    if (ch === '(') delta += 1;
+    else if (ch === ')') delta -= 1;
+  }
+  return delta;
+}
+
+describe('generated probe DAX is syntactically balanced', () => {
+  // Regression guard for the buildProbeRow paren imbalance: every probe ROW()
+  // must be paren-balanced or the live DAX engine rejects the whole query and the
+  // date/relationship proof gates fall over with "no rows".
+  it('emits balanced parentheses for a single-fact grain probe', () => {
+    const m = model([tbl('Actual', [col('Actual', 'Event Date', 'dateTime')])]);
+    const query = buildDateGrainProbeQuery(m, [{ tableName: 'Actual', dateColumn: 'Event Date' }]);
+    expect(query).toBeDefined();
+    expect(unbalancedParenDelta(query as string)).toBe(0);
+  });
+
+  it('emits balanced parentheses for a multi-fact UNION coverage probe', () => {
+    const m = model([
+      tbl('Calendar', [col('Calendar', 'Date', 'dateTime', { isKey: true })], [], {
+        dataCategory: 'Time',
+      }),
+      tbl('Actual', [col('Actual', 'Event Date', 'dateTime')]),
+      tbl('Forecast', [col('Forecast', 'Forecast Date', 'date')]),
+    ]);
+    const query = buildDateTableCoverageProbeQuery(m, {
+      dateTable: 'Calendar',
+      dateColumn: 'Date',
+      facts: [
+        { tableName: 'Actual', dateColumn: 'Event Date' },
+        { tableName: 'Forecast', dateColumn: 'Forecast Date' },
+      ],
+    });
+    expect(query).toBeDefined();
+    expect(query).toContain('UNION(');
+    expect(unbalancedParenDelta(query as string)).toBe(0);
+  });
+});
+
+describe('probe parsers accept the live columnar DAX shape', () => {
+  // The local @microsoft/powerbi-modeling-mcp returns rows as POSITIONAL
+  // array-of-arrays with a separate columns schema (NOT the array-of-objects of
+  // the public Execute-Queries REST API). extractRows must zip these or every
+  // live probe reads as empty.
+  const columnarPayload = {
+    columns: [
+      { name: '[__kind]', dataType: 'String' },
+      { name: '[__table]', dataType: 'String' },
+      { name: '[__column]', dataType: 'String' },
+      { name: '[rowCount]', dataType: 'Int64' },
+      { name: '[nonBlankDateCount]', dataType: 'Int64' },
+      { name: '[distinctDateCount]', dataType: 'Int64' },
+      { name: '[blankDateCount]', dataType: 'Int64' },
+      { name: '[duplicateDateCount]', dataType: 'Int64' },
+      { name: '[gapCount]', dataType: 'Int64' },
+      { name: '[nonMidnightTimeCount]', dataType: 'Int64' },
+      { name: '[minDate]', dataType: 'DateTime' },
+      { name: '[maxDate]', dataType: 'DateTime' },
+    ],
+    rows: [
+      [
+        'date-table',
+        'Calendar',
+        'Date',
+        30,
+        30,
+        30,
+        0,
+        0,
+        0,
+        0,
+        '2025-01-01T00:00:00',
+        '2025-01-30T00:00:00',
+      ],
+      [
+        'fact',
+        'Actual',
+        'Date',
+        100,
+        100,
+        30,
+        0,
+        70,
+        0,
+        0,
+        '2025-01-01T00:00:00',
+        '2025-01-30T00:00:00',
+      ],
+    ],
+    rowCount: 2,
+  };
+
+  it('extracts fact grain evidence from positional columnar rows', () => {
+    const evidence = parseDateGrainProbeResult(columnarPayload);
+    expect(evidence).toHaveLength(1);
+    expect(evidence[0]).toMatchObject({
+      tableName: 'Actual',
+      dateColumn: 'Date',
+      rowCount: 100,
+      distinctDateCount: 30,
+      duplicateDateCount: 70,
+    });
+  });
+
+  it('extracts date-table coverage evidence from positional columnar rows', () => {
+    const coverage = parseDateTableCoverageProbeResult(columnarPayload);
+    expect(coverage.dateTable).toMatchObject({
+      tableName: 'Calendar',
+      dateColumn: 'Date',
+      rowCount: 30,
+      distinctDateCount: 30,
+    });
+    expect(coverage.facts).toHaveLength(1);
+    expect(coverage.facts[0]?.tableName).toBe('Actual');
+  });
+
+  it('still accepts the public Execute-Queries REST shape (array-of-objects)', () => {
+    const restPayload = {
+      results: [
+        {
+          tables: [
+            {
+              rows: [
+                {
+                  '[__table]': 'Actual',
+                  '[__column]': 'Date',
+                  '[rowCount]': 100,
+                  '[distinctDateCount]': 30,
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+    const evidence = parseDateGrainProbeResult(restPayload);
+    expect(evidence).toHaveLength(1);
+    expect(evidence[0]).toMatchObject({ tableName: 'Actual', dateColumn: 'Date', rowCount: 100 });
+  });
+});

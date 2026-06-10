@@ -59,11 +59,13 @@ Use the **absolute** path to the bridge script (our server's cwd isn't guarantee
 
 Desktop open on a `.pbip` in the VM, env exported, Claude Code launched from that shell.
 
-1. **Live read:** call `pbi_model_snapshot` **with no folderPath** → it discovers the single Desktop instance, connects, and returns the live model. (With `folderPath` it reads files directly and never touches the bridge — that's the cross-platform fallback.)
+1. **Live read:** call `pbi_model_snapshot` **with no folderPath** → it discovers the single Desktop instance, connects, and returns the live model. If a caller supplies `folderPath` while Desktop or `PBI_MODELING_MCP_CONNECTION_STRING` is available, live still wins; `folderPath` is only the cross-platform/offline fallback when no live model can be reached.
 2. **Gate refuses a bad ref:** `pbi_measure_create` with an expression referencing a non-existent field → refused in code, nothing written.
-3. **Live create:** `pbi_measure_create` of a valid measure → it appears in Desktop's Fields pane **without restart**. Press **Ctrl+S** in Desktop to persist to the `.pbip`.
-4. **In-batch dependency:** create measure B referencing measure A from the same batch → no false-block (the gate reads the live model, which already has A).
+3. **Date-table coverage proof:** `pbi_model_plan_date_table` with the governed Date table/key and relevant fact date columns → returns `status`, key evidence, and fact min/max coverage. It must block gaps, duplicates, blanks, fact dates outside the Date table, auto date tables, and `TODAY()`/`NOW()` calendar anchors.
+4. **Date-grain proof:** `pbi_model_plan_date_grain` with the relevant fact date columns → returns one `probeStatus` and observed grain evidence without dumping all `LocalDateTable_*` columns. Use this before target/actual date relationship edits.
+5. **Live create:** `pbi_measure_create` of a valid measure → it appears in Desktop's Fields pane **without restart**. Press **Ctrl+S** in Desktop to persist to the `.pbip`.
+6. **In-batch dependency:** create measure B referencing measure A from the same batch → no false-block (the gate reads the live model, which already has A).
 
 ## Lifecycle / recovery
 
-The connection is a lazy singleton reused across calls; it re-spawns automatically if the transport drops (Desktop closed, VM slept, pipe broken). If Desktop closes mid-session, the next call surfaces a clear error and re-discovers on retry. Multiple open Desktops → discovery throws; pin `PBI_MODELING_MCP_CONNECTION_STRING`.
+The connection is a lazy singleton reused across calls; it re-spawns automatically if the transport drops (Desktop closed, VM slept, pipe broken). If Desktop closes mid-session, the next call surfaces a clear error and re-discovers on retry. Multiple open Desktops → pass `model` with the file/model name or listed port; pin `PBI_MODELING_MCP_CONNECTION_STRING` only when you want an explicit override.

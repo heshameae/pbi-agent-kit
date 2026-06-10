@@ -31,6 +31,10 @@ function normalizeStorageMode(value: string): StorageMode | undefined {
   }
 }
 
+function parseTmdlBoolean(value: string): boolean {
+  return /^true$/i.test(value.trim());
+}
+
 // Scan upward from a header line for the nearest `///` description block.
 function scanDescriptionAbove(
   allLines: ReadonlyArray<string>,
@@ -80,11 +84,13 @@ export function parseTMDLFolder(definitionPath: string): TMDLModel {
     }
   }
 
-  // Omit `roles` entirely when the model has no RLS so it stays undefined.
+  // Omit `roles` entirely when the model has no RLS, but mark enumeration as
+  // captured for folder reads so zero roles is an evidenced count.
   return {
     modelPath: definitionPath,
     tables,
     relationships,
+    rolesCaptured: true,
     ...(roles.length > 0 ? { roles } : {}),
   };
 }
@@ -95,7 +101,11 @@ export function parseTableFile(content: string): TMDLTable | null {
   let tableIsHidden = false;
   let tableIsCalculated = false;
   let tableDescription: string | undefined;
+  let tableDataCategory: string | undefined;
+  let tableExpression: string | undefined;
+  const partitionSources: Array<{ kind?: string; expression: string }> = [];
   let storageMode: StorageMode | undefined;
+  let currentPartitionSourceKind: string | undefined;
   const columns: TMDLColumn[] = [];
   const measures: TMDLMeasure[] = [];
 
@@ -125,10 +135,36 @@ export function parseTableFile(content: string): TMDLTable | null {
     }
 
     if (tableName !== null) {
-      if (/^isHidden:\s*true$/i.test(line)) tableIsHidden = true;
+      if (/^isHidden(?::\s*true)?$/i.test(line)) tableIsHidden = true;
       if (/^calculated$/i.test(line)) tableIsCalculated = true;
+      const partitionSourceKind = parsePartitionSourceKind(line);
+      if (partitionSourceKind) {
+        currentPartitionSourceKind = partitionSourceKind;
+        if (currentPartitionSourceKind === 'calculated') tableIsCalculated = true;
+      }
       const descMatch = /^description:\s*(.+)$/i.exec(line);
       if (descMatch?.[1] !== undefined) tableDescription = descMatch[1].trim();
+      const dataCategoryMatch = /^dataCategory:\s*(.+)$/i.exec(line);
+      if (dataCategoryMatch?.[1] !== undefined) {
+        tableDataCategory = unquoteIdent(dataCategoryMatch[1].trim());
+      }
+      const sourceMatch = /^source\s*=\s*(.*)$/i.exec(line);
+      if (sourceMatch) {
+        const sourceExpression = collectSourceExpression(lines, i, sourceMatch[1] ?? '');
+        if (sourceExpression !== undefined) {
+          partitionSources.push({
+            ...(currentPartitionSourceKind !== undefined
+              ? { kind: currentPartitionSourceKind }
+              : {}),
+            expression: sourceExpression.expression,
+          });
+          if (currentPartitionSourceKind === 'calculated') {
+            tableExpression = sourceExpression.expression;
+          }
+        }
+        i = sourceExpression?.nextIndex ?? i + 1;
+        continue;
+      }
       // storageMode lives on the table's partition `mode:` sub-block, not the
       // table object. A table has one storage mode in practice — first wins.
       if (storageMode === undefined) {
@@ -180,6 +216,9 @@ export function parseTableFile(content: string): TMDLTable | null {
     isHidden: tableIsHidden,
     isCalculated: tableIsCalculated,
     isAutoDateTable: AUTO_DATE_PREFIXES.some((p) => finalTableName.startsWith(p)),
+    ...(tableDataCategory !== undefined ? { dataCategory: tableDataCategory } : {}),
+    ...(tableExpression !== undefined ? { expression: tableExpression } : {}),
+    ...(partitionSources.length > 0 ? { partitionSources } : {}),
     ...(tableDescription !== undefined ? { description: tableDescription } : {}),
     ...(storageMode !== undefined ? { storageMode } : {}),
   };
@@ -202,7 +241,7 @@ export function parseRelationshipsFile(content: string): TMDLRelationship[] {
       i++;
       continue;
     }
-    const id = m[1].trim();
+    const id = unquoteIdent(m[1].trim());
     const block = collectBlock(lines, i);
     const rel = buildRelationship(id, block.body);
     if (rel) out.push(rel);
@@ -308,9 +347,53 @@ function indentOf(line: string): number {
   return n;
 }
 
+function collectSourceExpression(
+  lines: ReadonlyArray<string>,
+  sourceIndex: number,
+  inline: string,
+): { readonly expression: string; readonly nextIndex: number } | undefined {
+  const trimmedInline = inline.trim();
+  if (trimmedInline.startsWith('```')) {
+    const out: string[] = [];
+    const first = trimmedInline.slice(3);
+    if (first.trim()) out.push(first);
+    for (let i = sourceIndex + 1; i < lines.length; i++) {
+      const line = lines[i];
+      if (line === undefined) break;
+      if (line.trim().startsWith('```')) {
+        const expression = out.join('\n').trim();
+        return expression ? { expression, nextIndex: i + 1 } : undefined;
+      }
+      out.push(line);
+    }
+    const expression = out.join('\n').trim();
+    return expression ? { expression, nextIndex: lines.length } : undefined;
+  }
+
+  if (trimmedInline.length > 0) {
+    const block = collectBlock([...lines], sourceIndex);
+    if (block.body.length === 0) {
+      return { expression: trimmedInline, nextIndex: sourceIndex + 1 };
+    }
+    const body = block.body
+      .map((line) => line.trim())
+      .join('\n')
+      .trim();
+    const expression = [trimmedInline, body].filter(Boolean).join('\n').trim();
+    return expression ? { expression, nextIndex: block.nextIndex } : undefined;
+  }
+
+  const block = collectBlock([...lines], sourceIndex);
+  const expression = block.body
+    .map((line) => line.trim())
+    .join('\n')
+    .trim();
+  return expression ? { expression, nextIndex: block.nextIndex } : undefined;
+}
+
 function unquoteIdent(s: string): string {
   const t = s.trim();
-  if (t.startsWith("'") && t.endsWith("'")) return t.slice(1, -1);
+  if (t.startsWith("'") && t.endsWith("'")) return t.slice(1, -1).replace(/''/g, "'");
   return t;
 }
 
@@ -340,7 +423,7 @@ function splitHeaderOnEquals(rest: string): {
   inlineExpression?: string;
   hasEquals: boolean;
 } {
-  const eqIdx = rest.indexOf('=');
+  const eqIdx = findUnquotedEquals(rest);
   if (eqIdx < 0) {
     return { name: unquoteIdent(rest.trim()), hasEquals: false };
   }
@@ -355,6 +438,40 @@ function splitHeaderOnEquals(rest: string): {
 
 function parseMeasureHeader(rest: string): { name: string; inlineExpression?: string } {
   return splitHeaderOnEquals(rest);
+}
+
+function parsePartitionSourceKind(line: string): string | undefined {
+  const match = /^partition\s+(.+)$/i.exec(line);
+  const rest = match?.[1];
+  if (rest === undefined) return undefined;
+  const eqIdx = findUnquotedEquals(rest);
+  if (eqIdx < 0) return undefined;
+  return /^([a-zA-Z]+)/.exec(rest.slice(eqIdx + 1).trim())?.[1]?.toLowerCase();
+}
+
+function findUnquotedEquals(value: string): number {
+  for (let i = 0; i < value.length; i++) {
+    const char = value[i];
+    if (char === "'" || char === '"') {
+      i = findQuotedEnd(value, i, char);
+      if (i < 0) return -1;
+      continue;
+    }
+    if (char === '=') return i;
+  }
+  return -1;
+}
+
+function findQuotedEnd(value: string, start: number, quote: "'" | '"'): number {
+  for (let i = start + 1; i < value.length; i++) {
+    if (value[i] !== quote) continue;
+    if (quote === "'" && value[i + 1] === "'") {
+      i++;
+      continue;
+    }
+    return i;
+  }
+  return -1;
 }
 
 // A calc column header is `column 'X' = <DAX>` (inline) or `column X =` then an
@@ -376,7 +493,7 @@ function buildColumn(
   allLines: ReadonlyArray<string>,
   headerIndex: number,
 ): TMDLColumn {
-  let dataType = 'string';
+  let dataType = 'unknown';
   let summarizeBy: string | undefined;
   let sourceColumn: string | undefined;
   let dataCategory: string | undefined;
@@ -408,18 +525,31 @@ function buildColumn(
     const key = propMatch?.[1];
     const rawValue = propMatch?.[2];
     if (key && rawValue) {
+      const normalizedKey = key.toLowerCase();
       const value = rawValue.trim();
-      if (key === 'dataType') dataType = value;
-      else if (key === 'summarizeBy') summarizeBy = value;
-      else if (key === 'sourceColumn') sourceColumn = unquoteIdent(value);
-      else if (key === 'dataCategory') dataCategory = unquoteIdent(value);
-      else if (key === 'formatString') formatString = value;
-      else if (key === 'isHidden' && /true/i.test(value)) isHidden = true;
-      else if (key === 'isKey' && /true/i.test(value)) isKey = true;
-      else if (key === 'description') description = value;
-      else if (key === 'displayFolder') displayFolder = value;
-      else if (key === 'sortByColumn') sortByColumn = unquoteIdent(value);
-      else if (key === 'isAvailableInMDX') isAvailableInMdx = /true/i.test(value);
+      if (normalizedKey === 'datatype') dataType = value;
+      else if (normalizedKey === 'summarizeby') summarizeBy = value;
+      else if (normalizedKey === 'sourcecolumn') sourceColumn = unquoteIdent(value);
+      else if (normalizedKey === 'datacategory') dataCategory = unquoteIdent(value);
+      else if (normalizedKey === 'formatstring') formatString = value;
+      else if (normalizedKey === 'ishidden') isHidden = parseTmdlBoolean(value);
+      else if (normalizedKey === 'iskey') isKey = parseTmdlBoolean(value);
+      else if (normalizedKey === 'description') description = value;
+      else if (normalizedKey === 'displayfolder') displayFolder = value;
+      else if (normalizedKey === 'sortbycolumn') sortByColumn = unquoteIdent(value);
+      else if (normalizedKey === 'isavailableinmdx') isAvailableInMdx = parseTmdlBoolean(value);
+      continue;
+    }
+    if (/^isHidden$/i.test(line)) {
+      isHidden = true;
+      continue;
+    }
+    if (/^isKey$/i.test(line)) {
+      isKey = true;
+      continue;
+    }
+    if (/^isAvailableInMDX$/i.test(line)) {
+      isAvailableInMdx = true;
       continue;
     }
     if (/^calculated$/i.test(line)) {
@@ -477,12 +607,14 @@ function buildMeasure(
   for (const raw of body) {
     const line = raw.trim();
     if (!line) continue;
+    const propMatch = /^([a-zA-Z]+)(?::\s*(.*))?$/.exec(line);
+    const prop = propMatch?.[1] ? { key: propMatch[1], value: propMatch[2]?.trim() } : undefined;
     if (line.startsWith('formatString:')) {
       formatString = line.slice('formatString:'.length).trim();
       continue;
     }
-    if (line.startsWith('isHidden:') && /true/i.test(line)) {
-      isHidden = true;
+    if (prop?.key.toLowerCase() === 'ishidden') {
+      isHidden = prop.value === undefined ? true : parseTmdlBoolean(prop.value);
       continue;
     }
     if (line.startsWith('annotation ')) {
@@ -574,6 +706,7 @@ function buildRelationship(id: string, body: ReadonlyArray<string>): TMDLRelatio
 
   return {
     id,
+    identityProven: true,
     fromTable,
     fromColumn,
     toTable,
@@ -591,9 +724,9 @@ function splitTableColumn(value: string): { table: string; column: string } | nu
   let i = 0;
   let table = '';
   if (trimmed[i] === "'") {
-    const end = trimmed.indexOf("'", i + 1);
+    const end = findQuotedIdentifierEnd(trimmed, i);
     if (end < 0) return null;
-    table = trimmed.slice(i + 1, end);
+    table = unquoteIdent(trimmed.slice(i, end + 1));
     i = end + 1;
   } else {
     const dot = trimmed.indexOf('.');
@@ -607,4 +740,16 @@ function splitTableColumn(value: string): { table: string; column: string } | nu
   column = unquoteIdent(column);
   if (!table || !column) return null;
   return { table, column };
+}
+
+function findQuotedIdentifierEnd(value: string, start: number): number {
+  for (let i = start + 1; i < value.length; i++) {
+    if (value[i] !== "'") continue;
+    if (value[i + 1] === "'") {
+      i++;
+      continue;
+    }
+    return i;
+  }
+  return -1;
 }

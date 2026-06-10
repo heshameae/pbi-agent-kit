@@ -118,7 +118,7 @@ export const defaultClientFactory: ClientFactory = async (config, onClose) => {
   transport.onerror = () => onClose();
 
   const client = new Client(
-    { name: 'pbi-mcp-ts-model-bridge', version: '0.4.0' },
+    { name: 'pbi-mcp-ts-model-bridge', version: '0.1.0' },
     { capabilities: {} },
   );
   await client.connect(transport);

@@ -4,6 +4,8 @@ Complete framework for optimizing DAX query performance: tier model, workflow ph
 
 > **Related references:** [`references/dax-performance.md`](./dax-performance.md) — DAX001–021 pattern catalog + QRY001–004 · [`references/engine-internals.md`](./engine-internals.md) — FE/SE architecture, xmSQL, trace diagnostics · [`references/model-optimization.md`](./model-optimization.md) — MDL001–010, DL001–002
 
+**Identifier guard:** Concrete table, column, and measure names in examples are illustrative only. Production DAX must resolve identifiers from live model metadata, deterministic planner output, the validated user spec, or explicit user confirmation; never copy example names into a user model.
+
 ---
 
 ## Reading Guide
@@ -79,7 +81,7 @@ Only consult these when the corresponding signal is present. All require user ap
 
 | Tier | Scope | Autonomy |
 |------|-------|----------|
-| **Tier 1 — DAX Patterns** | Rewrite measure/UDF definitions | Auto-apply. Keep EVALUATE/grouping identical. |
+| **Tier 1 — DAX Patterns** | Rewrite measure/UDF definitions | Auto-apply only when identifiers are resolved and semantic equivalence can be verified. Keep EVALUATE/grouping identical. |
 | **Tier 2 — Query Structure** | Modify EVALUATE, grain, filters | Present recommendation. Wait for explicit user approval. |
 | **Tier 3 — Model Changes** | Relationships, columns, agg tables, data types | High caution. Discuss trade-offs. Suggest model copy. Warn downstream risk. |
 | **Tier 4 — Direct Lake** | OneLake layout, V-ordering, rowgroup sizing | High caution. Requires ETL/pipeline changes outside the model. |
@@ -89,7 +91,7 @@ Only consult these when the corresponding signal is present. All require user ap
 
 ### Requirements
 
-- **Semantic model connection** — Connect to the target semantic model before starting. For local Power BI Desktop models, use `connect-pbid`. For remote Fabric/XMLA models, use `powerbi-modeling-mcp` or an equivalent XMLA-capable tool.
+- **Semantic model connection** — Connect to the target semantic model before starting using this plugin's model tools or an equivalent XMLA-capable connection.
 - **Trace capture** — Requires the ability to execute DAX queries with server timing trace capture. See [Trace Capture Methods](#trace-capture-methods) below.
 - **Model metadata** — Requires the ability to read measure definitions, function definitions, calculation group expressions, table metadata, and relationship metadata from the model.
 - **Tier 2:** Present the change and its output impact, wait for user approval.
@@ -101,8 +103,8 @@ All methods use the same Analysis Services Trace API and produce identical trace
 
 | Method | Scope | Notes |
 |--------|-------|-------|
-| **`connect-pbid`** (PowerShell/ADOMD) | Local PBI Desktop | Derive FE/SE split manually. |
-| **`powerbi-modeling-mcp`** (VS Code extension) | Local + remote (XMLA) | Returns pre-calculated FE/SE split, peak memory, result rows. Install: `code --install-extension analysis-services.powerbi-modeling-mcp` |
+| **This plugin's DAX/model MCP tools** | Local Power BI Desktop / supported semantic-model connections | Preferred when available; keep query, trace, and metadata evidence attached to the optimization record. |
+| **External XMLA/trace-capable tooling** | Local + remote (XMLA) | Acceptable when explicitly available in the user's environment; record the tool and raw timing evidence. |
 | **DAX Studio** | Local + remote | Server Timings pane. Manual, not scriptable. |
 | **Fabric Workspace Monitoring** | Fabric workspaces | Built-in workspace-level query monitoring. |
 

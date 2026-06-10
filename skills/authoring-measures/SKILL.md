@@ -18,9 +18,9 @@ DAX authoring rules, performance patterns, and time-intelligence guidance for wr
 
 ## When NOT to Use
 
-- Visual binding or report page layout → `designing-reports`
+- Visual binding or report page layout → in the modeling-only beta, say report/PBIR authoring is unavailable and offer modeling-only preparation. Internal dogfood full-profile report design loads `designing-reports`.
 - Table/column/relationship structure → `modeling-semantic-model`
-- Dashboard planning, KPI definition → `planning-dashboards`
+- Dashboard/report planning or KPI-page definition → in the modeling-only beta, say report/PBIR authoring is unavailable and offer modeling-only KPI/measure preparation instead
 
 ## Quick Reference
 
@@ -33,6 +33,7 @@ DAX authoring rules, performance patterns, and time-intelligence guidance for wr
 | Valid-query rules (SUMMARIZECOLUMNS, CALCULATE filters, ORDER BY) | `references/dax-query-rules.md` |
 | Time intelligence items, standalone TI measures, off-by-one rules | `references/time-intelligence.md` |
 | Calculation group TMDL, TI item library, precedence | `references/calc-groups.md` |
+| Confirmed measure intent, data dictionary/glossary evidence, draft vs confirmed gate | `references/measure-intent-contract.md` |
 
 ## Critical Rules
 
@@ -43,7 +44,8 @@ DAX authoring rules, performance patterns, and time-intelligence guidance for wr
 - **VAR prefix with `_`** — all variable names must start with `_` (e.g., `VAR _Total`, `VAR _PriorYear`)
 - **formatString required on every measure** — bare TMDL form: `\$#,##0.00` not `"$#,##0.00"` (triple-quote = BPA FMT002 error)
 - **TOTALYTD/TOTALQTD/TOTALMTD for standalone measures** — use DATES* variants only inside calculation group items
-- **Date table must have `dataCategory: Time`** — missing this causes TI functions to return BLANK silently
+- **Date table must be proven and marked through the model tools** — before creating time-intelligence measures, call `pbi_model_plan_date_table` for the governed date table/key and all relevant fact date columns. If marking is needed, use `pbi_table_mark_as_date(tableName, dateColumn, facts)`; do not set `dataCategory: Time` or date-key metadata directly.
+- **Measure intent must be confirmed before writes** — load `references/measure-intent-contract.md` before authoring. A `draft` measure intent, missing confirmed business evidence, or inferred formula means stop with `needs-user-input`; do not guess source refs, filters, grain, additivity, targets, or RAG semantics. Direct user/domain-owner confirmation, a governed spec, or a supplied dictionary/glossary can confirm business meaning; the dictionary file is recommended context, not mandatory. Time-intelligence measure writes require confirmed Date policy, Date table proof, grain proof where relevant, fiscal/calendar policy, and incomplete-period behavior.
 
 ## Format String Quick Reference
 

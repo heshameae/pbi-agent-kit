@@ -4,6 +4,8 @@ Canonical TMDL syntax rules, file layout, indentation, emission gotchas, and enu
 
 **Primary sources:** microsoft/skills-for-fabric (tmdl-authoring-guide) · data-goblin/dg1-pbip (tmdl/SKILL.md, object-properties.md) · ruiromano/powerbi-agentic-plugins (TMDL.md)
 
+Concrete table/column/measure names in this reference are syntax illustrations only. For production writes, replace every identifier with fields from the deterministic planner, validated spec, or live model inventory. Do not copy sample names into a user model.
+
 ---
 
 ## TMDL File Layout
@@ -130,25 +132,25 @@ measure Percentage = ```
 ### Multi-Line DAX — Indented Block
 
 ```tmdl
-measure 'Actuals MTD' =
+measure '<Actuals MTD Measure>' =
         CALCULATE (
             [Actuals],
             CALCULATETABLE (
-                DATESMTD ( 'Date'[Date] ),
-                'Date'[IsDateInScope]
+                DATESMTD ( '<DateTable>'[<DateKeyColumn>] ),
+                '<DateTable>'[<ScopeFlagColumn>]
             )
         )
     formatString: #,##0
-    displayFolder: 2. MTD\Actuals
-    lineageTag: abc-123
+    displayFolder: <DisplayFolder>
+    lineageTag: <ExistingOrGeneratedLineageTag>
 ```
 
 ### Dynamic Format String
 
 ```tmdl
-measure 'Variance %' =
+measure '<Variance Percent Measure>' =
         DIVIDE ( [Actuals] - [Target], [Target] )
-    displayFolder: Variance
+    displayFolder: <DisplayFolder>
 
     formatStringDefinition =
             IF ( [Variance %] >= 0, "+0.00%", "0.00%" )
@@ -174,15 +176,15 @@ measure 'Variance %' =
 ## Relationships
 
 ```tmdl
-relationship 'Sales to Date'
-    fromColumn: Sales.'Order Date'
-    toColumn: Date.Date
+relationship '<FactToDateRelationshipName>'
+    fromColumn: '<FactTable>'.'<FactDateColumn>'
+    toColumn: '<DateTable>'.'<DateKeyColumn>'
 
 /// Inactive — use with USERELATIONSHIP() in DAX
-relationship 'Sales - Ship Date to Date'
+relationship '<FactAlternateDateRelationshipName>'
     isActive: false
-    fromColumn: Sales.'Ship Date'
-    toColumn: Date.Date
+    fromColumn: '<FactTable>'.'<AlternateRoleDateColumn>'
+    toColumn: '<DateTable>'.'<DateKeyColumn>'
 ```
 
 Key rules:
@@ -214,33 +216,35 @@ Root-level objects (depth 0 only): `model`, `database`, `table`, `relationship`,
 ### Import (M expression)
 
 ```tmdl
-partition Sales =
+partition '<ImportPartitionName>' =
     mode: import
     source = m
         let
             Source = Sql.Database("server", "db"),
-            Sales = Source{[Schema="dbo", Item="Sales"]}[Data]
+            <EntityStepName> = Source{[Schema="<SchemaName>", Item="<EntityName>"]}[Data]
         in
-            Sales
+            <EntityStepName>
 ```
 
 ### Direct Lake
 
 ```tmdl
-partition Sales = entity
+partition '<DirectLakePartitionName>' = entity
     mode: directLake
     source
-        entityName: Sales
+        entityName: <EntityName>
         expressionSource: DatabaseQuery
 ```
 
 ### Calculated Table
 
 ```tmdl
-partition 'Date Scaffold' = calculated
+partition '<DateTablePartitionName>' = calculated
     mode: import
-    source = CALENDAR( DATE(2020,1,1), DATE(2030,12,31) )
+    source = CALENDAR( DATE(<ObservedStartYear>, <ObservedStartMonth>, <ObservedStartDay>), DATE(<ObservedEndYear>, <ObservedEndMonth>, <ObservedEndDay>) )
 ```
+
+Use observed fact min/max dates from `pbi_model_plan_date_table.recommendedRange`; do not hardcode calendar bounds or use `TODAY()`/`NOW()` as default anchors.
 
 ---
 
@@ -298,7 +302,7 @@ For the complete enum reference for all 30+ TMDL object types, see `references/o
 
 - Prefer an existing date table from the source over auto-generated
 - Ensure contiguous date range with no gaps; full span of fact data
-- Set `dataCategory: Time` on the date table
+- Mark the Date table only with `pbi_table_mark_as_date(tableName, dateColumn, facts)` after `pbi_model_plan_date_table` succeeds; do not set primitive `dataCategory: Time` / `isKey` metadata directly
 - Configure `sortByColumn` for month name → month number
 - Disable auto-date tables in production models
 
@@ -335,7 +339,7 @@ table 'Time Intelligence'
 		calculationItem YTD = ```
 				CALCULATE (
 				    SELECTEDMEASURE(),
-				    DATESYTD ( 'Date'[Date] )
+				    DATESYTD ( '<DateTable>'[<DateKeyColumn>] )
 				)
 				```
 			ordinal: 1
@@ -343,7 +347,7 @@ table 'Time Intelligence'
 
 		calculationItem 'YoY %' = ```
 				VAR _Current = SELECTEDMEASURE()
-				VAR _Prior = CALCULATE ( SELECTEDMEASURE(), SAMEPERIODLASTYEAR ( 'Date'[Date] ) )
+				VAR _Prior = CALCULATE ( SELECTEDMEASURE(), SAMEPERIODLASTYEAR ( '<DateTable>'[<DateKeyColumn>] ) )
 				RETURN
 				DIVIDE ( _Current - _Prior, _Prior )
 				```
@@ -440,14 +444,14 @@ Levels are depth-2 objects (inside a hierarchy, which is depth-1 inside a table)
 ## Role Member Declaration
 
 ```tmdl
-role 'Account Managers'
+role '<RoleName>'
 	modelPermission: read
 
-	tablePermission Customers = RLS.ApplySimpleRLS ( 'Customers'[Account Manager] )
+	tablePermission '<SecuredTable>' = <RLSFunctionOrFilterExpression>
 
-	member 'user@contoso.com'
-		memberType: adPrincipal
-		identityProvider: AzureAD
+	member '<UserOrGroupPrincipal>'
+	memberType: adPrincipal
+	identityProvider: AzureAD
 ```
 
 Use `USERPRINCIPALNAME()` (not `USERNAME()`) for Azure AD row-level security. `USERNAME()` returns a different value in Fabric/cloud environments.
@@ -474,9 +478,9 @@ model Model
 	defaultPowerBIDataSourceVersion: powerBI_V3
 	discourageImplicitMeasures
 
-	ref table Date
-	ref table Sales
-	ref table Product
+	ref table <TableName1>
+	ref table <TableName2>
+	ref table <TableName3>
 
 	annotation __PBI_TimeIntelligenceEnabled = 0
 ```
@@ -505,10 +509,10 @@ Do not use `///` as a visual separator with an empty body. A blank `///` followe
 ```tmdl
 ///                               -- WRONG: dangling /// with no declaration below it
 
-measure 'Total Revenue' = SUM ( Sales[Amount] )
+measure '<MeasureName>' = SUM ( '<FactTable>'[<NumericColumn>] )
 ```
 
 ```tmdl
 /// Total revenue in the filter context.
-measure 'Total Revenue' = SUM ( Sales[Amount] )   -- CORRECT: /// immediately before declaration
+measure '<MeasureName>' = SUM ( '<FactTable>'[<NumericColumn>] )   -- CORRECT: /// immediately before declaration
 ```

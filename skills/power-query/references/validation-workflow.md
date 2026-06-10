@@ -79,7 +79,7 @@ Analysis Services validates M syntax when a partition expression is saved. Faste
 - Runtime errors (division by zero, type conversion failures on actual data)
 - Performance issues (broken query folding)
 
-In this project, use MCP model tools (`pbi_measure_update`, TMDL export tools) to write expressions back to the model. Analysis Services returns errors like `Token Eof expected.` or `Expression.SyntaxError: Token Literal expected.` if the expression is malformed.
+In this project, use the supported partition, named-expression, or model update tool for the artifact being changed. TMDL export is read-only evidence; do not hand-edit exported TMDL. Analysis Services returns errors like `Token Eof expected.` or `Expression.SyntaxError: Token Literal expected.` if the expression is malformed.
 
 ---
 

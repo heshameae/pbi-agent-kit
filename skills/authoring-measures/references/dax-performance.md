@@ -1,8 +1,10 @@
 # DAX Performance — Pattern Catalog (DAX001–021)
 
-Tier 1 DAX optimization patterns. Auto-apply freely — modify only measure definitions, never the EVALUATE clause or SUMMARIZECOLUMNS grouping columns.
+Tier 1 DAX optimization patterns. Apply only after resolving the referenced measures/fields and preserving semantic equivalence; modify only measure definitions, never the EVALUATE clause or SUMMARIZECOLUMNS grouping columns.
 
 **Source:** ruiromano powerbi-agentic-plugins · dg3-semantic-models (cross-check)
+
+**Identifier guard:** Concrete table, column, and measure names in examples are illustrative only. Production DAX must resolve identifiers from live model metadata, deterministic planner output, the validated user spec, or explicit user confirmation; never copy example names into a user model.
 
 ---
 
@@ -449,23 +451,23 @@ SUMMARIZECOLUMNS ( 'Product'[Category], "Revenue", [Total Revenue] )
 
 ### QRY002: Eliminate Report Measure Filters (__ValueFilterDM)
 
-When a visual filters on a measure value (e.g., "Revenue > 1M"), Power BI generates a `__ValueFilterDM` variable that evaluates the measure twice — once for the filter check, once for display. Roughly doubles execution time.
+When a visual filters on a measure value (for example, `[<Metric>] > <ConfirmedThreshold>`), Power BI generates a `__ValueFilterDM` variable that evaluates the measure twice — once for the filter check, once for display. Roughly doubles execution time.
 
 **Detection:** `__ValueFilterDM` in the generated query.
 
-**Fix:** Move the threshold into the measure itself — return BLANK below the cutoff. SUMMARIZECOLUMNS auto-drops blank rows, achieving the same visual result in one pass:
+**Fix:** Only when the threshold is confirmed and preserving blank-row behavior is acceptable, move the threshold into the measure itself — return BLANK below the cutoff. SUMMARIZECOLUMNS auto-drops blank rows, achieving the same visual result in one pass:
 
 ```dax
-MEASURE 'Sales'[Total Revenue Filtered] =
-    VAR __Rev = [Total Revenue]
-    RETURN IF ( __Rev > 1000000, __Rev )
+MEASURE '<MeasureTable>'[<Metric Filtered>] =
+    VAR __Value = [<Metric>]
+    RETURN IF ( __Value > <ConfirmedThreshold>, __Value )
 ```
 
 ---
 
 ### QRY003: Reduce Query Grain
 
-Grouping by a high-cardinality column (e.g., `Calendar[Date]` → 365 rows) when the user only needs monthly data (12 rows) inflates SE row count ~30×.
+Grouping by a high-cardinality column (for example, a daily date key) when the validated visual only needs a coarser grain inflates SE row count.
 
 > The same four options also fix the **target-vs-actual grain mismatch** (a monthly target going BLANK on a daily axis) — see the modeling framing in `../../modeling-semantic-model/references/grain.md` (G2).
 
@@ -474,8 +476,8 @@ Grouping by a high-cardinality column (e.g., `Calendar[Date]` → 365 rows) when
 **Option A — coarser groupby:**
 
 ```dax
--- Daily → monthly
-SUMMARIZECOLUMNS ( 'Calendar'[YearMonth], "Revenue", [Total Revenue] )
+-- Fine date key -> confirmed coarser period field
+SUMMARIZECOLUMNS ( '<DateTable>'[<ConfirmedPeriodField>], "<Metric>", [<Metric>] )
 ```
 
 **Option B — period-end axis + measure pin** (show period-end snapshot instead of full-period aggregate):

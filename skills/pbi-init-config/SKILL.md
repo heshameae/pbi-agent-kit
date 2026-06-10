@@ -1,18 +1,18 @@
 ---
-description: Emit MCP server configuration snippets for non-Claude-Code agents (Cursor, VS Code Copilot, Cline, Continue, Windsurf) so they can use the pbi-report MCP server outside the plugin.
+description: Emit MCP server configuration snippets for non-Claude-Code agents (Cursor, VS Code Copilot, Cline, Continue, Windsurf) so they can use the pbi-modeling-beta MCP server outside the plugin.
 disable-model-invocation: true
 ---
 
 # /pbi-init-config
 
-Print copy-paste config snippets for popular MCP clients to register the pbi-report MCP server installed by this plugin.
+Print copy-paste config snippets for popular MCP clients to register the pbi-modeling-beta MCP server installed by this plugin. Show the internal pbi-report profile only when the user explicitly wants report/PBIR dogfood tooling.
 
 ## Instructions
 
-1. Resolve the absolute path to `${CLAUDE_PLUGIN_ROOT}/packages/mcp/dist/server.js`.
+1. Resolve the absolute path to `${CLAUDE_PLUGIN_ROOT}/scripts/start-mcp.mjs`.
 2. Print a header:
    ```
-   pbi-report MCP server: <absolute-path>
+   pbi-modeling-beta MCP server: <absolute-path>
    ```
 3. Then print the per-client config blocks, each in a labelled fenced code block:
 
@@ -21,13 +21,12 @@ Print copy-paste config snippets for popular MCP clients to register the pbi-rep
 ```json
 {
   "mcpServers": {
-    "pbi-report": {
+    "pbi-modeling-beta": {
       "command": "node",
-      "args": ["<absolute-path>"]
-    },
-    "powerbi-modeling": {
-      "command": "npx",
-      "args": ["-y", "@microsoft/powerbi-modeling-mcp@latest", "--start"]
+      "args": ["<absolute-path>"],
+      "env": {
+        "PBI_MCP_SURFACE": "modeling"
+      }
     }
   }
 }
@@ -42,10 +41,13 @@ Same as Claude Desktop.
 ```json
 {
   "servers": {
-    "pbi-report": {
+    "pbi-modeling-beta": {
       "command": "node",
       "args": ["<absolute-path>"],
-      "type": "stdio"
+      "type": "stdio",
+      "env": {
+        "PBI_MCP_SURFACE": "modeling"
+      }
     }
   }
 }
@@ -53,6 +55,11 @@ Same as Claude Desktop.
 
 ### Cline (settings UI)
 
-Add a new MCP server with command `node` and arg `<absolute-path>`.
+Add a new MCP server named `pbi-modeling-beta` with command `node`, arg `<absolute-path>`, and environment variable `PBI_MCP_SURFACE=modeling`.
 
-4. Remind the user: this plugin's `.mcp.json` already registers both servers automatically inside Claude Code — the snippets above are for OTHER clients.
+4. Remind the user:
+   - This plugin's `.mcp.json` registers `pbi-modeling-beta` automatically inside Claude Code.
+   - Run `pnpm install` and `pnpm build` in the plugin repository before first use; the launcher can attempt a quiet build only when dependencies are already installed.
+   - Do not register the raw Microsoft Power BI modeling MCP as a peer server; the wrapper starts it internally so deterministic gates run first.
+   - Optional data dictionaries such as `.pbi-mcp/data-dictionary.yaml` are context files, not MCP config. They provide business meaning only; live MCP tools still prove field existence.
+   - Internal report/PBIR dogfood can use the same command without `PBI_MCP_SURFACE=modeling` under a separate `pbi-report` server name.

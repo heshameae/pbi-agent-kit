@@ -4,6 +4,8 @@ Standalone TI measures (TOTAL* functions), calculation-group TI items (DATES* fu
 
 **Source:** dg4-te-fabric-desktop-root · ruiromano powerbi-agentic-plugins · dg3-semantic-models
 
+**Identifier guard:** Concrete table, column, and measure names in examples are illustrative only. Production DAX must resolve identifiers from live model metadata, deterministic planner output, the validated user spec, or explicit user confirmation; never copy example names into a user model.
+
 ---
 
 ## Critical Rule: TOTAL* vs DATES*
@@ -23,11 +25,11 @@ A date table that violates any rule below causes TI functions to return BLANK si
 
 | Rule | Detail |
 |---|---|
-| `dataCategory: Time` on the table | Required for TI functions to recognise the table |
+| Clean `pbi_model_plan_date_table` result | Required proof before TI functions rely on the table |
 | Contiguous daily rows, no gaps | Even one missing date breaks DATESYTD/TOTALYTD |
 | Full span of fact data | Must cover every date that appears in fact tables |
 | Single-column relationship to fact | Multiple date columns in a fact each need their own relationship; only one can be active |
-| `isKey: true` on the Date column | Mark the PK column |
+| `pbi_table_mark_as_date` applied after clean proof | Marks the governed Date table/key through the coverage gate |
 | `sortByColumn` for month name → month number | Prevents alphabetical sort in visuals |
 
 ---
@@ -199,4 +201,4 @@ The following function names in a measure expression indicate time-intelligence 
 
 `TOTALYTD`, `TOTALQTD`, `TOTALMTD`, `DATESYTD`, `DATESQTD`, `DATESMTD`, `DATESINPERIOD`, `DATEADD`, `SAMEPERIODLASTYEAR`, `PARALLELPERIOD`, `PREVIOUSYEAR`, `PREVIOUSQUARTER`, `PREVIOUSMONTH`, `PREVIOUSDAY`, `NEXTYEAR`, `NEXTQUARTER`, `NEXTMONTH`, `NEXTDAY`, `STARTOFYEAR`, `STARTOFQUARTER`, `STARTOFMONTH`, `ENDOFYEAR`, `ENDOFQUARTER`, `ENDOFMONTH`, `FIRSTDATE`, `LASTDATE`, `FIRSTNONBLANK`, `LASTNONBLANK`, `OPENINGBALANCEYEAR`, `OPENINGBALANCEQUARTER`, `OPENINGBALANCEMONTH`, `CLOSINGBALANCEYEAR`, `CLOSINGBALANCEQUARTER`, `CLOSINGBALANCEMONTH`, `DATESMTD`
 
-If any of these appear in a measure and the model has no table with `dataCategory: Time`, surface it as a blocker before creating the measure.
+If any of these appear in a measure, call `pbi_model_plan_date_table` before authoring. If marking is needed, use `pbi_table_mark_as_date` after a clean proof; do not set Date-table metadata directly.

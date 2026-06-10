@@ -52,12 +52,19 @@ export interface TMDLTable {
   readonly isHidden: boolean;
   readonly isCalculated: boolean;
   readonly isAutoDateTable: boolean;
+  readonly dataCategory?: string;
+  readonly expression?: string;
+  readonly partitionSources?: ReadonlyArray<{
+    readonly kind?: string;
+    readonly expression: string;
+  }>;
   readonly description?: string;
   readonly storageMode?: StorageMode;
 }
 
 export interface TMDLRelationship {
   readonly id: string;
+  readonly identityProven?: boolean;
   readonly fromTable: string;
   readonly fromColumn: string;
   readonly toTable: string;
@@ -73,6 +80,14 @@ export interface TMDLModel {
   readonly tables: ReadonlyArray<TMDLTable>;
   readonly relationships: ReadonlyArray<TMDLRelationship>;
   readonly roles?: ReadonlyArray<TMDLRole>;
+  readonly rolesCaptured?: boolean;
+  readonly objectLevelSecurityCaptured?: boolean;
+  readonly calculationGroupsCaptured?: boolean;
+  readonly perspectivesCaptured?: boolean;
+  readonly dataSourcesCaptured?: boolean;
+  readonly sensitivityCaptured?: boolean;
+  readonly lineageCaptured?: boolean;
+  readonly governanceCaptured?: boolean;
 }
 
 export interface BridgeAnalysis {
@@ -120,4 +135,54 @@ export interface ModelDoctorReport {
   readonly grain: GrainReport;
   readonly bpa: ReadonlyArray<BPAViolation>;
   readonly relationships: ReadonlyArray<RelationshipFinding>;
+  readonly metadataCoverage: ModelMetadataCoverage;
+  readonly regulatedEnterprise?: RegulatedEnterpriseReadiness;
+}
+
+export type MetadataCaptureStatus = 'captured' | 'not-captured' | 'blocked';
+
+export interface ModelMetadataCapture {
+  readonly status: MetadataCaptureStatus;
+  readonly count?: number;
+  readonly message: string;
+}
+
+export interface ModelMetadataCoverage {
+  readonly roles: ModelMetadataCapture;
+  readonly ols: ModelMetadataCapture;
+  readonly calculationGroups: ModelMetadataCapture;
+  readonly perspectives: ModelMetadataCapture;
+  readonly dataSources: ModelMetadataCapture;
+  readonly sensitivity: ModelMetadataCapture;
+  readonly lineage: ModelMetadataCapture;
+  readonly governance: ModelMetadataCapture;
+}
+
+export interface RegulatedEnterprisePolicyEvidence {
+  readonly rlsTestResults?: unknown;
+  readonly sensitivityClassification?: unknown;
+  readonly olsRequirements?: unknown;
+  readonly lineage?: unknown;
+  readonly refreshEvidence?: unknown;
+  readonly metricOwnerSignoff?: unknown;
+  readonly openExceptions?: unknown;
+  readonly serviceGovernance?: unknown;
+  readonly copilotExposure?: 'in-scope' | 'out-of-scope';
+  readonly copilot?: {
+    readonly aiSchemaScope?: unknown;
+    readonly rlsLeakageTests?: unknown;
+    readonly tenantSettings?: unknown;
+    readonly approvedInstructions?: unknown;
+  };
+}
+
+export interface RegulatedEnterpriseReadiness {
+  readonly status: 'passed' | 'blocked';
+  readonly missingEvidence: ReadonlyArray<string>;
+  readonly metadataCoverage: ModelMetadataCoverage;
+  readonly aiExposure: {
+    readonly status: 'passed' | 'blocked' | 'not-applicable';
+    readonly missingEvidence: ReadonlyArray<string>;
+    readonly message: string;
+  };
 }

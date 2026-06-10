@@ -158,7 +158,7 @@ Issues where the model loads more data than is needed for its reporting purpose.
 
 **Check:** Examine M expressions for fact table queries. Flag tables that lack date-range filters or incremental refresh configuration.
 
-**Recommendation:** Apply time-based filters (e.g. last 2 years) or implement incremental refresh to limit history.
+**Recommendation:** Apply policy/user-confirmed time-based filters or implement incremental refresh to limit history. Do not invent a retention window.
 
 **Severity:** Warning
 
@@ -356,7 +356,7 @@ Structural design issues that affect correctness, maintainability, or query perf
 - A single-column relationship to each fact table
 - The table marked as a date table
 
-**Tool rules:** `MODB1` (model has no date table, **warning**) and `MODB2` (a date/calendar-named table is not marked as a date table, **warning**). Cite MODB1/MODB2 for the marking findings; the continuity/coverage/single-column-relationship checks above remain narrative (the tool does not scan data). Fix by marking the table — `pbi_table_mark_as_date` (`dataCategory:Time` + `isKey` on the date column).
+**Tool rules:** `MODB1` (model has no date table, **warning**), `MODB2` (a date/calendar-named table is not marked as a date table, **warning**), and `MOD029` (Date/calendar source uses volatile `TODAY()`/`NOW()` anchors or literal hardcoded bounds, **error**). Cite MODB1/MODB2 for marking findings and MOD029 for unsafe source bounds. For continuity, uniqueness, blanks, and fact min/max coverage, run `pbi_model_plan_date_table` with the governed date table/key and every relevant fact date column; do not infer coverage from names or sample rows. Fix by calling `pbi_table_mark_as_date(tableName, dateColumn, facts)` only after that planner returns clean.
 
 **Severity:** Critical (if time intelligence measures exist in the model); the tool emits MODB1/MODB2 as warnings
 
@@ -486,7 +486,7 @@ Every model-side BPA rule the tool emits, by category. Always attribute a findin
 | MOD002 | warning / **error** | Inactive relationship not activated by any USERELATIONSHIP. **Error** when a sibling active relationship joins the same table pair on different columns (a dead role-playing alternate — queries silently fall back to the active key). |
 | MOD003 | warning / **error** | Many-to-many cardinality. **Error** when bidirectional AND neither endpoint is a bridge table (ambiguous propagation corrupts results); warning for a bidi m:m through a real bridge. |
 | MOD004 | warning | Bidirectional filter outside a many-to-many bridge. |
-| MOD005 | warning | Foreign-key column on the many side is visible. |
+| MOD005 | warning/error | Foreign-key column on the many side is visible. Escalates to error when it duplicates a visible one-side source-of-truth dimension field because report authors can pick the fact-side field and bypass shared dimension filtering. |
 | MOD006 | info | String column with `summarizeBy != none`. |
 | MOD008 | error / warning / info | Orphan/disconnected table (tri-state: error for an isolated fact, warning for a non-fact orphan, info for a deliberate single-column/what-if/param table). |
 | MOD009 | error | Direct fact-to-fact relationship. |
@@ -499,7 +499,7 @@ Every model-side BPA rule the tool emits, by category. Always attribute a findin
 | MOD016 | info | TREATAS bridge between two facts (consider a conformed dimension). |
 | MOD017 | error | Ambiguous multi-hop (diamond) filter path — two tables connected by ≥2 active routes through different intermediates. |
 | MOD018 | error | Time-intelligence DAX is used but no table is marked as a date table (TI returns BLANK). |
-| MOD019 | warning | Target-vs-actual grain mismatch (heuristic): one fact relates to a date dim at day grain, another at a coarser grain — confirm the intended grains. |
+| MOD019 | warning | Target-vs-actual grain mismatch: run `pbi_model_plan_date_table` and `pbi_model_plan_date_grain`; block relationship activation or target-measure rewrites if deterministic proof is unavailable or not clean. |
 | MOD020 | info | The one-side (dimension) column of a relationship is not marked `isKey`. |
 | MOD021 | info | One-to-one relationship (rare — consider consolidating unless a deliberate PII split). |
 | MOD022 | info | Non-key numeric column auto-aggregates (`summarizeBy != none`) — prefer `summarizeBy: none` + an explicit measure. Companion to MOD014 (which owns key-named columns); the two never double-report. |
@@ -507,6 +507,7 @@ Every model-side BPA rule the tool emits, by category. Always attribute a findin
 | MOD024 | warning | Many-to-many relationship touching a table secured by *dynamic* RLS (USERNAME/USERPRINCIPALNAME) — severe query-performance degradation. |
 | MOD025 | warning | Bidirectional cross-filter into a secured table (RLS row-leak risk). |
 | MOD028 | warning | "Assume referential integrity" enabled on a DirectQuery source (INNER join silently drops fact rows with no matching dimension key). |
+| MOD029 | error | Date/calendar source expression uses volatile current-date anchors or literal hardcoded calendar bounds. Run `pbi_model_plan_date_table`; anchor default bounds to observed fact min/max dates and extend only with an explicit future-horizon policy. |
 | MODB1 | warning | Model has no marked date table (but date columns exist). |
 | MODB2 | warning | A date/calendar-named table is not marked as a date table. |
 

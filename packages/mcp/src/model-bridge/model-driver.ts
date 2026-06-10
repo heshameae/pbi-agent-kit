@@ -11,15 +11,16 @@
 // against a live Desktop (Parallels) and tighten `pickArray` / key lists.
 
 import path from 'node:path';
-import {
-  type StorageMode,
-  type TMDLColumn,
-  type TMDLMeasure,
-  type TMDLModel,
-  type TMDLRelationship,
-  type TMDLRole,
-  type TMDLTable,
-  deriveCardinality,
+import type {
+  Cardinality,
+  CrossFilteringBehavior,
+  StorageMode,
+  TMDLColumn,
+  TMDLMeasure,
+  TMDLModel,
+  TMDLRelationship,
+  TMDLRole,
+  TMDLTable,
 } from 'pbi-core';
 import type { McpToolResult } from './ms-mcp-client.js';
 
@@ -32,12 +33,11 @@ export const MS_TOOLS = {
   measures: 'measure_operations',
   relationships: 'relationship_operations',
   dax: 'dax_query_operations',
+  model: 'model_operations',
   database: 'database_operations',
-  // UNVERIFIED: the MS modeling MCP RLS-roles tool name is inferred (likely a
-  // `role_operations` / security-operations tool). Confirm against a live
-  // Windows Desktop payload. The roles read is wrapped in try/catch so an
-  // unsupported op degrades to no `roles` key (getModelSnapshot never breaks).
-  roles: 'role_operations',
+  // The roles read is wrapped in try/catch so an unsupported op degrades to no
+  // `roles` key (getModelSnapshot never breaks).
+  roles: 'security_role_operations',
 } as const;
 
 export interface ModelClient {
@@ -76,10 +76,26 @@ export interface ConnectionInfo {
   readonly folderPath?: string;
 }
 
+export interface TableInventoryRow {
+  readonly name: string;
+  readonly isHidden: boolean;
+  readonly isCalculated: boolean;
+  readonly isAutoDateTable: boolean;
+  readonly description?: string;
+  readonly storageMode?: StorageMode;
+  readonly columnCount?: number;
+  readonly measureCount?: number;
+}
+
+export interface ModelSnapshotOptions {
+  readonly includeMeasures?: boolean;
+  readonly includeRoles?: boolean;
+}
+
 export interface MeasureWrite {
   readonly tableName: string;
   readonly name: string;
-  readonly expression: string;
+  readonly expression?: string;
   readonly formatString?: string;
   readonly description?: string;
 }
@@ -124,6 +140,8 @@ export interface ColumnWrite {
   readonly dataType?: string;
   readonly summarizeBy?: string;
   readonly formatString?: string;
+  // UNVERIFIED: confirm against live MS MCP — `sortByColumn` Update/Create key inferred.
+  readonly sortByColumn?: string;
   readonly isHidden?: boolean;
   readonly description?: string;
   // UNVERIFIED: confirm against live MS MCP — `isKey`/`dataCategory` keys inferred.
@@ -139,6 +157,8 @@ export interface ColumnUpdate {
   readonly expression?: string;
   readonly summarizeBy?: string;
   readonly formatString?: string;
+  // UNVERIFIED: confirm against live MS MCP — `sortByColumn` Update/Create key inferred.
+  readonly sortByColumn?: string;
   readonly isHidden?: boolean;
   readonly description?: string;
   // UNVERIFIED: confirm against live MS MCP — `isKey`/`dataCategory` keys inferred.
@@ -156,6 +176,7 @@ export interface RelationshipWrite {
   readonly fromColumn: string;
   readonly toTable: string;
   readonly toColumn: string;
+  readonly cardinality?: Cardinality;
   readonly crossFilteringBehavior?: 'single' | 'both';
   readonly isActive?: boolean;
 }
@@ -166,6 +187,7 @@ export interface RelationshipUpdate {
   readonly fromColumn?: string;
   readonly toTable?: string;
   readonly toColumn?: string;
+  readonly cardinality?: Cardinality;
   readonly crossFilteringBehavior?: 'single' | 'both';
   readonly isActive?: boolean;
 }
@@ -188,6 +210,8 @@ export interface LiveInstance {
 export interface ConnectOpts {
   readonly folderPath?: string;
   readonly model?: string;
+  readonly livePreferred?: boolean;
+  readonly forceFolder?: boolean;
 }
 
 // Build the Microsoft-MCP request envelope: { request: { operation, ...params } };
@@ -235,6 +259,160 @@ function parseResult(result: McpToolResult): unknown {
     }
   }
   return undefined;
+}
+
+// DAX result shapes differ by host. The local @microsoft/powerbi-modeling-mcp
+// returns columnar tables (verified against PowerBIModelingMCP.Library.dll):
+//   { success, operation, message, data: { columns: [{ name, dataType }],
+//     rows: [[v0, v1, ...]], rowCount, wasTruncated, truncationReason, filePath } }
+// and some builds wrap those same columnar tables under result/table containers.
+// The public Execute-Queries REST shape is instead { results: [{ tables: [{
+// rows: [{ "[Col]": v }] }] }] } (array-of-objects). Normalize local columnar
+// tables into rows keyed by column name so pbi_dax_query callers and the
+// date/relationship probe parsers all see one shape — and surface engine errors
+// that this MCP returns WITHOUT setting isError (success:false envelope or
+// non-tabular text), instead of silently yielding zero rows that read as "no
+// data".
+export function normalizeDaxResult(payload: unknown): unknown {
+  if (typeof payload === 'string') {
+    // parseResult only returns a raw string when the content text was not JSON.
+    // A DAX result is always JSON, so this is an error/Markdown render, not data.
+    throw new Error(
+      redactConnectionSecrets(
+        `DAX query did not return a tabular JSON result: ${payload.slice(0, 400)}`,
+      ),
+    );
+  }
+  if (!isRecord(payload)) return payload;
+  if (payload.success === false) {
+    const message = str(payload, 'message', 'error', 'detail') ?? 'DAX query failed';
+    throw new Error(redactConnectionSecrets(`DAX query failed: ${message}`));
+  }
+  const body = isRecord(payload.data) ? payload.data : payload;
+  const direct = normalizeDaxColumnarRecord(body);
+  if (direct) return direct;
+
+  const nested = collectDaxColumnarTables(body);
+  if (nested.length > 0) return mergeDaxColumnarTables(nested);
+
+  // REST { results/tables } shape, an already-keyed { rows: [{}] }, or any other
+  // object — leave it untouched; extractRows / pickArray handle those.
+  return payload;
+}
+
+interface NormalizedDaxTable {
+  readonly columns: string[];
+  readonly rows: Record<string, unknown>[];
+  readonly rowCount: number;
+  readonly wasTruncated?: true;
+  readonly truncationReason?: string;
+  readonly filePath?: string;
+}
+
+function normalizeDaxColumnarRecord(record: Record<string, unknown>): NormalizedDaxTable | null {
+  const columns = record.columns;
+  const rows = record.rows;
+  if (!Array.isArray(columns) || !Array.isArray(rows)) return null;
+
+  const names = columns.map(daxColumnName);
+  // Zip positional (array) rows against the column schema; pass already-keyed
+  // object rows through. Malformed primitive rows are a bridge/host bug, not
+  // valid "empty data" evidence for downstream Date/relationship gates.
+  const keyed: Record<string, unknown>[] = [];
+  let malformedRows = 0;
+  for (const row of rows) {
+    if (Array.isArray(row)) {
+      keyed.push(zipDaxRow(names, row));
+    } else if (isRecord(row)) {
+      keyed.push(row);
+    } else {
+      malformedRows += 1;
+    }
+  }
+  if (malformedRows > 0) {
+    throw new Error(
+      `DAX query returned ${malformedRows} malformed tabular rows; refusing to treat them as empty data.`,
+    );
+  }
+
+  const rowCount = typeof record.rowCount === 'number' ? record.rowCount : keyed.length;
+  return {
+    columns: names,
+    rows: keyed,
+    rowCount,
+    ...(record.wasTruncated === true ? { wasTruncated: true } : {}),
+    ...(typeof record.truncationReason === 'string'
+      ? { truncationReason: record.truncationReason }
+      : {}),
+    ...(typeof record.filePath === 'string' ? { filePath: record.filePath } : {}),
+  };
+}
+
+function collectDaxColumnarTables(payload: unknown, depth = 0): NormalizedDaxTable[] {
+  if (depth > 8) return [];
+  if (Array.isArray(payload)) {
+    return payload.flatMap((item) => collectDaxColumnarTables(item, depth + 1));
+  }
+  if (!isRecord(payload)) return [];
+
+  const table = normalizeDaxColumnarRecord(payload);
+  if (table) return [table];
+
+  return Object.values(payload).flatMap((value) => collectDaxColumnarTables(value, depth + 1));
+}
+
+function mergeDaxColumnarTables(tables: ReadonlyArray<NormalizedDaxTable>): NormalizedDaxTable {
+  const columns: string[] = [];
+  const seen = new Set<string>();
+  const rows: Record<string, unknown>[] = [];
+  let rowCount = 0;
+  let wasTruncated = false;
+  const truncationReasons = new Set<string>();
+  const filePaths = new Set<string>();
+
+  for (const table of tables) {
+    for (const column of table.columns) {
+      if (seen.has(column)) continue;
+      seen.add(column);
+      columns.push(column);
+    }
+    rows.push(...table.rows);
+    rowCount += table.rowCount;
+    if (table.wasTruncated === true) wasTruncated = true;
+    if (table.truncationReason) truncationReasons.add(table.truncationReason);
+    if (table.filePath) filePaths.add(table.filePath);
+  }
+
+  return {
+    columns,
+    rows,
+    rowCount,
+    ...(wasTruncated ? { wasTruncated: true as const } : {}),
+    ...(truncationReasons.size > 0
+      ? { truncationReason: [...truncationReasons].join('; ') }
+      : {}),
+    ...(filePaths.size === 1 ? { filePath: [...filePaths][0] } : {}),
+  };
+}
+
+function daxColumnName(column: unknown): string {
+  if (typeof column === 'string') return column;
+  if (isRecord(column)) {
+    const name = str(column, 'name', 'columnName');
+    if (name !== undefined) return name;
+  }
+  return '';
+}
+
+function zipDaxRow(
+  names: ReadonlyArray<string>,
+  values: ReadonlyArray<unknown>,
+): Record<string, unknown> {
+  const keyed: Record<string, unknown> = {};
+  for (let i = 0; i < names.length; i += 1) {
+    keyed[names[i] || `__col${i}`] = values[i];
+  }
+  return keyed;
 }
 
 // Find the first array in a payload, checking common container keys then any
@@ -288,6 +466,14 @@ function str(obj: Record<string, unknown>, ...keys: string[]): string | undefine
   for (const key of keys) {
     const v = obj[key];
     if (typeof v === 'string' && v.length > 0) return v;
+  }
+  return undefined;
+}
+
+function num(obj: Record<string, unknown>, ...keys: string[]): number | undefined {
+  for (const key of keys) {
+    const v = obj[key];
+    if (typeof v === 'number' && Number.isFinite(v)) return v;
   }
   return undefined;
 }
@@ -348,9 +534,10 @@ function dedupeInstances(instances: LiveInstance[]): LiveInstance[] {
 // Strips the .SemanticModel/definition wrapper and common file suffixes, then
 // lowercases + trims. Dataset-agnostic: no embedded names.
 export function normalizeModelName(s: string): string {
-  let base = path.basename(s);
+  const portable = s.replace(/\\/g, '/');
+  let base = path.basename(portable);
   // `/x/Model.SemanticModel/definition` → use the parent folder name.
-  if (base.toLowerCase() === 'definition') base = path.basename(path.dirname(s));
+  if (base.toLowerCase() === 'definition') base = path.basename(path.dirname(portable));
   for (const suffix of ['.SemanticModel', '.pbix', '.pbip', '.Dataset']) {
     if (base.toLowerCase().endsWith(suffix.toLowerCase())) {
       base = base.slice(0, base.length - suffix.length);
@@ -358,6 +545,45 @@ export function normalizeModelName(s: string): string {
     }
   }
   return base.toLowerCase().trim();
+}
+
+function normalizedConnectionHint(opts?: ConnectOpts): string | null {
+  const raw = opts?.model ?? opts?.folderPath;
+  return raw ? normalizeModelName(raw) : null;
+}
+
+function normalizeFolderCachePath(folderPath: string): string {
+  return path.resolve(folderPath.replace(/\\/g, '/'));
+}
+
+function connectionRequestKey(opts?: ConnectOpts): string {
+  const intent =
+    opts?.forceFolder === true ? 'folder' : opts?.livePreferred === true ? 'live' : 'auto';
+  const model = opts?.model ? normalizeModelName(opts.model) : '';
+  const folder = opts?.folderPath ? normalizeFolderCachePath(opts.folderPath) : '';
+  return `${intent}|model=${model}|folder=${folder}`;
+}
+
+function connectionCacheKey(connection: ConnectionInfo | null): string | null {
+  if (!connection) return null;
+  if (connection.mode === 'live') {
+    return connection.connectionString ? `live|${connection.connectionString}` : null;
+  }
+  return connection.folderPath ? `folder|${normalizeFolderCachePath(connection.folderPath)}` : null;
+}
+
+function snapshotOptionsKey(options: ModelSnapshotOptions = {}): string {
+  return JSON.stringify({
+    includeMeasures: options.includeMeasures !== false,
+    includeRoles: options.includeRoles !== false,
+  });
+}
+
+function liveInstanceMatchesHint(inst: LiveInstance, normalizedHint: string): boolean {
+  const candidates = [inst.name, inst.databaseName, inst.initialCatalog, inst.port]
+    .filter((c): c is string => typeof c === 'string' && c.length > 0)
+    .map(normalizeModelName);
+  return candidates.includes(normalizedHint);
 }
 
 // Build the multi-instance disambiguation error. MUST start with
@@ -374,7 +600,7 @@ function multiInstanceError(instances: LiveInstance[], hint?: string): string {
   const lead = hint
     ? `Found ${instances.length} open Power BI Desktop instances and none uniquely matched model "${hint}".`
     : `Found ${instances.length} open Power BI Desktop instances.`;
-  return `${lead}\n${lines}\nPass model: "<name>" to choose one, or set PBI_MODELING_MCP_CONNECTION_STRING.`;
+  return `${lead}\n${lines}\nPass model: "<name-or-port>" to choose one, or set PBI_MODELING_MCP_CONNECTION_STRING.`;
 }
 
 function bool(obj: Record<string, unknown>, keys: string[], fallback = false): boolean {
@@ -413,17 +639,82 @@ function normalizeStorageMode(value?: string): StorageMode | undefined {
   }
 }
 
+function cardinalitySides(cardinality: Cardinality): {
+  fromCardinality: 'many' | 'one';
+  toCardinality: 'many' | 'one';
+} {
+  switch (cardinality) {
+    case 'oneToMany':
+      return { fromCardinality: 'one', toCardinality: 'many' };
+    case 'oneToOne':
+      return { fromCardinality: 'one', toCardinality: 'one' };
+    case 'manyToMany':
+      return { fromCardinality: 'many', toCardinality: 'many' };
+    case 'manyToOne':
+      return { fromCardinality: 'many', toCardinality: 'one' };
+  }
+}
+
+type CardinalitySide = 'many' | 'one' | undefined;
+
+function normalizeCardinalitySide(value?: string): CardinalitySide {
+  const normalized = value?.trim().toLowerCase();
+  if (normalized === 'many') return 'many';
+  if (normalized === 'one') return 'one';
+  return undefined;
+}
+
+function deriveKnownCardinality(fromCard?: string, toCard?: string): Cardinality | undefined {
+  const from = normalizeCardinalitySide(fromCard);
+  const to = normalizeCardinalitySide(toCard);
+  if (from === undefined || to === undefined) return undefined;
+  if (from === 'many' && to === 'many') return 'manyToMany';
+  if (from === 'one' && to === 'many') return 'oneToMany';
+  if (from === 'one' && to === 'one') return 'oneToOne';
+  return 'manyToOne';
+}
+
+function normalizeCrossFilteringBehavior(value?: string): CrossFilteringBehavior {
+  return value && /both/i.test(value) ? 'both' : 'single';
+}
+
+function definedOnly<T extends Record<string, unknown>>(value: T): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(value).filter(([, v]) => v !== undefined));
+}
+
+function hasTableUpdateFields(def: Record<string, unknown>): boolean {
+  return ['description', 'isHidden', 'dataCategory'].some((key) => def[key] !== undefined);
+}
+
+function hasColumnUpdateFields(def: Record<string, unknown>): boolean {
+  return [
+    'dataType',
+    'expression',
+    'summarizeBy',
+    'formatString',
+    'sortByColumn',
+    'isHidden',
+    'description',
+    'isKey',
+    'dataCategory',
+  ].some((key) => def[key] !== undefined);
+}
+
 export class ModelDriver {
   readonly #client: ModelClient;
   #connection: ConnectionInfo | null = null;
+  #connectionHint: string | null = null;
   #lastOpts: ConnectOpts | undefined;
   #connectPending: Promise<ConnectionInfo> | null = null;
+  #connectPendingKey: string | null = null;
+  #operationQueue: Promise<void> = Promise.resolve();
   // Short-lived snapshot cache: reused across reads/gates within one batch,
   // invalidated on every write and on any connection reset so the DAX gate
   // always sees prior committed writes. The TTL bounds staleness from edits
   // made directly in Desktop between calls.
-  #snapshot: { model: TMDLModel; at: number } | null = null;
-  #snapshotPending: Promise<TMDLModel> | null = null;
+  #snapshot: { model: TMDLModel; at: number; connectionKey: string; optionsKey: string } | null =
+    null;
+  #snapshotPending: { promise: Promise<TMDLModel>; optionsKey: string } | null = null;
   static readonly #SNAPSHOT_TTL_MS = 5_000;
 
   constructor(client: ModelClient) {
@@ -432,6 +723,10 @@ export class ModelDriver {
     // cached connection (and snapshot) so the next call re-discovers and re-Connects.
     this.#client.onReset?.(() => {
       this.#connection = null;
+      this.#connectionHint = null;
+      this.#lastOpts = undefined;
+      this.#connectPending = null;
+      this.#connectPendingKey = null;
       this.#snapshot = null;
       this.#snapshotPending = null;
     });
@@ -474,26 +769,91 @@ export class ModelDriver {
 
   // Auto-detect connection. Cached + serialized (concurrent callers share one
   // connect). The cache is invalidated on a transport drop (onReset) or by #live.
-  //
-  // FIRST CONNECTION WINS for the session: once #connection is cached it is
-  // sticky and a later opts.model is ignored. Switching the target model
-  // requires a transport reset (handled by the existing onReset path, which
-  // clears #connection so the next call re-discovers and re-Connects).
+  // A later explicit model/folder hint can switch targets when it no longer
+  // matches the cached connection, which keeps multi-window sessions deterministic.
   async ensureConnection(opts?: ConnectOpts): Promise<ConnectionInfo> {
+    return this.#withOperationLock(() => this.#ensureConnectionUnlocked(opts));
+  }
+
+  async #ensureConnectionUnlocked(opts?: ConnectOpts): Promise<ConnectionInfo> {
     if (opts) this.#lastOpts = opts;
-    if (this.#connection) return this.#connection;
-    if (this.#connectPending) return this.#connectPending;
-    this.#connectPending = this.#connect(this.#lastOpts).finally(() => {
+    const requestedHint = normalizedConnectionHint(opts);
+    const requestKey = connectionRequestKey(opts);
+    if (this.#connection) {
+      const forceFolderAgainstLive =
+        opts?.forceFolder === true && this.#connection.mode !== 'folder';
+      const livePreferredFolder =
+        opts?.livePreferred === true && this.#connection.mode === 'folder';
+      const modelOnlySelectorAgainstFolder =
+        this.#connection.mode === 'folder' && requestedHint && opts?.model && !opts.folderPath;
+      const cachedConnectionMatches =
+        !requestedHint && !opts?.folderPath
+          ? true
+          : this.#connectionMatchesRequest(opts, requestedHint);
+      if (
+        !forceFolderAgainstLive &&
+        !livePreferredFolder &&
+        !modelOnlySelectorAgainstFolder &&
+        cachedConnectionMatches
+      ) {
+        return this.#connection;
+      }
+      this.#connection = null;
+      this.#connectionHint = null;
+      this.#invalidateSnapshot();
+    }
+    if (this.#connectPending) {
+      if (this.#connectPendingKey === requestKey) return this.#connectPending;
+      await this.#connectPending.catch(() => undefined);
+      return this.#ensureConnectionUnlocked(opts);
+    }
+    this.#connectPendingKey = requestKey;
+    this.#connectPending = this.#connect(opts).finally(() => {
       this.#connectPending = null;
+      this.#connectPendingKey = null;
     });
     return this.#connectPending;
   }
 
+  #connectionMatchesRequest(opts: ConnectOpts | undefined, normalizedHint: string | null): boolean {
+    if (!this.#connection) return false;
+    if (this.#connection.mode === 'folder') {
+      if (opts?.folderPath) {
+        return this.#connection.folderPath
+          ? normalizeFolderCachePath(this.#connection.folderPath) ===
+              normalizeFolderCachePath(opts.folderPath)
+          : false;
+      }
+      return false;
+    }
+    return normalizedHint ? this.#connectionMatchesLiveHint(normalizedHint) : true;
+  }
+
+  #connectionMatchesLiveHint(normalizedHint: string): boolean {
+    if (this.#connectionHint === normalizedHint) return true;
+    if (!this.#connection) return false;
+    if (this.#connection.mode === 'folder') return false;
+    if (!this.#connection.connectionString) return false;
+    return liveInstanceMatchesHint(
+      buildInstance(this.#connection.connectionString),
+      normalizedHint,
+    );
+  }
+
   async #connect(opts?: ConnectOpts): Promise<ConnectionInfo> {
+    const requestedHint = normalizedConnectionHint(opts);
+    if (opts?.forceFolder === true && opts.folderPath) {
+      await this.call(MS_TOOLS.connection, 'ConnectFolder', { folderPath: opts.folderPath });
+      this.#connection = { mode: 'folder', folderPath: opts.folderPath };
+      this.#connectionHint = requestedHint;
+      return this.#connection;
+    }
+
     const pinned = process.env.PBI_MODELING_MCP_CONNECTION_STRING?.trim();
     if (pinned) {
       await this.call(MS_TOOLS.connection, 'Connect', { connectionString: pinned });
       this.#connection = { mode: 'live', connectionString: pinned };
+      this.#connectionHint = requestedHint;
       return this.#connection;
     }
 
@@ -517,9 +877,16 @@ export class ModelDriver {
       }
     }
     if (instances.length === 1) {
-      const connectionString = (instances[0] as LiveInstance).connectionString;
+      const instance = instances[0] as LiveInstance;
+      const hint =
+        opts?.model ?? (opts?.folderPath ? normalizeModelName(opts.folderPath) : undefined);
+      if (hint && !liveInstanceMatchesHint(instance, normalizeModelName(hint))) {
+        throw new Error(multiInstanceError(instances, hint));
+      }
+      const connectionString = instance.connectionString;
       await this.call(MS_TOOLS.connection, 'Connect', { connectionString });
       this.#connection = { mode: 'live', connectionString };
+      this.#connectionHint = requestedHint;
       return this.#connection;
     }
     if (instances.length > 1) {
@@ -530,16 +897,12 @@ export class ModelDriver {
         opts?.model ?? (opts?.folderPath ? normalizeModelName(opts.folderPath) : undefined);
       if (!hint) throw new Error(multiInstanceError(instances));
       const normalizedHint = normalizeModelName(hint);
-      const matches = instances.filter((inst) => {
-        const candidates = [inst.name, inst.databaseName, inst.initialCatalog]
-          .filter((c): c is string => typeof c === 'string' && c.length > 0)
-          .map(normalizeModelName);
-        return candidates.includes(normalizedHint);
-      });
+      const matches = instances.filter((inst) => liveInstanceMatchesHint(inst, normalizedHint));
       if (matches.length === 1) {
         const connectionString = (matches[0] as LiveInstance).connectionString;
         await this.call(MS_TOOLS.connection, 'Connect', { connectionString });
         this.#connection = { mode: 'live', connectionString };
+        this.#connectionHint = normalizedHint;
         return this.#connection;
       }
       throw new Error(multiInstanceError(instances, hint));
@@ -551,6 +914,7 @@ export class ModelDriver {
     if (opts?.folderPath) {
       await this.call(MS_TOOLS.connection, 'ConnectFolder', { folderPath: opts.folderPath });
       this.#connection = { mode: 'folder', folderPath: opts.folderPath };
+      this.#connectionHint = requestedHint;
       return this.#connection;
     }
 
@@ -562,8 +926,30 @@ export class ModelDriver {
   // Run an operation against a connected model, retrying once if the connection
   // drops (or the subprocess re-spawned unconnected): invalidate the cache,
   // reset the subprocess, re-Connect, and re-run.
-  async #live<T>(fn: () => Promise<T>): Promise<T> {
-    await this.ensureConnection();
+  async #live<T>(fn: () => Promise<T>, expectedConnection?: ConnectionInfo): Promise<T> {
+    return this.#withOperationLock(() => this.#liveUnlocked(fn, expectedConnection));
+  }
+
+  async #withOperationLock<T>(work: () => Promise<T>): Promise<T> {
+    const previous = this.#operationQueue;
+    let release!: () => void;
+    this.#operationQueue = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    try {
+      return await work();
+    } finally {
+      release();
+    }
+  }
+
+  async #liveUnlocked<T>(
+    fn: () => Promise<T>,
+    expectedConnection?: ConnectionInfo,
+    options: { readonly retryOnConnectionDrop?: boolean; readonly operationLabel?: string } = {},
+  ): Promise<T> {
+    await this.#ensureOperationConnection(expectedConnection);
     try {
       return await fn();
     } catch (err) {
@@ -571,11 +957,20 @@ export class ModelDriver {
       // after burning another request timeout.
       if (isNonRetryable(err) || !isConnectionDrop(err)) throw err;
       this.#connection = null;
+      this.#connectionHint = null;
       this.#snapshot = null;
       this.#snapshotPending = null;
       this.#client.reset?.();
+      if (options.retryOnConnectionDrop === false) {
+        const m = err instanceof Error ? err.message : String(err);
+        throw new Error(
+          redactConnectionSecrets(
+            `Model bridge write result unknown after connection drop during ${options.operationLabel ?? 'write'}. The operation may already have been applied; refusing to replay a non-idempotent write without readback. Last error: ${m}`,
+          ),
+        );
+      }
       try {
-        await this.ensureConnection();
+        await this.#ensureOperationConnection(expectedConnection);
         return await fn();
       } catch (retryErr) {
         const m = retryErr instanceof Error ? retryErr.message : String(retryErr);
@@ -588,78 +983,176 @@ export class ModelDriver {
     }
   }
 
+  async #ensureOperationConnection(expectedConnection?: ConnectionInfo): Promise<void> {
+    if (!expectedConnection) {
+      await this.#ensureConnectionUnlocked();
+      return;
+    }
+    if (this.#connectionMatchesExpected(expectedConnection)) return;
+    this.#connection = null;
+    this.#connectionHint = null;
+    this.#invalidateSnapshot();
+    if (expectedConnection.mode === 'live') {
+      if (!expectedConnection.connectionString) {
+        throw new Error('Expected live model connection is missing its connection string.');
+      }
+      await this.call(MS_TOOLS.connection, 'Connect', {
+        connectionString: expectedConnection.connectionString,
+      });
+      this.#connection = {
+        mode: 'live',
+        connectionString: expectedConnection.connectionString,
+      };
+      return;
+    }
+    if (!expectedConnection.folderPath) {
+      throw new Error('Expected folder model connection is missing its folderPath.');
+    }
+    await this.call(MS_TOOLS.connection, 'ConnectFolder', {
+      folderPath: expectedConnection.folderPath,
+    });
+    this.#connection = { mode: 'folder', folderPath: expectedConnection.folderPath };
+  }
+
+  #connectionMatchesExpected(expectedConnection: ConnectionInfo): boolean {
+    if (!this.#connection) return false;
+    if (expectedConnection.mode !== this.#connection.mode) return false;
+    if (expectedConnection.mode === 'live') {
+      return (
+        expectedConnection.connectionString !== undefined &&
+        this.#connection.connectionString === expectedConnection.connectionString
+      );
+    }
+    return (
+      expectedConnection.folderPath !== undefined &&
+      this.#connection.folderPath !== undefined &&
+      normalizeFolderCachePath(this.#connection.folderPath) ===
+        normalizeFolderCachePath(expectedConnection.folderPath)
+    );
+  }
+
   // --- reads -------------------------------------------------------------
 
-  async listTablesRaw(): Promise<Record<string, unknown>[]> {
-    return this.#live(async () =>
-      pickArray(await this.call(MS_TOOLS.tables, 'List')).filter(isRecord),
-    );
+  async listTablesRaw(expectedConnection?: ConnectionInfo): Promise<Record<string, unknown>[]> {
+    return this.#live(() => this.#listTablesRawUnlocked(), expectedConnection);
   }
-  async listColumnsRaw(): Promise<Record<string, unknown>[]> {
-    return this.#live(async () =>
-      pickArray(await this.call(MS_TOOLS.columns, 'List')).filter(isRecord),
-    );
+  async listTableInventoryRaw(expectedConnection?: ConnectionInfo): Promise<TableInventoryRow[]> {
+    return (await this.listTablesRaw(expectedConnection))
+      .map((table): TableInventoryRow | null => {
+        const name = str(table, 'name', 'tableName');
+        if (!name) return null;
+        const nestedColumns = table.columns;
+        const nestedMeasures = table.measures;
+        const columnCount =
+          num(table, 'columnCount', 'columnsCount') ??
+          (Array.isArray(nestedColumns) ? nestedColumns.length : undefined);
+        const measureCount =
+          num(table, 'measureCount', 'measuresCount') ??
+          (Array.isArray(nestedMeasures) ? nestedMeasures.length : undefined);
+        const storageMode = normalizeStorageMode(str(table, 'mode', 'storageMode', 'modeType'));
+        return {
+          name,
+          isHidden: bool(table, ['isHidden', 'hidden']),
+          isCalculated: bool(table, ['isCalculated', 'calculated']),
+          isAutoDateTable: bool(table, ['isAutoDateTable', 'autoDateTable']),
+          description: str(table, 'description'),
+          ...(storageMode !== undefined ? { storageMode } : {}),
+          ...(columnCount !== undefined ? { columnCount } : {}),
+          ...(measureCount !== undefined ? { measureCount } : {}),
+        };
+      })
+      .filter((table): table is TableInventoryRow => table !== null);
   }
-  async listMeasuresRaw(): Promise<Record<string, unknown>[]> {
-    return this.#live(async () =>
-      pickArray(await this.call(MS_TOOLS.measures, 'List')).filter(isRecord),
-    );
+  async listColumnsRaw(expectedConnection?: ConnectionInfo): Promise<Record<string, unknown>[]> {
+    return this.#live(() => this.#listColumnsRawUnlocked(), expectedConnection);
+  }
+  async listMeasuresRaw(expectedConnection?: ConnectionInfo): Promise<Record<string, unknown>[]> {
+    return this.#live(() => this.#listMeasuresRawUnlocked(), expectedConnection);
   }
 
   // The live measure List returns only { name, description } — no table,
   // expression, or formatString. Enrich with a single batched Get
   // (references: [{ name }]) which returns the full definitions.
-  async listMeasuresEnriched(): Promise<Record<string, unknown>[]> {
-    const names = (await this.listMeasuresRaw())
-      .map((m) => str(m, 'name', 'measureName'))
-      .filter((n): n is string => typeof n === 'string' && n.length > 0);
-    if (names.length === 0) return [];
-    const got = await this.#live(() =>
-      this.call(MS_TOOLS.measures, 'Get', { references: names.map((name) => ({ name })) }),
-    );
-    // Batched Get returns { results: [{ success, data: { ...measure } }, ...] }.
-    // pickArray grabs `results`; unwrap each item's `data`. Tolerate a flat shape.
-    return pickArray(got)
-      .map((r) => (isRecord(r) && isRecord(r.data) ? r.data : r))
-      .filter(isRecord);
+  async listMeasuresEnriched(
+    expectedConnection?: ConnectionInfo,
+  ): Promise<Record<string, unknown>[]> {
+    return this.#live(() => this.#listMeasuresEnrichedUnlocked(), expectedConnection);
   }
-  async listRelationshipsRaw(): Promise<Record<string, unknown>[]> {
-    return this.#live(async () =>
-      pickArray(await this.call(MS_TOOLS.relationships, 'List')).filter(isRecord),
-    );
+  async listRelationshipsRaw(
+    expectedConnection?: ConnectionInfo,
+  ): Promise<Record<string, unknown>[]> {
+    return this.#live(() => this.#listRelationshipsRawUnlocked(), expectedConnection);
   }
-  // UNVERIFIED: RLS roles read. The MS modeling MCP exposes roles via a dedicated
-  // tool/op (MS_TOOLS.roles + 'List'), both inferred — confirm on live Windows.
-  // A per-role Get may be needed to retrieve tablePermissions (mirroring the
-  // measure List→Get enrich); the assembly below tolerates either shape. The
-  // CALLER (getModelSnapshot) wraps this in try/catch so an unsupported op
-  // degrades to no `roles` key rather than breaking the snapshot.
-  async listRolesRaw(): Promise<Record<string, unknown>[]> {
-    return this.#live(async () =>
-      pickArray(await this.call(MS_TOOLS.roles, 'List')).filter(isRecord),
+  // RLS roles read. A per-role Get may be needed to retrieve tablePermissions
+  // (mirroring the measure List→Get enrich); the assembly below tolerates either
+  // shape. The CALLER (getModelSnapshot) wraps this in try/catch so an
+  // unsupported op degrades to no `roles` key rather than breaking the snapshot.
+  async listRolesRaw(expectedConnection?: ConnectionInfo): Promise<Record<string, unknown>[]> {
+    return this.#live(() => this.#listRolesRawUnlocked(), expectedConnection);
+  }
+  async daxQuery(query: string, expectedConnection?: ConnectionInfo): Promise<unknown> {
+    return this.#live(
+      async () => normalizeDaxResult(await this.call(MS_TOOLS.dax, 'Execute', { query })),
+      expectedConnection,
     );
   }
-  async daxQuery(query: string): Promise<unknown> {
-    return this.#live(() => this.call(MS_TOOLS.dax, 'Execute', { query }));
+
+  async refreshModel(
+    refreshType: 'Automatic' | 'Full' | 'Calculate' = 'Automatic',
+    expectedConnection?: ConnectionInfo,
+  ): Promise<unknown> {
+    return this.#write(
+      () => this.call(MS_TOOLS.model, 'Refresh', { refreshType }),
+      expectedConnection,
+    );
   }
 
   // Assemble the live model into pbi-core's TMDLModel so existing validators reuse.
-  async getModelSnapshot(modelPath = '(live)'): Promise<TMDLModel> {
+  async getModelSnapshot(
+    modelPath = '(live)',
+    options: ModelSnapshotOptions = {},
+    expectedConnection?: ConnectionInfo,
+  ): Promise<TMDLModel> {
+    return this.#live(() => this.#getModelSnapshotUnlocked(modelPath, options), expectedConnection);
+  }
+
+  async getFreshSnapshot(
+    expectedConnection?: ConnectionInfo,
+    options: ModelSnapshotOptions = {},
+  ): Promise<TMDLModel> {
+    return this.#withOperationLock(() =>
+      this.#liveUnlocked(
+        () => this.#getModelSnapshotUnlocked('(live)', options),
+        expectedConnection,
+      ),
+    );
+  }
+
+  async #getModelSnapshotUnlocked(
+    modelPath = '(live)',
+    options: ModelSnapshotOptions = {},
+  ): Promise<TMDLModel> {
+    const includeMeasures = options.includeMeasures !== false;
+    const includeRoles = options.includeRoles !== false;
     const [rawTables, rawColumns, rawMeasures, rawRels] = await Promise.all([
-      this.listTablesRaw(),
-      this.listColumnsRaw(),
-      this.listMeasuresEnriched(),
-      this.listRelationshipsRaw(),
+      this.#listTablesRawUnlocked(),
+      this.#listColumnsRawUnlocked(),
+      includeMeasures ? this.#listMeasuresEnrichedUnlocked() : Promise.resolve([]),
+      this.#listRelationshipsRawUnlocked(),
     ]);
 
     // UNVERIFIED: RLS-roles read op is unconfirmed. Best-effort: a failure (op
     // not supported / errored) degrades to NO `roles` key so the snapshot — which
     // every validator depends on — can never break on the unconfirmed op.
     let rawRoles: Record<string, unknown>[] = [];
-    try {
-      rawRoles = await this.listRolesRaw();
-    } catch {
-      rawRoles = [];
+    let rolesCaptured = false;
+    if (includeRoles) {
+      try {
+        rawRoles = await this.#listRolesRawUnlocked();
+        rolesCaptured = true;
+      } catch {
+        rawRoles = [];
+      }
     }
 
     const columnsByTable = new Map<string, TMDLColumn[]>();
@@ -679,7 +1172,7 @@ export class ModelDriver {
       const col: TMDLColumn = {
         table,
         name,
-        dataType: str(c, 'dataType', 'type') ?? 'string',
+        dataType: str(c, 'dataType', 'type') ?? 'unknown',
         summarizeBy: str(c, 'summarizeBy'),
         sourceColumn: str(c, 'sourceColumn'),
         // UNVERIFIED: confirm against live MS MCP — dataCategory/formatString/
@@ -741,6 +1234,8 @@ export class ModelDriver {
         // may expose it as `mode`/`storageMode`/`modeType`; normalize tolerantly
         // (undefined when absent keeps MOD028's DQ gate silent).
         const storageMode = normalizeStorageMode(str(t, 'mode', 'storageMode', 'modeType'));
+        const dataCategory = str(t, 'dataCategory');
+        const expression = str(t, 'expression', 'daxExpression', 'source', 'query');
         return {
           name,
           columns: columnsByTable.get(name) ?? [],
@@ -750,6 +1245,8 @@ export class ModelDriver {
           isAutoDateTable: bool(t, ['isAutoDateTable', 'autoDateTable']),
           // UNVERIFIED: table description payload key inferred.
           description: str(t, 'description'),
+          ...(dataCategory !== undefined ? { dataCategory } : {}),
+          ...(expression !== undefined ? { expression } : {}),
           ...(storageMode !== undefined ? { storageMode } : {}),
         };
       })
@@ -779,23 +1276,26 @@ export class ModelDriver {
         if (!fromTable || !fromColumn || !toTable || !toColumn) return null;
         const cross = str(r, 'crossFilteringBehavior', 'crossFilterBehavior');
         // UNVERIFIED: confirm against live MS MCP — fromCardinality/toCardinality
-        // payload keys are inferred. Derive via the shared helper so a normal
-        // 1:many is captured as manyToOne (not manyToMany) and MOD003 only fires
-        // on a true m:m. Absent keys → manyToOne (PBI default).
+        // payload keys are inferred. Only set cardinality when both sides are
+        // present and recognized; unknown live metadata must fail closed in
+        // repair/reuse gates instead of being coerced to a default.
         const fromCard = str(r, 'fromCardinality', 'fromCardinalityName');
         const toCard = str(r, 'toCardinality', 'toCardinalityName');
+        const cardinality = deriveKnownCardinality(fromCard, toCard);
         // UNVERIFIED: Assume-RI ("rely on referential integrity") key inferred.
         // Keep undefined when absent so MOD028 stays gated (no false positive).
         const relyOnRi = boolOrUndef(r, 'relyOnReferentialIntegrity', 'assumeReferentialIntegrity');
+        const relationshipId = str(r, 'id', 'name');
         return {
-          id: str(r, 'id', 'name') ?? `rel_${i}`,
+          id: relationshipId ?? `rel_${i}`,
+          identityProven: relationshipId !== undefined,
           fromTable,
           fromColumn,
           toTable,
           toColumn,
           isActive: bool(r, ['isActive', 'active'], true),
-          crossFilteringBehavior: cross === 'both' ? 'both' : 'single',
-          cardinality: deriveCardinality(fromCard, toCard),
+          crossFilteringBehavior: normalizeCrossFilteringBehavior(cross),
+          ...(cardinality !== undefined ? { cardinality } : {}),
           ...(relyOnRi !== undefined ? { relyOnReferentialIntegrity: relyOnRi } : {}),
         };
       })
@@ -819,28 +1319,103 @@ export class ModelDriver {
       })
       .filter((r) => r.name.length > 0);
 
-    return { modelPath, tables, relationships, ...(roles.length > 0 ? { roles } : {}) };
+    return {
+      modelPath,
+      tables,
+      relationships,
+      ...(rolesCaptured ? { rolesCaptured: true, roles } : {}),
+    };
+  }
+
+  async #listTablesRawUnlocked(): Promise<Record<string, unknown>[]> {
+    return pickArray(await this.call(MS_TOOLS.tables, 'List')).filter(isRecord);
+  }
+
+  async #listColumnsRawUnlocked(): Promise<Record<string, unknown>[]> {
+    return pickArray(await this.call(MS_TOOLS.columns, 'List')).filter(isRecord);
+  }
+
+  async #listMeasuresRawUnlocked(): Promise<Record<string, unknown>[]> {
+    return pickArray(await this.call(MS_TOOLS.measures, 'List')).filter(isRecord);
+  }
+
+  async #listMeasuresEnrichedUnlocked(): Promise<Record<string, unknown>[]> {
+    const names = (await this.#listMeasuresRawUnlocked())
+      .map((m) => str(m, 'name', 'measureName'))
+      .filter((n): n is string => typeof n === 'string' && n.length > 0);
+    if (names.length === 0) return [];
+    const got = await this.call(MS_TOOLS.measures, 'Get', {
+      references: names.map((name) => ({ name })),
+    });
+    // Batched Get returns { results: [{ success, data: { ...measure } }, ...] }.
+    // pickArray grabs `results`; unwrap each item's `data`. Tolerate a flat shape.
+    return pickArray(got)
+      .map((r) => (isRecord(r) && isRecord(r.data) ? r.data : r))
+      .filter(isRecord);
+  }
+
+  async #listRelationshipsRawUnlocked(): Promise<Record<string, unknown>[]> {
+    return pickArray(await this.call(MS_TOOLS.relationships, 'List')).filter(isRecord);
+  }
+
+  async #listRolesRawUnlocked(): Promise<Record<string, unknown>[]> {
+    return pickArray(await this.call(MS_TOOLS.roles, 'List')).filter(isRecord);
   }
 
   // Snapshot reused across reads and the per-write DAX gate within one batch.
   // Dedupes concurrent callers and serves a fresh-enough result; otherwise
   // re-reads. Invalidated by every write (below) and by reset(), so the gate
   // always sees prior committed writes.
-  async getCachedSnapshot(): Promise<TMDLModel> {
+  async getCachedSnapshot(
+    expectedConnection?: ConnectionInfo,
+    options: ModelSnapshotOptions = {},
+  ): Promise<TMDLModel> {
+    return this.#withOperationLock(() =>
+      this.#getCachedSnapshotUnlocked(expectedConnection, options),
+    );
+  }
+
+  async #getCachedSnapshotUnlocked(
+    expectedConnection?: ConnectionInfo,
+    options: ModelSnapshotOptions = {},
+  ): Promise<TMDLModel> {
+    await this.#ensureOperationConnection(expectedConnection);
+    const connectionKey = connectionCacheKey(this.#connection);
+    const optionsKey = snapshotOptionsKey(options);
     const now = Date.now();
-    if (this.#snapshot && now - this.#snapshot.at < ModelDriver.#SNAPSHOT_TTL_MS) {
+    if (
+      this.#snapshot &&
+      connectionKey !== null &&
+      this.#snapshot.connectionKey === connectionKey &&
+      this.#snapshot.optionsKey === optionsKey &&
+      now - this.#snapshot.at < ModelDriver.#SNAPSHOT_TTL_MS
+    ) {
       return this.#snapshot.model;
     }
-    if (this.#snapshotPending) return this.#snapshotPending;
-    this.#snapshotPending = this.getModelSnapshot()
+    if (this.#snapshotPending && this.#snapshotPending.optionsKey === optionsKey) {
+      return this.#snapshotPending.promise;
+    }
+    const promise = this.#liveUnlocked(
+      () => this.#getModelSnapshotUnlocked('(live)', options),
+      expectedConnection,
+    )
       .then((model) => {
-        this.#snapshot = { model, at: Date.now() };
+        const snapshotConnectionKey = connectionCacheKey(this.#connection);
+        if (snapshotConnectionKey !== null) {
+          this.#snapshot = {
+            model,
+            at: Date.now(),
+            connectionKey: snapshotConnectionKey,
+            optionsKey,
+          };
+        }
         return model;
       })
       .finally(() => {
         this.#snapshotPending = null;
       });
-    return this.#snapshotPending;
+    this.#snapshotPending = { promise, optionsKey };
+    return promise;
   }
 
   #invalidateSnapshot(): void {
@@ -848,76 +1423,140 @@ export class ModelDriver {
     this.#snapshotPending = null;
   }
 
+  async #write<T>(
+    fn: () => Promise<T>,
+    expectedConnection?: ConnectionInfo,
+    options: { readonly retryOnConnectionDrop?: boolean; readonly operationLabel?: string } = {},
+  ): Promise<T> {
+    return this.#withOperationLock(async () => {
+      const result = await this.#liveUnlocked(fn, expectedConnection, options);
+      this.#invalidateSnapshot();
+      return result;
+    });
+  }
+
   // --- writes ------------------------------------------------------------
 
-  async createMeasure(def: MeasureWrite): Promise<unknown> {
-    const r = await this.#live(() =>
-      this.call(MS_TOOLS.measures, 'Create', { definitions: [def] }),
+  async createMeasure(def: MeasureWrite, expectedConnection?: ConnectionInfo): Promise<unknown> {
+    return this.#write(
+      () => this.call(MS_TOOLS.measures, 'Create', { definitions: [def] }),
+      expectedConnection,
+      { retryOnConnectionDrop: false, operationLabel: 'measure create' },
     );
-    this.#invalidateSnapshot();
-    return r;
   }
-  async updateMeasure(def: MeasureWrite): Promise<unknown> {
-    const r = await this.#live(() =>
-      this.call(MS_TOOLS.measures, 'Update', { definitions: [def] }),
+  async updateMeasure(def: MeasureWrite, expectedConnection?: ConnectionInfo): Promise<unknown> {
+    return this.#write(
+      () => this.call(MS_TOOLS.measures, 'Update', { definitions: [def] }),
+      expectedConnection,
     );
-    this.#invalidateSnapshot();
-    return r;
   }
-  async deleteMeasure(ref: MeasureRef): Promise<unknown> {
-    const r = await this.#live(() =>
-      this.call(MS_TOOLS.measures, 'Delete', { references: [ref], shouldCascadeDelete: false }),
+  async deleteMeasure(ref: MeasureRef, expectedConnection?: ConnectionInfo): Promise<unknown> {
+    return this.#write(
+      () =>
+        this.call(MS_TOOLS.measures, 'Delete', { references: [ref], shouldCascadeDelete: false }),
+      expectedConnection,
     );
-    this.#invalidateSnapshot();
-    return r;
   }
 
   // -- tables --
-  async createTable(def: TableWrite): Promise<unknown> {
-    const r = await this.#live(() =>
-      this.call(MS_TOOLS.tables, 'Create', { definitions: [toDaxSource(def)] }),
+  async createTable(def: TableWrite, expectedConnection?: ConnectionInfo): Promise<unknown> {
+    return this.#write(
+      () => this.call(MS_TOOLS.tables, 'Create', { definitions: [toDaxSource(def)] }),
+      expectedConnection,
+      { retryOnConnectionDrop: false, operationLabel: 'table create' },
     );
-    this.#invalidateSnapshot();
-    return r;
   }
-  async updateTable(def: TableUpdate): Promise<unknown> {
-    // UNVERIFIED: confirm against live MS MCP tool list — rename mechanism (newName) unconfirmed.
-    const r = await this.#live(() => this.call(MS_TOOLS.tables, 'Update', { definitions: [def] }));
-    this.#invalidateSnapshot();
-    return r;
+  async updateTable(def: TableUpdate, expectedConnection?: ConnectionInfo): Promise<unknown> {
+    return this.#write(async () => {
+      const { newName, ...updateDef } = def;
+      let result: unknown;
+      if (newName !== undefined && newName !== def.name) {
+        result = await this.call(MS_TOOLS.tables, 'Rename', {
+          renameDefinitions: [{ currentName: def.name, newName }],
+        });
+      }
+      const updateName = newName ?? def.name;
+      const remaining = definedOnly({
+        ...updateDef,
+        name: updateName,
+      });
+      if (hasTableUpdateFields(remaining)) {
+        result = await this.call(MS_TOOLS.tables, 'Update', { definitions: [remaining] });
+      }
+      return result ?? {};
+    }, expectedConnection);
   }
-  async deleteTable(ref: TableRef): Promise<unknown> {
+  async deleteTable(ref: TableRef, expectedConnection?: ConnectionInfo): Promise<unknown> {
     // UNVERIFIED: confirm against live MS MCP tool list — Delete not in the capability table.
     // Attempt + surface a clean error if unsupported; NEVER fall back to disk edits.
-    const r = await this.#live(() =>
-      this.call(MS_TOOLS.tables, 'Delete', { references: [ref], shouldCascadeDelete: false }),
+    return this.#write(
+      () => this.call(MS_TOOLS.tables, 'Delete', { references: [ref], shouldCascadeDelete: false }),
+      expectedConnection,
     );
-    this.#invalidateSnapshot();
-    return r;
   }
 
   // -- columns --
-  async createColumn(def: ColumnWrite): Promise<unknown> {
-    const r = await this.#live(() =>
-      this.call(MS_TOOLS.columns, 'Create', { definitions: [toDaxSource(def)] }),
+  async createColumn(def: ColumnWrite, expectedConnection?: ConnectionInfo): Promise<unknown> {
+    return this.#write(
+      () => this.call(MS_TOOLS.columns, 'Create', { definitions: [toDaxSource(def)] }),
+      expectedConnection,
+      { retryOnConnectionDrop: false, operationLabel: 'column create' },
     );
-    this.#invalidateSnapshot();
-    return r;
   }
-  async updateColumn(def: ColumnUpdate): Promise<unknown> {
-    const r = await this.#live(() =>
-      this.call(MS_TOOLS.columns, 'Update', { definitions: [toDaxSource(def)] }),
+  async createColumns(
+    defs: ReadonlyArray<ColumnWrite>,
+    expectedConnection?: ConnectionInfo,
+  ): Promise<unknown> {
+    return this.#write(
+      () =>
+        this.call(MS_TOOLS.columns, 'Create', {
+          definitions: defs.map((def) => toDaxSource(def)),
+        }),
+      expectedConnection,
+      { retryOnConnectionDrop: false, operationLabel: 'columns create' },
     );
-    this.#invalidateSnapshot();
-    return r;
   }
-  async deleteColumn(ref: ColumnRef): Promise<unknown> {
+  async updateColumn(def: ColumnUpdate, expectedConnection?: ConnectionInfo): Promise<unknown> {
+    return this.#write(async () => {
+      const { newName, ...updateDef } = def;
+      let result: unknown;
+      if (newName !== undefined && newName !== def.name) {
+        result = await this.call(MS_TOOLS.columns, 'Rename', {
+          renameDefinitions: [{ tableName: def.tableName, currentName: def.name, newName }],
+        });
+      }
+      const updateName = newName ?? def.name;
+      const remaining = definedOnly({
+        ...updateDef,
+        name: updateName,
+      });
+      if (hasColumnUpdateFields(remaining)) {
+        result = await this.call(MS_TOOLS.columns, 'Update', {
+          definitions: [toDaxSource(remaining as unknown as ColumnUpdate)],
+        });
+      }
+      return result ?? {};
+    }, expectedConnection);
+  }
+  async updateColumns(
+    defs: ReadonlyArray<ColumnUpdate>,
+    expectedConnection?: ConnectionInfo,
+  ): Promise<unknown> {
+    return this.#write(
+      () =>
+        this.call(MS_TOOLS.columns, 'Update', {
+          definitions: defs.map((def) => toDaxSource(def)),
+        }),
+      expectedConnection,
+    );
+  }
+  async deleteColumn(ref: ColumnRef, expectedConnection?: ConnectionInfo): Promise<unknown> {
     // UNVERIFIED: confirm against live MS MCP tool list — Delete not in the capability table.
-    const r = await this.#live(() =>
-      this.call(MS_TOOLS.columns, 'Delete', { references: [ref], shouldCascadeDelete: false }),
+    return this.#write(
+      () =>
+        this.call(MS_TOOLS.columns, 'Delete', { references: [ref], shouldCascadeDelete: false }),
+      expectedConnection,
     );
-    this.#invalidateSnapshot();
-    return r;
   }
 
   // Mark a table as a Power BI date table: set the table's dataCategory to
@@ -925,74 +1564,135 @@ export class ModelDriver {
   // time-intelligence DAX (YTD/PY/YoY) and clears MODB1/MODB2.
   // UNVERIFIED: the MS MCP `dataCategory` (table Update) and `isKey` (column
   // Update) keys are inferred; both go through the standard Update path.
-  async markAsDateTable(tableName: string, dateColumn: string): Promise<unknown> {
-    await this.updateTable({ name: tableName, dataCategory: 'Time' });
-    return this.updateColumn({ tableName, name: dateColumn, isKey: true });
+  async markAsDateTable(
+    tableName: string,
+    dateColumn: string,
+    expectedConnection?: ConnectionInfo,
+  ): Promise<unknown> {
+    await this.updateTable({ name: tableName, dataCategory: 'Time' }, expectedConnection);
+    return this.updateColumn({ tableName, name: dateColumn, isKey: true }, expectedConnection);
   }
 
   // -- relationships --
   // The driver owns the MS wire-format quirk: crossFilteringBehavior is
   // 'single'|'both' in our API but 'OneDirection'|'BothDirections' on the wire.
-  #translateRel<T extends { crossFilteringBehavior?: 'single' | 'both' }>(
+  #translateRel<
+    T extends { cardinality?: Cardinality; crossFilteringBehavior?: 'single' | 'both' },
+  >(
     def: T,
-  ): Omit<T, 'crossFilteringBehavior'> & { crossFilteringBehavior?: string } {
-    const { crossFilteringBehavior, ...rest } = def;
-    if (crossFilteringBehavior === undefined) return rest;
+  ): Omit<T, 'crossFilteringBehavior' | 'cardinality'> & {
+    crossFilteringBehavior?: string;
+    fromCardinality?: 'many' | 'one';
+    toCardinality?: 'many' | 'one';
+  } {
+    const { cardinality, crossFilteringBehavior, ...rest } = def;
     return {
       ...rest,
-      crossFilteringBehavior: crossFilteringBehavior === 'both' ? 'BothDirections' : 'OneDirection',
+      ...(cardinality ? cardinalitySides(cardinality) : {}),
+      ...(crossFilteringBehavior === undefined
+        ? {}
+        : {
+            crossFilteringBehavior:
+              crossFilteringBehavior === 'both' ? 'BothDirections' : 'OneDirection',
+          }),
     };
   }
 
-  async createRelationship(def: RelationshipWrite): Promise<unknown> {
-    const r = await this.#live(() =>
-      this.call(MS_TOOLS.relationships, 'Create', { definitions: [this.#translateRel(def)] }),
+  async createRelationship(
+    def: RelationshipWrite,
+    expectedConnection?: ConnectionInfo,
+  ): Promise<unknown> {
+    return this.#write(
+      () => this.call(MS_TOOLS.relationships, 'Create', { definitions: [this.#translateRel(def)] }),
+      expectedConnection,
+      { retryOnConnectionDrop: false, operationLabel: 'relationship create' },
     );
-    this.#invalidateSnapshot();
-    return r;
   }
-  async updateRelationship(def: RelationshipUpdate): Promise<unknown> {
+  async createRelationships(
+    defs: ReadonlyArray<RelationshipWrite>,
+    expectedConnection?: ConnectionInfo,
+  ): Promise<unknown> {
+    return this.#write(
+      () =>
+        this.call(MS_TOOLS.relationships, 'Create', {
+          definitions: defs.map((def) => this.#translateRel(def)),
+        }),
+      expectedConnection,
+      { retryOnConnectionDrop: false, operationLabel: 'relationships create' },
+    );
+  }
+  async updateRelationship(
+    def: RelationshipUpdate,
+    expectedConnection?: ConnectionInfo,
+  ): Promise<unknown> {
     // UNVERIFIED: confirm against live MS MCP tool list — Update identity shape (name=id) unconfirmed.
     const { id, ...changes } = def;
     const translated = this.#translateRel(changes);
-    const r = await this.#live(() =>
-      this.call(MS_TOOLS.relationships, 'Update', { definitions: [{ name: id, ...translated }] }),
+    return this.#write(
+      () =>
+        this.call(MS_TOOLS.relationships, 'Update', { definitions: [{ name: id, ...translated }] }),
+      expectedConnection,
     );
-    this.#invalidateSnapshot();
-    return r;
   }
-  async activateRelationship(ref: RelationshipRef): Promise<unknown> {
+  async updateRelationships(
+    defs: ReadonlyArray<RelationshipUpdate>,
+    expectedConnection?: ConnectionInfo,
+  ): Promise<unknown> {
+    return this.#write(
+      () =>
+        this.call(MS_TOOLS.relationships, 'Update', {
+          definitions: defs.map((def) => {
+            const { id, ...changes } = def;
+            return { name: id, ...this.#translateRel(changes) };
+          }),
+        }),
+      expectedConnection,
+    );
+  }
+  async activateRelationship(
+    ref: RelationshipRef,
+    expectedConnection?: ConnectionInfo,
+  ): Promise<unknown> {
     // Activate IS a confirmed op (relationship_operations: …, Activate, Deactivate).
     // UNVERIFIED: the references:[{name}] envelope is inferred from Deactivate's
     // confirmed shape (Activate's own envelope is not separately documented).
-    const r = await this.#live(() =>
-      this.call(MS_TOOLS.relationships, 'Activate', { references: [{ name: ref.id }] }),
+    return this.#write(
+      () => this.call(MS_TOOLS.relationships, 'Activate', { references: [{ name: ref.id }] }),
+      expectedConnection,
     );
-    this.#invalidateSnapshot();
-    return r;
   }
-  async deactivateRelationship(ref: RelationshipRef): Promise<unknown> {
-    const r = await this.#live(() =>
-      this.call(MS_TOOLS.relationships, 'Deactivate', { references: [{ name: ref.id }] }),
+  async deactivateRelationship(
+    ref: RelationshipRef,
+    expectedConnection?: ConnectionInfo,
+  ): Promise<unknown> {
+    return this.#write(
+      () => this.call(MS_TOOLS.relationships, 'Deactivate', { references: [{ name: ref.id }] }),
+      expectedConnection,
     );
-    this.#invalidateSnapshot();
-    return r;
   }
-  async deleteRelationship(ref: RelationshipRef): Promise<unknown> {
+  async deleteRelationship(
+    ref: RelationshipRef,
+    expectedConnection?: ConnectionInfo,
+  ): Promise<unknown> {
     // UNVERIFIED: confirm against live MS MCP tool list — Delete not in the op list.
     // Attempt + surface a clean error if unsupported; NEVER fall back to disk edits.
-    const r = await this.#live(() =>
-      this.call(MS_TOOLS.relationships, 'Delete', { references: [{ name: ref.id }] }),
+    return this.#write(
+      () => this.call(MS_TOOLS.relationships, 'Delete', { references: [{ name: ref.id }] }),
+      expectedConnection,
     );
-    this.#invalidateSnapshot();
-    return r;
   }
 
   // Folder-mode persistence. Live mode persists via the user's Ctrl+S in Desktop.
   // NOTE: the MS MCP's param key is `tmdlFolderPath`, NOT `path`.
-  async exportToTmdlFolder(folderPath?: string): Promise<unknown> {
+  async exportToTmdlFolder(
+    folderPath?: string,
+    expectedConnection?: ConnectionInfo,
+  ): Promise<unknown> {
     const params = folderPath ? { tmdlFolderPath: folderPath } : undefined;
-    return this.#live(() => this.call(MS_TOOLS.database, 'ExportToTmdlFolder', params));
+    return this.#live(
+      () => this.call(MS_TOOLS.database, 'ExportToTmdlFolder', params),
+      expectedConnection,
+    );
   }
 }
 

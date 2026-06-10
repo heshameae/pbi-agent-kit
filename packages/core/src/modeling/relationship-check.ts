@@ -1,3 +1,4 @@
+import { classifyTable } from './fact-classifier.js';
 import {
   type DirectedFilterEdge,
   directedFilterEdgesFromRelationships,
@@ -100,6 +101,13 @@ export function relationshipCheck(
     });
   }
 
+  if (from && to && looksFactLike(model, from) && looksFactLike(model, to)) {
+    blocking.push({
+      code: 'direct-fact-to-fact',
+      message: `Direct relationship between fact-like tables "${candidate.fromTable}" and "${candidate.toTable}" is refused. Use shared dimensions / star-schema modeling instead of joining facts directly.`,
+    });
+  }
+
   // R7: a relationship from a column to itself is never valid.
   if (candidate.fromTable === candidate.toTable && candidate.fromColumn === candidate.toColumn) {
     blocking.push({
@@ -150,6 +158,17 @@ export function relationshipCheck(
   }
 
   return { valid: blocking.length === 0, blocking, warnings };
+}
+
+function looksFactLike(model: TMDLModel, table: TMDLTable): boolean {
+  const classification = classifyTable(model, table.name);
+  if (classification.kind === 'fact' && classification.confidence >= 0.6) return true;
+  return table.columns.some(
+    (column) =>
+      ['int64', 'decimal', 'double'].includes(column.dataType.toLowerCase()) &&
+      column.summarizeBy !== undefined &&
+      column.summarizeBy.toLowerCase() !== 'none',
+  );
 }
 
 export function checkRelationships(model: TMDLModel): ReadonlyArray<RelationshipFinding> {
@@ -287,12 +306,18 @@ function createsAmbiguousDiamond(
 }
 
 export function typesCompatible(a: TMDLColumn, b: TMDLColumn): boolean {
-  if (a.dataType === b.dataType) return true;
+  const leftDataType = normalizeDataType(a.dataType);
+  const rightDataType = normalizeDataType(b.dataType);
+  if (leftDataType === rightDataType) return true;
   const numerics = new Set(['int64', 'decimal', 'double']);
-  if (numerics.has(a.dataType) && numerics.has(b.dataType)) return true;
-  const temporal = new Set(['date', 'dateTime']);
-  if (temporal.has(a.dataType) && temporal.has(b.dataType)) return true;
+  if (numerics.has(leftDataType) && numerics.has(rightDataType)) return true;
+  const temporal = new Set(['date', 'datetime']);
+  if (temporal.has(leftDataType) && temporal.has(rightDataType)) return true;
   return false;
+}
+
+function normalizeDataType(dataType: string): string {
+  return dataType.trim().toLowerCase();
 }
 
 function detectCycles(model: TMDLModel): ReadonlyArray<RelationshipFinding> {

@@ -2,7 +2,7 @@
   "name": "pbi-mcp-ts",
   "version": "0.1.0",
   "private": true,
-  "description": "Power BI report (PBIR) authoring for Claude Code — native TypeScript MCP server + skills + subagents + hooks.",
+  "description": "Power BI semantic-model beta for Claude Code — modeling MCP server, skills, subagents, and internal PBIR dogfood support.",
   "license": "MIT",
   "type": "module",
   "engines": {

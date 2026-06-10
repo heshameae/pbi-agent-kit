@@ -2,7 +2,7 @@
   "name": "pbi-core",
   "version": "0.1.0",
   "private": true,
-  "description": "Pure TypeScript engine for Power BI PBIR (Enhanced Report Format) authoring.",
+  "description": "Pure TypeScript engine for gated Power BI semantic-model workflows and PBIR authoring primitives.",
   "license": "MIT",
   "type": "module",
   "main": "./dist/index.js",

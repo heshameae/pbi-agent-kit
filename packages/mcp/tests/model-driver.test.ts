@@ -3,6 +3,8 @@ import {
   type ModelClient,
   ModelDriver,
   collectConnectionStrings,
+  normalizeDaxResult,
+  normalizeModelName,
   operationArgs,
   pickArray,
   redactConnectionSecrets,
@@ -30,6 +32,17 @@ function makeClient(responses: Record<string, McpToolResult> = {}): ModelClient 
 
 function json(value: unknown): McpToolResult {
   return { structuredContent: value, content: [] };
+}
+
+function deferred<T = void>(): {
+  promise: Promise<T>;
+  resolve: (value: T | PromiseLike<T>) => void;
+} {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
 }
 
 afterEach(() => {
@@ -92,6 +105,15 @@ describe('collectConnectionStrings', () => {
   });
 });
 
+describe('normalizeModelName', () => {
+  it('normalizes Windows-style pbip and SemanticModel selectors', () => {
+    expect(normalizeModelName('C:\\Users\\me\\Reports\\Sales.pbip')).toBe('sales');
+    expect(normalizeModelName('C:\\Users\\me\\Reports\\Sales.SemanticModel\\definition')).toBe(
+      'sales',
+    );
+  });
+});
+
 describe('ModelDriver.ensureConnection', () => {
   it('uses the env-pinned connection string (live)', async () => {
     process.env.PBI_MODELING_MCP_CONNECTION_STRING = 'Data Source=localhost:1234;';
@@ -122,6 +144,23 @@ describe('ModelDriver.ensureConnection', () => {
     expect(
       client.calls.map((c) => (c.args as { request: { operation: string } }).request.operation),
     ).toEqual(['ListLocalInstances', 'Connect']);
+  });
+
+  it('rejects an explicit model selector that does not match the only live instance', async () => {
+    const client = makeClient({
+      'connection_operations/ListLocalInstances': json({
+        data: [{ connectionString: 'Data Source=localhost:59186;' }],
+      }),
+    });
+    const driver = new ModelDriver(client);
+
+    await expect(driver.ensureConnection({ model: '61234' })).rejects.toThrow(
+      /none uniquely matched model "61234"/i,
+    );
+    const ops = client.calls.map(
+      (c) => (c.args as { request: { operation: string } }).request.operation,
+    );
+    expect(ops).toEqual(['ListLocalInstances']);
   });
 
   it('throws on multiple instances with no hint to disambiguate', async () => {
@@ -179,7 +218,208 @@ describe('ModelDriver.ensureConnection', () => {
     });
   });
 
-  it('derives the hint from a folderPath basename when several instances are open', async () => {
+  it('matches by port when several unnamed instances are open', async () => {
+    const client = makeClient({
+      'connection_operations/ListLocalInstances': json({
+        data: [
+          { connectionString: 'Data Source=localhost:59186;' },
+          { connectionString: 'Data Source=localhost:61234;' },
+        ],
+      }),
+    });
+    const driver = new ModelDriver(client);
+
+    const info = await driver.ensureConnection({ model: '61234' });
+
+    expect(info).toEqual({ mode: 'live', connectionString: 'Data Source=localhost:61234;' });
+    const connect = client.calls.find(
+      (c) => (c.args as { request: { operation: string } }).request.operation === 'Connect',
+    );
+    expect((connect?.args as { request: Record<string, unknown> }).request).toEqual({
+      operation: 'Connect',
+      connectionString: 'Data Source=localhost:61234;',
+    });
+  });
+
+  it('switches cached live connections when a later model selector targets a different port', async () => {
+    const client = makeClient({
+      'connection_operations/ListLocalInstances': json({
+        data: [
+          { connectionString: 'Data Source=localhost:59186;' },
+          { connectionString: 'Data Source=localhost:61234;' },
+        ],
+      }),
+    });
+    const driver = new ModelDriver(client);
+
+    await driver.ensureConnection({ model: '59186' });
+    const info = await driver.ensureConnection({ model: '61234' });
+
+    expect(info).toEqual({ mode: 'live', connectionString: 'Data Source=localhost:61234;' });
+    const connects = client.calls
+      .filter((c) => (c.args as { request: { operation: string } }).request.operation === 'Connect')
+      .map((c) => (c.args as { request: { connectionString: string } }).request.connectionString);
+    expect(connects).toEqual(['Data Source=localhost:59186;', 'Data Source=localhost:61234;']);
+  });
+
+  it('does not let a cached folder connection mask a later live model selector', async () => {
+    let discovery = 0;
+    const client: ModelClient & { calls: RecordedCall[] } = {
+      calls: [],
+      async callTool(name, args) {
+        this.calls.push({ name, args });
+        const op = (args as { request?: { operation?: string } }).request?.operation ?? '';
+        if (name === 'connection_operations' && op === 'ListLocalInstances') {
+          discovery += 1;
+          return discovery === 1
+            ? json({ data: [] })
+            : json({
+                data: [{ connectionString: 'Data Source=localhost:61234;', databaseName: 'Model' }],
+              });
+        }
+        return { structuredContent: {} };
+      },
+    };
+    const driver = new ModelDriver(client);
+
+    await driver.ensureConnection({ folderPath: '/x/Model.SemanticModel/definition' });
+    const info = await driver.ensureConnection({ model: '61234' });
+
+    expect(info).toEqual({ mode: 'live', connectionString: 'Data Source=localhost:61234;' });
+    const ops = client.calls.map(
+      (c) => (c.args as { request: { operation: string } }).request.operation,
+    );
+    expect(ops).toEqual(['ListLocalInstances', 'ConnectFolder', 'ListLocalInstances', 'Connect']);
+  });
+
+  it('does not let a cached folder connection mask a later live-preferred folder selector', async () => {
+    let discovery = 0;
+    const client: ModelClient & { calls: RecordedCall[] } = {
+      calls: [],
+      async callTool(name, args) {
+        this.calls.push({ name, args });
+        const op = (args as { request?: { operation?: string } }).request?.operation ?? '';
+        if (name === 'connection_operations' && op === 'ListLocalInstances') {
+          discovery += 1;
+          return discovery === 1
+            ? json({ data: [] })
+            : json({
+                data: [{ connectionString: 'Data Source=localhost:61234;', databaseName: 'Model' }],
+              });
+        }
+        return { structuredContent: {} };
+      },
+    };
+    const driver = new ModelDriver(client);
+
+    await driver.ensureConnection({ folderPath: '/x/Model.SemanticModel/definition' });
+    const info = await driver.ensureConnection({
+      folderPath: '/x/Model.SemanticModel/definition',
+      livePreferred: true,
+    });
+
+    expect(info).toEqual({ mode: 'live', connectionString: 'Data Source=localhost:61234;' });
+    const ops = client.calls.map(
+      (c) => (c.args as { request: { operation: string } }).request.operation,
+    );
+    expect(ops).toEqual(['ListLocalInstances', 'ConnectFolder', 'ListLocalInstances', 'Connect']);
+  });
+
+  it('does not let a cached folder connection mask a later live-preferred default selector', async () => {
+    let discovery = 0;
+    const client: ModelClient & { calls: RecordedCall[] } = {
+      calls: [],
+      async callTool(name, args) {
+        this.calls.push({ name, args });
+        const op = (args as { request?: { operation?: string } }).request?.operation ?? '';
+        if (name === 'connection_operations' && op === 'ListLocalInstances') {
+          discovery += 1;
+          return discovery === 1
+            ? json({ data: [] })
+            : json({ data: [{ connectionString: 'Data Source=localhost:61234;' }] });
+        }
+        return { structuredContent: {} };
+      },
+    };
+    const driver = new ModelDriver(client);
+
+    await driver.ensureConnection({ folderPath: '/x/Model.SemanticModel/definition' });
+    const info = await driver.ensureConnection({ livePreferred: true });
+
+    expect(info).toEqual({ mode: 'live', connectionString: 'Data Source=localhost:61234;' });
+    const ops = client.calls.map(
+      (c) => (c.args as { request: { operation: string } }).request.operation,
+    );
+    expect(ops).toEqual(['ListLocalInstances', 'ConnectFolder', 'ListLocalInstances', 'Connect']);
+  });
+
+  it('does not let a pending folder connection satisfy a concurrent live-preferred default selector', async () => {
+    let discovery = 0;
+    const connectFolderStarted = deferred();
+    const releaseConnectFolder = deferred();
+    const client: ModelClient & { calls: RecordedCall[] } = {
+      calls: [],
+      async callTool(name, args) {
+        this.calls.push({ name, args });
+        const op = (args as { request?: { operation?: string } }).request?.operation ?? '';
+        if (name === 'connection_operations' && op === 'ListLocalInstances') {
+          discovery += 1;
+          return discovery === 1
+            ? json({ data: [] })
+            : json({ data: [{ connectionString: 'Data Source=localhost:61234;' }] });
+        }
+        if (name === 'connection_operations' && op === 'ConnectFolder') {
+          connectFolderStarted.resolve();
+          await releaseConnectFolder.promise;
+        }
+        return { structuredContent: {} };
+      },
+    };
+    const driver = new ModelDriver(client);
+
+    const folderConnection = driver.ensureConnection({
+      folderPath: '/x/Model.SemanticModel/definition',
+    });
+    await connectFolderStarted.promise;
+    const liveConnection = driver.ensureConnection({ livePreferred: true });
+    releaseConnectFolder.resolve();
+
+    await expect(folderConnection).resolves.toEqual({
+      mode: 'folder',
+      folderPath: '/x/Model.SemanticModel/definition',
+    });
+    await expect(liveConnection).resolves.toEqual({
+      mode: 'live',
+      connectionString: 'Data Source=localhost:61234;',
+    });
+    const ops = client.calls.map(
+      (c) => (c.args as { request: { operation: string } }).request.operation,
+    );
+    expect(ops).toEqual(['ListLocalInstances', 'ConnectFolder', 'ListLocalInstances', 'Connect']);
+  });
+
+  it('does not reuse a cached folder connection for a different same-named folder', async () => {
+    const client = makeClient({ 'connection_operations/ListLocalInstances': json({ data: [] }) });
+    const driver = new ModelDriver(client);
+
+    await driver.ensureConnection({ folderPath: '/a/Sales.SemanticModel/definition' });
+    const info = await driver.ensureConnection({
+      folderPath: '/b/Sales.SemanticModel/definition',
+    });
+
+    expect(info).toEqual({ mode: 'folder', folderPath: '/b/Sales.SemanticModel/definition' });
+    const connectFolders = client.calls
+      .filter(
+        (c) => (c.args as { request: { operation: string } }).request.operation === 'ConnectFolder',
+      )
+      .map((c) => (c.args as { request: { folderPath: string } }).request.folderPath);
+    expect(connectFolders).toEqual([
+      '/a/Sales.SemanticModel/definition',
+      '/b/Sales.SemanticModel/definition',
+    ]);
+  });
+
+  it('matches a folder-derived model hint to a discovered live instance', async () => {
     const client = makeClient({
       'connection_operations/ListLocalInstances': json({
         data: [
@@ -254,7 +494,7 @@ describe('ModelDriver.ensureConnection', () => {
   it('prefers a live instance over a supplied folderPath (live-first)', async () => {
     const client = makeClient({
       'connection_operations/ListLocalInstances': json({
-        data: [{ connectionString: 'Data Source=localhost:59186;' }],
+        data: [{ connectionString: 'Data Source=localhost:59186;', databaseName: 'Model' }],
       }),
     });
     const driver = new ModelDriver(client);
@@ -268,6 +508,178 @@ describe('ModelDriver.ensureConnection', () => {
     );
     expect(ops).toEqual(['ListLocalInstances', 'Connect']);
     expect(ops).not.toContain('ConnectFolder');
+  });
+
+  it('refuses a single live instance that does not match the supplied folderPath hint', async () => {
+    const client = makeClient({
+      'connection_operations/ListLocalInstances': json({
+        data: [{ connectionString: 'Data Source=localhost:59186;', databaseName: 'OtherModel' }],
+      }),
+    });
+    const driver = new ModelDriver(client);
+
+    await expect(
+      driver.ensureConnection({ folderPath: '/x/Model.SemanticModel/definition' }),
+    ).rejects.toThrow(/none uniquely matched model "model"/i);
+
+    const ops = client.calls.map(
+      (c) => (c.args as { request: { operation: string } }).request.operation,
+    );
+    expect(ops).toEqual(['ListLocalInstances']);
+  });
+
+  it('can force a folder connection without a second live discovery', async () => {
+    const client = makeClient({
+      'connection_operations/ListLocalInstances': json({
+        data: [{ connectionString: 'Data Source=localhost:59186;', databaseName: 'OtherModel' }],
+      }),
+    });
+    const driver = new ModelDriver(client);
+
+    const info = await driver.ensureConnection({
+      folderPath: '/x/Model.SemanticModel/definition',
+      forceFolder: true,
+    });
+
+    expect(info).toEqual({ mode: 'folder', folderPath: '/x/Model.SemanticModel/definition' });
+    const ops = client.calls.map(
+      (c) => (c.args as { request: { operation: string } }).request.operation,
+    );
+    expect(ops).toEqual(['ConnectFolder']);
+  });
+
+  it('rebinds to the expected gated connection before a write if another call switched targets', async () => {
+    const client = makeClient({
+      'connection_operations/ListLocalInstances': json({
+        data: [{ connectionString: 'Data Source=localhost:59186;', databaseName: 'Other' }],
+      }),
+      'measure_operations/Create': json({ ok: true }),
+    });
+    const driver = new ModelDriver(client);
+
+    await driver.ensureConnection({
+      folderPath: '/x/Model.SemanticModel/definition',
+      forceFolder: true,
+    });
+    const gatedConnection = driver.connection;
+    if (!gatedConnection) throw new Error('Expected gated folder connection');
+    await driver.ensureConnection({ model: 'Other' });
+
+    await driver.createMeasure(
+      { tableName: 'Fact', name: 'Total', expression: '1' },
+      gatedConnection,
+    );
+
+    const ops = client.calls.map(
+      (c) => (c.args as { request: { operation: string } }).request.operation,
+    );
+    expect(ops).toEqual([
+      'ConnectFolder',
+      'ListLocalInstances',
+      'Connect',
+      'ConnectFolder',
+      'Create',
+    ]);
+  });
+
+  it('rebinds to the expected gated connection before a snapshot read', async () => {
+    const client = makeClient({
+      'connection_operations/ListLocalInstances': json({
+        data: [
+          { connectionString: 'Data Source=localhost:1;', databaseName: 'ModelA' },
+          { connectionString: 'Data Source=localhost:2;', databaseName: 'ModelB' },
+        ],
+      }),
+      'table_operations/List': json({ data: [{ name: 'Fact' }] }),
+      'column_operations/List': json({ data: [] }),
+      'relationship_operations/List': json({ data: [] }),
+    });
+    const driver = new ModelDriver(client);
+
+    await driver.ensureConnection({ model: 'ModelA' });
+    const gatedConnection = driver.connection;
+    if (!gatedConnection) throw new Error('Expected gated live connection');
+    await driver.ensureConnection({ model: 'ModelB' });
+
+    await driver.getModelSnapshot(
+      '(live)',
+      { includeMeasures: false, includeRoles: false },
+      gatedConnection,
+    );
+
+    const ops = client.calls.map(
+      (c) => (c.args as { request: { operation: string } }).request.operation,
+    );
+    expect(ops).toEqual([
+      'ListLocalInstances',
+      'Connect',
+      'ListLocalInstances',
+      'Connect',
+      'Connect',
+      'List',
+      'List',
+      'List',
+    ]);
+    const connects = client.calls
+      .filter((c) => (c.args as { request: { operation: string } }).request.operation === 'Connect')
+      .map((c) => (c.args as { request: { connectionString: string } }).request.connectionString);
+    expect(connects).toEqual([
+      'Data Source=localhost:1;',
+      'Data Source=localhost:2;',
+      'Data Source=localhost:1;',
+    ]);
+  });
+
+  it('does not retarget the shared connection while a bound write is in flight', async () => {
+    const createStarted = deferred();
+    const releaseCreate = deferred();
+    const calls: RecordedCall[] = [];
+    const client: ModelClient & { calls: RecordedCall[] } = {
+      calls,
+      async callTool(name, args) {
+        calls.push({ name, args });
+        const op = (args as { request?: { operation?: string } }).request?.operation ?? '';
+        if (name === 'connection_operations' && op === 'ListLocalInstances') {
+          return json({
+            data: [{ connectionString: 'Data Source=localhost:2;', databaseName: 'Other' }],
+          });
+        }
+        if (name === 'measure_operations' && op === 'Create') {
+          createStarted.resolve();
+          await releaseCreate.promise;
+          return json({ ok: true });
+        }
+        return json({ ok: true });
+      },
+    };
+    const driver = new ModelDriver(client);
+
+    await driver.ensureConnection({
+      folderPath: '/x/Model.SemanticModel/definition',
+      forceFolder: true,
+    });
+    const gatedConnection = driver.connection;
+    if (!gatedConnection) throw new Error('Expected gated folder connection');
+
+    const write = driver.createMeasure(
+      { tableName: 'Fact', name: 'Total', expression: '1' },
+      gatedConnection,
+    );
+    await createStarted.promise;
+    const retarget = driver.ensureConnection({ model: 'Other' });
+    await Promise.resolve();
+
+    expect(
+      calls.map((c) => (c.args as { request: { operation: string } }).request.operation),
+    ).toEqual(['ConnectFolder', 'Create']);
+
+    releaseCreate.resolve();
+    await write;
+    await retarget;
+
+    expect(
+      calls.map((c) => (c.args as { request: { operation: string } }).request.operation),
+    ).toEqual(['ConnectFolder', 'Create', 'ListLocalInstances', 'Connect']);
   });
 
   it('throws when no instance and no folderPath', async () => {
@@ -289,12 +701,64 @@ describe('ModelDriver.ensureConnection', () => {
 });
 
 describe('ModelDriver.getModelSnapshot', () => {
+  it('lists live table inventory without hydrating columns, measures, or relationships', async () => {
+    const client = makeClient({
+      'connection_operations/ListLocalInstances': json({
+        data: [{ connectionString: 'Data Source=localhost:1;' }],
+      }),
+      'table_operations/List': json({
+        data: [{ name: 'FactPrimary', description: 'Fact table.', mode: 'Import' }],
+      }),
+      'column_operations/List': {
+        isError: true,
+        content: [{ type: 'text', text: 'columns should not be listed' }],
+      },
+      'measure_operations/List': {
+        isError: true,
+        content: [{ type: 'text', text: 'measures should not be listed' }],
+      },
+      'relationship_operations/List': {
+        isError: true,
+        content: [{ type: 'text', text: 'relationships should not be listed' }],
+      },
+    });
+    const driver = new ModelDriver(client);
+
+    const tables = await driver.listTableInventoryRaw();
+
+    expect(tables).toEqual([
+      {
+        name: 'FactPrimary',
+        description: 'Fact table.',
+        storageMode: 'import',
+        isHidden: false,
+        isCalculated: false,
+        isAutoDateTable: false,
+      },
+    ]);
+    const calledTools = client.calls.map((c) => c.name);
+    expect(calledTools).toContain('table_operations');
+    expect(calledTools).not.toContain('column_operations');
+    expect(calledTools).not.toContain('measure_operations');
+    expect(calledTools).not.toContain('relationship_operations');
+  });
+
   it('assembles a TMDLModel from live List output (defensive field names)', async () => {
     const client = makeClient({
       'connection_operations/ListLocalInstances': json({
         data: [{ connectionString: 'Data Source=localhost:1;' }],
       }),
-      'table_operations/List': json({ data: [{ name: 'FactPrimary' }, { name: 'DimShared' }] }),
+      'table_operations/List': json({
+        data: [
+          {
+            name: 'FactPrimary',
+            dataCategory: 'Time',
+            expression:
+              "CALENDAR(MINX('FactPrimary', 'FactPrimary'[OrderDate]), MAXX('FactPrimary', 'FactPrimary'[OrderDate]))",
+          },
+          { name: 'DimShared' },
+        ],
+      }),
       // Live column List is grouped per table with a nested `columns` array.
       'column_operations/List': json({
         data: [
@@ -348,6 +812,8 @@ describe('ModelDriver.getModelSnapshot', () => {
     expect(fact?.columns.map((c) => c.name)).toEqual(['ValueMetric', 'OrderDate']);
     expect(fact?.measures.map((m) => m.name)).toEqual(['Total Value']);
     expect(model.relationships).toHaveLength(1);
+    expect(model.relationships[0]?.id).toBe('rel_0');
+    expect(model.relationships[0]?.identityProven).toBe(false);
     expect(model.relationships[0]?.toTable).toBe('DimShared');
   });
 
@@ -356,7 +822,17 @@ describe('ModelDriver.getModelSnapshot', () => {
       'connection_operations/ListLocalInstances': json({
         data: [{ connectionString: 'Data Source=localhost:1;' }],
       }),
-      'table_operations/List': json({ data: [{ name: 'FactPrimary' }, { name: 'DimShared' }] }),
+      'table_operations/List': json({
+        data: [
+          {
+            name: 'FactPrimary',
+            dataCategory: 'Time',
+            expression:
+              "CALENDAR(MINX('FactPrimary', 'FactPrimary'[OrderDate]), MAXX('FactPrimary', 'FactPrimary'[OrderDate]))",
+          },
+          { name: 'DimShared' },
+        ],
+      }),
       'column_operations/List': json({
         data: [
           {
@@ -390,11 +866,66 @@ describe('ModelDriver.getModelSnapshot', () => {
     const model = await driver.getModelSnapshot();
 
     const fact = model.tables.find((t) => t.name === 'FactPrimary');
+    expect(fact?.dataCategory).toBe('Time');
+    expect(fact?.expression).toContain('CALENDAR');
     const valueMetric = fact?.columns.find((c) => c.name === 'ValueMetric');
     const orderDate = fact?.columns.find((c) => c.name === 'OrderDate');
     expect(valueMetric?.formatString).toBe('#,0.00');
     expect(orderDate?.dataCategory).toBe('Time');
     expect(model.relationships[0]?.cardinality).toBe('manyToOne');
+  });
+
+  it('leaves live relationship cardinality undefined when endpoint cardinality metadata is absent', async () => {
+    const client = makeClient({
+      'connection_operations/ListLocalInstances': json({
+        data: [{ connectionString: 'Data Source=localhost:1;' }],
+      }),
+      'table_operations/List': json({
+        data: [{ name: 'FactPrimary' }, { name: 'DimShared' }],
+      }),
+      'column_operations/List': json({
+        data: [
+          { tableName: 'FactPrimary', columns: [{ name: 'SharedKey', dataType: 'string' }] },
+          { tableName: 'DimShared', columns: [{ name: 'SharedAxis', dataType: 'string' }] },
+        ],
+      }),
+      'measure_operations/List': json({ data: [] }),
+      'relationship_operations/List': json({
+        data: [
+          {
+            fromTable: 'FactPrimary',
+            fromColumn: 'SharedKey',
+            toTable: 'DimShared',
+            toColumn: 'SharedAxis',
+            isActive: true,
+            crossFilteringBehavior: 'single',
+          },
+        ],
+      }),
+    });
+    const driver = new ModelDriver(client);
+    const model = await driver.getModelSnapshot();
+
+    expect(model.relationships[0]?.cardinality).toBeUndefined();
+  });
+
+  it('does not treat missing live column dataType as proven string metadata', async () => {
+    const client = makeClient({
+      'connection_operations/ListLocalInstances': json({
+        data: [{ connectionString: 'Data Source=localhost:1;' }],
+      }),
+      'table_operations/List': json({ data: [{ name: 'FactPrimary' }] }),
+      'column_operations/List': json({
+        data: [{ tableName: 'FactPrimary', name: 'UnspecifiedType' }],
+      }),
+      'measure_operations/List': json({ data: [] }),
+      'relationship_operations/List': json({ data: [] }),
+    });
+    const driver = new ModelDriver(client);
+
+    const model = await driver.getModelSnapshot();
+
+    expect(model.tables[0]?.columns[0]?.dataType).toBe('unknown');
   });
 
   // --- Wave-2 metadata capture (M1-M6) ---------------------------------------
@@ -514,8 +1045,35 @@ describe('ModelDriver.getModelSnapshot', () => {
     expect(model.relationships[1]?.relyOnReferentialIntegrity).toBeUndefined();
   });
 
-  // M2 — RLS roles assembled from the assumed `role_operations/List` op.
-  it('captures RLS roles from the (assumed) role_operations List op', async () => {
+  it('normalizes live relationship cross-filter payloads from MS MCP names', async () => {
+    const client = makeClient({
+      'connection_operations/ListLocalInstances': json({
+        data: [{ connectionString: 'Data Source=localhost:1;' }],
+      }),
+      'table_operations/List': json({ data: [{ name: 'FactPrimary' }, { name: 'DimShared' }] }),
+      'column_operations/List': json({ data: [] }),
+      'measure_operations/List': json({ data: [] }),
+      'relationship_operations/List': json({
+        data: [
+          {
+            fromTable: 'FactPrimary',
+            fromColumn: 'SharedKey',
+            toTable: 'DimShared',
+            toColumn: 'SharedKey',
+            crossFilteringBehavior: 'BothDirections',
+          },
+        ],
+      }),
+    });
+    const driver = new ModelDriver(client);
+
+    const model = await driver.getModelSnapshot();
+
+    expect(model.relationships[0]?.crossFilteringBehavior).toBe('both');
+  });
+
+  // M2 — RLS roles assembled from the Microsoft Modeling MCP security role surface.
+  it('captures RLS roles from the security_role_operations List op', async () => {
     const client = makeClient({
       'connection_operations/ListLocalInstances': json({
         data: [{ connectionString: 'Data Source=localhost:1;' }],
@@ -524,7 +1082,7 @@ describe('ModelDriver.getModelSnapshot', () => {
       'column_operations/List': json({ data: [] }),
       'measure_operations/List': json({ data: [] }),
       'relationship_operations/List': json({ data: [] }),
-      'role_operations/List': json({
+      'security_role_operations/List': json({
         data: [
           {
             name: 'Manager',
@@ -571,12 +1129,13 @@ describe('ModelDriver.getModelSnapshot', () => {
           },
         ],
       }),
-      // No 'role_operations/List' entry → makeClient returns {} → pickArray [].
+      // No security_role_operations/List entry → makeClient returns {} → pickArray [].
     });
     const driver = new ModelDriver(client);
     const model = await driver.getModelSnapshot();
 
-    expect(model.roles).toBeUndefined();
+    expect(model.roles).toEqual([]);
+    expect(model.rolesCaptured).toBe(true);
     // Snapshot still fully assembled.
     expect(model.tables.map((t) => t.name).sort()).toEqual(['DimShared', 'FactPrimary']);
     expect(model.relationships).toHaveLength(1);
@@ -595,8 +1154,8 @@ describe('ModelDriver.getModelSnapshot', () => {
         if (name === 'table_operations' && op === 'List') {
           return { structuredContent: { data: [{ name: 'FactPrimary' }] } };
         }
-        if (name === 'role_operations') {
-          throw new Error('invalid operation: role_operations is not supported');
+        if (name === 'security_role_operations') {
+          throw new Error('invalid operation: security_role_operations is not supported');
         }
         return { structuredContent: {} };
       },
@@ -605,6 +1164,31 @@ describe('ModelDriver.getModelSnapshot', () => {
     const model = await driver.getModelSnapshot();
     expect(model.roles).toBeUndefined();
     expect(model.tables.map((t) => t.name)).toEqual(['FactPrimary']);
+  });
+
+  it('binds fast table inventory reads to the selected expected connection', async () => {
+    const client = makeClient({
+      'connection_operations/ListLocalInstances': json({
+        data: [
+          { connectionString: 'Data Source=localhost:1;', databaseName: 'ModelA' },
+          { connectionString: 'Data Source=localhost:2;', databaseName: 'ModelB' },
+        ],
+      }),
+      'table_operations/List': json({ data: [{ name: 'SelectedModelTable' }] }),
+    });
+    const driver = new ModelDriver(client);
+    const selected = await driver.ensureConnection({ model: 'ModelB' });
+    await driver.ensureConnection({ model: 'ModelA' });
+
+    const tables = await driver.listTableInventoryRaw(selected);
+
+    expect(tables.map((table) => table.name)).toEqual(['SelectedModelTable']);
+    const connectCalls = client.calls.filter(
+      (call) => call.name === 'connection_operations' && call.args.request?.operation === 'Connect',
+    );
+    expect(connectCalls.at(-1)?.args).toEqual({
+      request: { operation: 'Connect', connectionString: 'Data Source=localhost:2;' },
+    });
   });
 });
 
@@ -691,15 +1275,56 @@ describe('ModelDriver writes', () => {
     });
   });
 
-  it('updateTable carries a rename via newName', async () => {
+  it('refreshModel sends model Refresh with the requested refresh type', async () => {
+    const client = liveClient();
+    const driver = new ModelDriver(client);
+    await driver.refreshModel('Calculate');
+    const refresh = opCall(client.calls, 'Refresh');
+    expect(refresh?.name).toBe('model_operations');
+    expect(refresh?.args).toEqual({
+      request: { operation: 'Refresh', refreshType: 'Calculate' },
+    });
+  });
+
+  it('updateColumn sends sortByColumn metadata', async () => {
+    const client = liveClient();
+    const driver = new ModelDriver(client);
+    await driver.updateColumn({
+      tableName: 'Calendar',
+      name: 'Month Name',
+      sortByColumn: 'Month No',
+    });
+    const update = opCall(client.calls, 'Update');
+    expect(update?.name).toBe('column_operations');
+    expect(update?.args).toEqual({
+      request: {
+        operation: 'Update',
+        definitions: [
+          {
+            tableName: 'Calendar',
+            name: 'Month Name',
+            sortByColumn: 'Month No',
+          },
+        ],
+      },
+    });
+  });
+
+  it('updateTable renames first and applies remaining metadata to the renamed table', async () => {
     const client = liveClient();
     const driver = new ModelDriver(client);
     await driver.updateTable({ name: 'Sales', newName: 'SalesFact', isHidden: true });
-    expect(opCall(client.calls, 'Update')?.name).toBe('table_operations');
+    expect(opCall(client.calls, 'Rename')?.name).toBe('table_operations');
+    expect(opCall(client.calls, 'Rename')?.args).toEqual({
+      request: {
+        operation: 'Rename',
+        renameDefinitions: [{ currentName: 'Sales', newName: 'SalesFact' }],
+      },
+    });
     expect(opCall(client.calls, 'Update')?.args).toEqual({
       request: {
         operation: 'Update',
-        definitions: [{ name: 'Sales', newName: 'SalesFact', isHidden: true }],
+        definitions: [{ name: 'SalesFact', isHidden: true }],
       },
     });
   });
@@ -823,6 +1448,31 @@ describe('ModelDriver writes', () => {
     });
   });
 
+  it('updateColumn renames first and applies remaining metadata to the renamed column', async () => {
+    const client = liveClient();
+    const driver = new ModelDriver(client);
+    await driver.updateColumn({
+      tableName: 'Product',
+      name: 'OldName',
+      newName: 'NewName',
+      isHidden: true,
+    });
+
+    expect(opCall(client.calls, 'Rename')?.name).toBe('column_operations');
+    expect(opCall(client.calls, 'Rename')?.args).toEqual({
+      request: {
+        operation: 'Rename',
+        renameDefinitions: [{ tableName: 'Product', currentName: 'OldName', newName: 'NewName' }],
+      },
+    });
+    expect(opCall(client.calls, 'Update')?.args).toEqual({
+      request: {
+        operation: 'Update',
+        definitions: [{ tableName: 'Product', name: 'NewName', isHidden: true }],
+      },
+    });
+  });
+
   it('updateTable passes through dataCategory', async () => {
     const client = liveClient();
     const driver = new ModelDriver(client);
@@ -869,6 +1519,39 @@ describe('ModelDriver writes', () => {
     });
   });
 
+  it('createColumns sends all definitions in one batch', async () => {
+    const client = liveClient();
+    const driver = new ModelDriver(client);
+    await driver.createColumns([
+      {
+        tableName: 'Product',
+        name: 'ListPrice',
+        sourceColumn: 'ListPrice',
+        dataType: 'decimal',
+      },
+      {
+        tableName: 'Product',
+        name: 'Margin',
+        expression: '[ListPrice] - [Cost]',
+      },
+    ]);
+    expect(opCall(client.calls, 'Create')?.name).toBe('column_operations');
+    expect(opCall(client.calls, 'Create')?.args).toEqual({
+      request: {
+        operation: 'Create',
+        definitions: [
+          {
+            tableName: 'Product',
+            name: 'ListPrice',
+            sourceColumn: 'ListPrice',
+            dataType: 'decimal',
+          },
+          { tableName: 'Product', name: 'Margin', daxExpression: '[ListPrice] - [Cost]' },
+        ],
+      },
+    });
+  });
+
   // -- relationships --
   it('createRelationship translates single → OneDirection', async () => {
     const client = liveClient();
@@ -878,6 +1561,7 @@ describe('ModelDriver writes', () => {
       fromColumn: 'ProductKey',
       toTable: 'Product',
       toColumn: 'ProductKey',
+      cardinality: 'manyToOne',
       crossFilteringBehavior: 'single',
       isActive: true,
     });
@@ -892,6 +1576,8 @@ describe('ModelDriver writes', () => {
             fromColumn: 'ProductKey',
             toTable: 'Product',
             toColumn: 'ProductKey',
+            fromCardinality: 'many',
+            toCardinality: 'one',
             crossFilteringBehavior: 'OneDirection',
             isActive: true,
           },
@@ -916,6 +1602,59 @@ describe('ModelDriver writes', () => {
       }
     ).request.definitions[0];
     expect(def?.crossFilteringBehavior).toBe('BothDirections');
+  });
+
+  it('createRelationships sends all definitions in one batch', async () => {
+    const client = liveClient();
+    const driver = new ModelDriver(client);
+    await driver.createRelationships([
+      {
+        fromTable: 'Sales',
+        fromColumn: 'ProductKey',
+        toTable: 'Product',
+        toColumn: 'ProductKey',
+        cardinality: 'manyToOne',
+        crossFilteringBehavior: 'single',
+        isActive: true,
+      },
+      {
+        fromTable: 'Sales',
+        fromColumn: 'CustomerKey',
+        toTable: 'Customer',
+        toColumn: 'CustomerKey',
+        cardinality: 'manyToOne',
+        crossFilteringBehavior: 'both',
+        isActive: true,
+      },
+    ]);
+    expect(opCall(client.calls, 'Create')?.name).toBe('relationship_operations');
+    expect(opCall(client.calls, 'Create')?.args).toEqual({
+      request: {
+        operation: 'Create',
+        definitions: [
+          {
+            fromTable: 'Sales',
+            fromColumn: 'ProductKey',
+            toTable: 'Product',
+            toColumn: 'ProductKey',
+            fromCardinality: 'many',
+            toCardinality: 'one',
+            crossFilteringBehavior: 'OneDirection',
+            isActive: true,
+          },
+          {
+            fromTable: 'Sales',
+            fromColumn: 'CustomerKey',
+            toTable: 'Customer',
+            toColumn: 'CustomerKey',
+            fromCardinality: 'many',
+            toCardinality: 'one',
+            crossFilteringBehavior: 'BothDirections',
+            isActive: true,
+          },
+        ],
+      },
+    });
   });
 
   it('updateRelationship keys the definition by id (as name) with changed fields', async () => {
@@ -983,6 +1722,130 @@ describe('ModelDriver writes', () => {
     ).length;
     expect(listsAfter).toBeGreaterThan(listsBefore);
   });
+
+  it('does not serve a cached snapshot while a write is in flight', async () => {
+    const createEntered = deferred<void>();
+    const allowCreate = deferred<McpToolResult>();
+    const calls: RecordedCall[] = [];
+    const client: ModelClient & { calls: RecordedCall[] } = {
+      calls,
+      async callTool(name, args) {
+        calls.push({ name, args });
+        const op = (args as { request?: { operation?: string } }).request?.operation ?? '';
+        if (name === 'connection_operations' && op === 'ListLocalInstances') {
+          return json({ data: [{ connectionString: 'Data Source=localhost:1;' }] });
+        }
+        if (name === 'table_operations' && op === 'List') {
+          return json({ data: [{ name: 'FactPrimary' }] });
+        }
+        if (name === 'table_operations' && op === 'Create') {
+          createEntered.resolve();
+          return allowCreate.promise;
+        }
+        return json({});
+      },
+    };
+    const driver = new ModelDriver(client);
+
+    await driver.getCachedSnapshot();
+    const listsBefore = client.calls.filter(
+      (c) => (c.args as { request?: { operation?: string } }).request?.operation === 'List',
+    ).length;
+
+    const write = driver.createTable({ name: 'FactSecondary', mode: 'Import', mExpression: '...' });
+    await createEntered.promise;
+
+    let readResolved = false;
+    const read = driver.getCachedSnapshot().then((model) => {
+      readResolved = true;
+      return model;
+    });
+    await Promise.resolve();
+    expect(readResolved).toBe(false);
+
+    allowCreate.resolve(json({}));
+    await write;
+    await read;
+
+    const listsAfter = client.calls.filter(
+      (c) => (c.args as { request?: { operation?: string } }).request?.operation === 'List',
+    ).length;
+    expect(listsAfter).toBeGreaterThan(listsBefore);
+  });
+
+  it('does not reuse a cached snapshot across expected connections', async () => {
+    let activeConnection = '';
+    const calls: RecordedCall[] = [];
+    const client: ModelClient & { calls: RecordedCall[] } = {
+      calls,
+      async callTool(name, args) {
+        calls.push({ name, args });
+        const request = (args as { request?: Record<string, unknown> }).request ?? {};
+        const op = typeof request.operation === 'string' ? request.operation : '';
+        if (name === 'connection_operations' && op === 'Connect') {
+          activeConnection = String(request.connectionString ?? '');
+          return json({});
+        }
+        if (name === 'table_operations' && op === 'List') {
+          return json({
+            data: [{ name: activeConnection.includes('localhost:2') ? 'TargetB' : 'TargetA' }],
+          });
+        }
+        return json({});
+      },
+    };
+    const driver = new ModelDriver(client);
+
+    const snapshotA = await driver.getCachedSnapshot({
+      mode: 'live',
+      connectionString: 'Data Source=localhost:1;',
+    });
+    expect(snapshotA.tables.map((table) => table.name)).toEqual(['TargetA']);
+    const listsBefore = client.calls.filter(
+      (c) => (c.args as { request?: { operation?: string } }).request?.operation === 'List',
+    ).length;
+
+    const snapshotB = await driver.getCachedSnapshot({
+      mode: 'live',
+      connectionString: 'Data Source=localhost:2;',
+    });
+
+    const listsAfter = client.calls.filter(
+      (c) => (c.args as { request?: { operation?: string } }).request?.operation === 'List',
+    ).length;
+    expect(snapshotB.tables.map((table) => table.name)).toEqual(['TargetB']);
+    expect(listsAfter).toBeGreaterThan(listsBefore);
+  });
+
+  it('does not reuse a structure-only cached snapshot for a later measure-inclusive read', async () => {
+    const client = makeClient({
+      'connection_operations/ListLocalInstances': json({
+        data: [{ connectionString: 'Data Source=localhost:1;' }],
+      }),
+      'table_operations/List': json({ data: [{ name: 'Measures' }] }),
+      'column_operations/List': json({ data: [] }),
+      'measure_operations/List': json({ data: [{ name: 'Total' }] }),
+      'measure_operations/Get': json({
+        results: [{ data: { tableName: 'Measures', name: 'Total', expression: '1' } }],
+      }),
+      'relationship_operations/List': json({ data: [] }),
+    });
+    const driver = new ModelDriver(client);
+
+    const structureOnly = await driver.getCachedSnapshot(undefined, {
+      includeMeasures: false,
+      includeRoles: false,
+    });
+    const measureInclusive = await driver.getCachedSnapshot(undefined, {
+      includeMeasures: true,
+      includeRoles: false,
+    });
+
+    expect(structureOnly.tables[0]?.measures).toEqual([]);
+    expect(measureInclusive.tables[0]?.measures).toEqual([
+      expect.objectContaining({ name: 'Total', expression: '1' }),
+    ]);
+  });
 });
 
 describe('ModelDriver.call error handling', () => {
@@ -1000,8 +1863,8 @@ describe('ModelDriver.call error handling', () => {
 });
 
 describe('ModelDriver reconnect resilience', () => {
-  it('reconnects and retries once when an operation drops the connection', async () => {
-    let createAttempts = 0;
+  it('reconnects and retries once when a read operation drops the connection', async () => {
+    let listAttempts = 0;
     let connects = 0;
     const client: ModelClient = {
       reset() {},
@@ -1016,18 +1879,18 @@ describe('ModelDriver reconnect resilience', () => {
           connects += 1;
           return { structuredContent: {} };
         }
-        if (name === 'measure_operations' && op === 'Create') {
-          createAttempts += 1;
-          if (createAttempts === 1) throw new Error('transport closed');
-          return { structuredContent: { success: true } };
+        if (name === 'table_operations' && op === 'List') {
+          listAttempts += 1;
+          if (listAttempts === 1) throw new Error('transport closed');
+          return { structuredContent: { data: [{ name: 'T' }] } };
         }
         return { structuredContent: {} };
       },
     };
     const driver = new ModelDriver(client);
     await driver.ensureConnection();
-    await driver.createMeasure({ tableName: 'T', name: 'M', expression: '1', formatString: '0' });
-    expect(createAttempts).toBe(2); // failed once, retried
+    await expect(driver.listTablesRaw()).resolves.toEqual([{ name: 'T' }]);
+    expect(listAttempts).toBe(2); // failed once, retried
     expect(connects).toBeGreaterThanOrEqual(2); // re-Connected after the drop
   });
 
@@ -1052,5 +1915,221 @@ describe('ModelDriver reconnect resilience', () => {
     expect(driver.connection).not.toBeNull();
     resetCb?.(); // simulate a transport drop
     expect(driver.connection).toBeNull();
+  });
+
+  it('does not reuse a stale explicit selector after reset for an unqualified connection', async () => {
+    let resetCb: (() => void) | undefined;
+    const client: ModelClient = {
+      onReset(cb) {
+        resetCb = cb;
+      },
+      async callTool(_name, args) {
+        const op = (args as { request?: { operation?: string } }).request?.operation ?? '';
+        if (op === 'ListLocalInstances') {
+          return {
+            structuredContent: {
+              data: [
+                { connectionString: 'Data Source=localhost:1;', databaseName: 'Sales' },
+                { connectionString: 'Data Source=localhost:2;', databaseName: 'Finance' },
+              ],
+            },
+          };
+        }
+        return { structuredContent: {} };
+      },
+    };
+    const driver = new ModelDriver(client);
+    await driver.ensureConnection({ model: 'Sales' });
+    resetCb?.();
+
+    await expect(driver.ensureConnection()).rejects.toThrow(/found 2 open/i);
+  });
+});
+
+describe('normalizeDaxResult', () => {
+  it('zips the local columnar envelope (data.columns + positional rows) into keyed objects', () => {
+    const envelope = {
+      success: true,
+      operation: 'Execute',
+      message: 'ok',
+      data: {
+        columns: [
+          { name: 'Sales[Year]', dataType: 'Int64' },
+          { name: '[Total]', dataType: 'Decimal' },
+        ],
+        rows: [
+          [2024, 100.5],
+          [2025, 200],
+        ],
+        rowCount: 2,
+        wasTruncated: false,
+      },
+    };
+    expect(normalizeDaxResult(envelope)).toEqual({
+      columns: ['Sales[Year]', '[Total]'],
+      rows: [
+        { 'Sales[Year]': 2024, '[Total]': 100.5 },
+        { 'Sales[Year]': 2025, '[Total]': 200 },
+      ],
+      rowCount: 2,
+    });
+  });
+
+  it('zips nested local columnar result tables into keyed objects', () => {
+    const envelope = {
+      success: true,
+      operation: 'Execute',
+      message: 'ok',
+      data: {
+        results: [
+          {
+            tables: [
+              {
+                columns: [
+                  { name: '[__table]', dataType: 'String' },
+                  { name: '[rowCount]', dataType: 'Int64' },
+                ],
+                rows: [['Actual', 100]],
+                rowCount: 1,
+              },
+            ],
+          },
+        ],
+      },
+    };
+
+    expect(normalizeDaxResult(envelope)).toEqual({
+      columns: ['[__table]', '[rowCount]'],
+      rows: [{ '[__table]': 'Actual', '[rowCount]': 100 }],
+      rowCount: 1,
+    });
+  });
+
+  it('throws on a success:false envelope (engine error returned without isError)', () => {
+    expect(() =>
+      normalizeDaxResult({
+        success: false,
+        operation: 'Execute',
+        message: 'Query (1, 9) The syntax for the function is incorrect.',
+      }),
+    ).toThrow(/syntax/i);
+  });
+
+  it('throws on a non-tabular text payload instead of returning empty rows', () => {
+    expect(() => normalizeDaxResult('Unexpected non-JSON engine message')).toThrow(
+      /did not return a tabular JSON/i,
+    );
+  });
+
+  it('surfaces file-paged large results (wasTruncated + filePath)', () => {
+    const result = normalizeDaxResult({
+      success: true,
+      data: {
+        columns: [{ name: '[V]', dataType: 'Decimal' }],
+        rows: [],
+        rowCount: 250000,
+        wasTruncated: true,
+        truncationReason: 'paged to file',
+        filePath: '/tmp/dax-result.csv',
+      },
+    }) as Record<string, unknown>;
+    expect(result).toMatchObject({
+      rowCount: 250000,
+      wasTruncated: true,
+      filePath: '/tmp/dax-result.csv',
+    });
+  });
+
+  it('passes the public Execute-Queries REST shape through unchanged', () => {
+    const rest = { results: [{ tables: [{ rows: [{ 'Sales[Year]': 2024 }] }] }] };
+    expect(normalizeDaxResult(rest)).toBe(rest);
+  });
+
+  it('throws when a columnar result reports rows but none are tabular', () => {
+    expect(() =>
+      normalizeDaxResult({
+        success: true,
+        data: {
+          columns: [{ name: '[V]', dataType: 'Decimal' }],
+          rows: [1, 'bad', null],
+          rowCount: 3,
+        },
+      }),
+    ).toThrow(/malformed tabular rows/i);
+  });
+});
+
+describe('ModelDriver.daxQuery', () => {
+  const PIN = 'PBI_MODELING_MCP_CONNECTION_STRING';
+  afterEach(() => {
+    delete process.env[PIN];
+  });
+
+  it('returns normalized keyed rows from a content-text columnar envelope', async () => {
+    process.env[PIN] = 'Data Source=localhost:1;';
+    const envelope = {
+      success: true,
+      data: {
+        columns: [{ name: '[__table]' }, { name: '[rowCount]' }],
+        rows: [['Actual', 100]],
+        rowCount: 1,
+      },
+    };
+    const client = makeClient({
+      'dax_query_operations/Execute': {
+        content: [{ type: 'text', text: JSON.stringify(envelope) }],
+      },
+    });
+    const driver = new ModelDriver(client);
+    const result = (await driver.daxQuery('EVALUATE x')) as Record<string, unknown>;
+    expect(result.rows).toEqual([{ '[__table]': 'Actual', '[rowCount]': 100 }]);
+    expect(result.rowCount).toBe(1);
+  });
+
+  it('rejects when the engine returns a success:false envelope without isError', async () => {
+    process.env[PIN] = 'Data Source=localhost:1;';
+    const envelope = { success: false, message: 'Query (1, 1) The syntax is incorrect.' };
+    const client = makeClient({
+      'dax_query_operations/Execute': {
+        content: [{ type: 'text', text: JSON.stringify(envelope) }],
+      },
+    });
+    const driver = new ModelDriver(client);
+    await expect(driver.daxQuery('EVALUATE bad(')).rejects.toThrow(/syntax/i);
+  });
+});
+
+describe('ModelDriver write retry safety', () => {
+  const PIN = 'PBI_MODELING_MCP_CONNECTION_STRING';
+  afterEach(() => {
+    delete process.env[PIN];
+  });
+
+  it('does not retry a non-idempotent create when the transport drops after the write', async () => {
+    process.env[PIN] = 'Data Source=localhost:1;';
+    let createCalls = 0;
+    const client: ModelClient = {
+      reset() {
+        // no-op for this test
+      },
+      async callTool(name, args) {
+        const op = (args as { request?: { operation?: string } }).request?.operation ?? '';
+        if (name === 'connection_operations' && op === 'Connect') {
+          return { structuredContent: {} };
+        }
+        if (name === 'table_operations' && op === 'Create') {
+          createCalls += 1;
+          throw new Error('transport closed after create');
+        }
+        return { structuredContent: {} };
+      },
+    };
+
+    const driver = new ModelDriver(client);
+
+    await expect(driver.createTable({ name: 'Generated', expression: 'ROW("X", 1)' })).rejects.toThrow(
+      /write result unknown/i,
+    );
+    expect(createCalls).toBe(1);
   });
 });

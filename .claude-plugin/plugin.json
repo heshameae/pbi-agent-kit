@@ -1,16 +1,8 @@
 {
   "name": "pbi-mcp-ts",
-  "version": "0.4.0",
-  "description": "Power BI authoring for Claude Code — a TypeScript MCP server plus skills, subagents, and hooks for report (PBIR) and semantic-model work, with live model editing via the Microsoft Power BI modeling MCP.",
+  "version": "0.1.0",
+  "description": "Power BI semantic-model beta for Claude Code — modeling-only MCP surface with deterministic Date, relationship, DAX, star-schema, refresh, regulated-readiness, measure-intent, and optional data-dictionary gates. Dashboard/report/page/visual/PBIR authoring is unavailable in this beta.",
   "author": { "name": "Hesham Eissa" },
   "license": "MIT",
-  "skills": "./skills/",
-  "mcpServers": "./.mcp.json",
-  "agents": [
-    "./agents/data-analyst.md",
-    "./agents/model-builder.md",
-    "./agents/model-reviewer.md",
-    "./agents/report-reviewer.md",
-    "./agents/report-builder.md"
-  ]
+  "mcpServers": "./.mcp.json"
 }

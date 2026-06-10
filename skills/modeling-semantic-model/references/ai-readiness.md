@@ -10,6 +10,10 @@ AI readiness preparation can easily double the development time for a semantic m
 2. **Is the model stable enough?** AI readiness is iterative and requires testing. If the model is still undergoing significant structural changes, defer AI prep until it stabilizes.
 3. **Is Copilot/Data Agent enabled in the tenant?** Check tenant settings before investing effort.
 
+## Measure Intent and Dictionary Readiness
+
+For AI consumption, missing business meaning is a semantic readiness gap, not a structural model error. Use live metadata plus a user-owned data dictionary/glossary to distinguish `draft` and `confirmed` measure intent. Do not infer formulas, synonyms, preferred measures, targets, RAG semantics, or time-intelligence behavior from field names alone. If intent remains draft, document `needs-user-input` rather than writing AI instructions, descriptions, or measure guidance that could canonize the wrong definition.
+
 ## The Decision: Reports, Conversational BI, or Both?
 
 Reports and conversational BI address different problems and suit different scenarios. The model design choices change depending on the consumption method:
@@ -71,7 +75,7 @@ AI instructions are freeform text that Copilot and data agents read automaticall
 - Business terminology definitions with examples ("TMS is total media spend, calculated using the measure total_media_spend")
 - Time period definitions (fiscal year start, peak season, reporting cadence)
 - Metric preferences for common questions ("when users ask about margin, use Standard Margin")
-- Disambiguation of date fields ("Order Date is the primary date field; Ship Date is only for logistics analysis")
+- Disambiguation of role-playing date fields ("<Primary Date> is the primary analytical date field; <Alternate Role Date> is only for the specified secondary analysis")
 - Default groupings and analysis preferences
 - Example DAX queries for complex scenarios to guide AI patterns
 - Instructions for Calculation Groups, DAX UDFs, or Field Parameters if present
@@ -79,8 +83,8 @@ AI instructions are freeform text that Copilot and data agents read automaticall
 - Output style guidance (conciseness, question-asking behavior, possibly specific tools or scenarios to avoid if copilot)
 
 **Where AI instructions live:**
-- Eventually: saved as a `.md` file in the `/Copilot` folder of a PBIP project (might not be live yet but was on the docs...?)
-- Editable in Power BI Desktop ("Prep your data for AI"), VS Code, or Tabular Editor (via C# macro)
+- AI instruction read/write support is not exposed by the current MCP tool surface. Treat updates as unsupported/manual unless a deterministic tool is added.
+- If editing manually in Power BI Desktop, VS Code, or Tabular Editor, report that as a manual workflow; do not imply a live-safe agent write happened.
 - AI instructions are NOT automatically read by coding agents (Claude Code, Codex, GitHub Copilot) -- they must be explicitly referenced in agent context
 
 **Important:** AI instructions are a *writing skill*, not an engineering task. Inform instructions from observing users interact with Copilot, not from guessing. Iterate incrementally based on testing and user feedback.

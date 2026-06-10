@@ -1,3 +1,4 @@
+import { findCalendarSourceRisks } from './date-grain-plan.js';
 import { daxReferenceCheck } from './dax-reference-check.js';
 import { classifyTable } from './fact-classifier.js';
 import {
@@ -236,6 +237,9 @@ export const BPA_RULES: ReadonlyArray<BPARule> = [
   },
   {
     // A13 `dg4:30686` HIDE_FOREIGN_KEYS — recalibrated info→warning per FINAL contract.
+    // Escalated to ERROR when the one-side/source field is also visible: that
+    // creates duplicate user-facing fields where selecting the many-side key
+    // bypasses the source-of-truth dimension and can produce wrong numbers.
     id: 'MOD005',
     name: 'Foreign key column visible (not hidden)',
     severity: 'warning',
@@ -243,19 +247,33 @@ export const BPA_RULES: ReadonlyArray<BPARule> = [
     check: (model) => {
       const findings: BPAViolation[] = [];
       const byTable = new Map(model.tables.map((t) => [t.name, t]));
+      const seen = new Set<string>();
       for (const r of model.relationships) {
         const fromTable = byTable.get(r.fromTable);
-        if (!fromTable) continue;
-        const col = fromTable.columns.find((c) => c.name === r.fromColumn);
-        if (col && !col.isHidden) {
-          findings.push(
-            violation('MOD005', 'warning', 'Modeling', columnRef(col), {
-              message:
-                'FK column on the many side is visible; users may slice on it instead of the dim attribute.',
-              fix: `Set isHidden: true on ${columnRef(col)}.`,
-            }),
-          );
-        }
+        const toTable = byTable.get(r.toTable);
+        if (!fromTable || !toTable) continue;
+        const col = findColumn(fromTable, r.fromColumn);
+        if (!col || col.isHidden) continue;
+        const key = `${col.table}\u0000${col.name}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+
+        const sourceColumn = findColumn(toTable, r.toColumn);
+        const sourceIsVisible = !!sourceColumn && !sourceColumn.isHidden && !toTable.isHidden;
+        const duplicateVisibleName =
+          sourceIsVisible && normalizeName(sourceColumn.name) === normalizeName(col.name);
+        const severity: Severity = duplicateVisibleName ? 'error' : 'warning';
+        const sourceRef = sourceColumn
+          ? columnRef(sourceColumn)
+          : columnRefRaw(r.toTable, r.toColumn);
+        findings.push(
+          violation('MOD005', severity, 'Modeling', columnRef(col), {
+            message: duplicateVisibleName
+              ? `FK column ${columnRef(col)} is visible and duplicates the source-of-truth dimension field ${sourceRef}; users can pick the fact-side field and bypass shared dimension filtering.`
+              : `FK column ${columnRef(col)} is visible on the many side of relationship ${r.id}; users may slice on it instead of the source-of-truth dimension field ${sourceRef}.`,
+            fix: `Set isHidden: true on ${columnRef(col)}. Keep the dimension/source field visible for report authors when it is the intended slicer/axis.`,
+          }),
+        );
       }
       return findings;
     },
@@ -793,8 +811,8 @@ export const BPA_RULES: ReadonlyArray<BPARule> = [
     check: (model) => {
       const hasDateTable = model.tables.some(
         (t) =>
-          t.columns.some((c) => (c.dataCategory ?? '').toLowerCase() === 'time') &&
-          t.columns.some((c) => isDateType(c.dataType)),
+          isMarkedDateTable(t) ||
+          t.columns.some((c) => isTimeDataCategory(c.dataCategory) && isDateType(c.dataType)),
       );
       if (hasDateTable) return [];
       // Only nudge if there is at least one date/dateTime column to anchor on.
@@ -806,7 +824,7 @@ export const BPA_RULES: ReadonlyArray<BPARule> = [
         violation('MODB1', 'warning', 'Modeling', 'Model.DateTable', {
           message:
             'No table is marked as a date table (a column with dataCategory "Time"). Time-intelligence DAX (YTD/PY/YoY) needs a marked date dimension.',
-          fix: 'Add a dedicated Date table and mark it as a date table (set its key column dataCategory to Time).',
+          fix: 'Use pbi_model_plan_date_table to prove complete fact-date coverage, then pbi_table_mark_as_date to mark the governed Date table/key. Do not set dataCategory metadata directly.',
         }),
       ];
     },
@@ -824,14 +842,49 @@ export const BPA_RULES: ReadonlyArray<BPARule> = [
       for (const t of model.tables) {
         if (t.isAutoDateTable) continue;
         if (!looksLikeDateTableName(t.name)) continue;
-        const marked = t.columns.some((c) => (c.dataCategory ?? '').toLowerCase() === 'time');
+        const marked =
+          isMarkedDateTable(t) ||
+          t.columns.some((c) => isTimeDataCategory(c.dataCategory) && isDateType(c.dataType));
         if (marked) continue;
         findings.push(
           violation('MODB2', 'warning', 'Modeling', `Table.${t.name}`, {
             message: `Table "${t.name}" looks like a date dimension but is not marked as a date table; time-intelligence functions may not resolve it.`,
-            fix: 'Mark it as a date table (set the date key column dataCategory to Time).',
+            fix: 'Use pbi_model_plan_date_table to prove complete fact-date coverage, then pbi_table_mark_as_date to mark this governed Date table/key. Do not set dataCategory metadata directly.',
           }),
         );
+      }
+      return findings;
+    },
+  },
+  {
+    // MOD029 `dg3-semantic-models.xml:5104` — a proper date table must span the
+    // full range of fact data; `dg4-te-fabric-desktop-root.xml:30095-30114`
+    // requires governed date/calendar tables instead of auto/prompt-created
+    // implementation details. Literal or volatile calendar bounds are a generic
+    // structural smell: the table may silently exclude facts or drift with the
+    // system date. The fix path is the deterministic coverage planner, not a
+    // prompt-chosen year.
+    id: 'MOD029',
+    name: 'Date table has unproven calendar bounds',
+    severity: 'error',
+    category: 'Modeling',
+    check: (model) => {
+      const findings: BPAViolation[] = [];
+      for (const t of model.tables) {
+        if (t.isAutoDateTable) continue;
+        if (!isDateTableCandidate(t)) continue;
+        const risks = findCalendarSourceRisks(dateTableSources(t));
+        for (const risk of risks) {
+          findings.push(
+            violation('MOD029', 'error', 'Modeling', `Table.${t.name}`, {
+              message:
+                risk.code === 'volatile-calendar-anchor'
+                  ? `Date/calendar table "${t.name}" uses a volatile current-date anchor in its source expression. Calendar coverage can drift and produce different numbers over time.`
+                  : `Date/calendar table "${t.name}" uses literal hardcoded calendar bounds in its source expression. The range may not cover the observed fact min/max dates.`,
+              fix: 'Run pbi_model_plan_date_table to prove observed fact min/max coverage and use those bounds. Extend beyond observed max only with an explicit user-approved futureHorizonDays policy; do not use TODAY()/NOW() as the default anchor.',
+            }),
+          );
+        }
       }
       return findings;
     },
@@ -1166,8 +1219,10 @@ export const BPA_RULES: ReadonlyArray<BPARule> = [
     category: 'Modeling',
     check: (model) => {
       // Reuse the EXACT MODB1/MODB2 marked-date predicate.
-      const hasMarkedDate = model.tables.some((t) =>
-        t.columns.some((c) => (c.dataCategory ?? '').toLowerCase() === 'time'),
+      const hasMarkedDate = model.tables.some(
+        (t) =>
+          isMarkedDateTable(t) ||
+          t.columns.some((c) => isTimeDataCategory(c.dataCategory) && isDateType(c.dataType)),
       );
       if (hasMarkedDate) return [];
       const tiRe = new RegExp(`\\b(${TIME_INTEL_FUNCTIONS.join('|')})\\s*\\(`, 'i');
@@ -1178,7 +1233,7 @@ export const BPA_RULES: ReadonlyArray<BPARule> = [
             return [
               violation('MOD018', 'error', 'Modeling', 'Model.DateTable', {
                 message: `Measure ${measureRef(m)} uses time-intelligence DAX, but no table is marked as a date table (no column has dataCategory "Time"). Time-intelligence functions return BLANK without a marked date dimension.`,
-                fix: 'Add a dedicated Date table and mark it (set its date key column dataCategory to Time).',
+                fix: 'Use pbi_model_plan_date_table to prove complete fact-date coverage, then pbi_table_mark_as_date to mark the governed Date table/key before authoring time-intelligence DAX. Do not set dataCategory metadata directly.',
               }),
             ];
           }
@@ -1205,7 +1260,8 @@ export const BPA_RULES: ReadonlyArray<BPARule> = [
       for (const d of model.tables) {
         if (d.isAutoDateTable) continue;
         const isDateDim =
-          d.columns.some((c) => (c.dataCategory ?? '').toLowerCase() === 'time') ||
+          isMarkedDateTable(d) ||
+          d.columns.some((c) => isTimeDataCategory(c.dataCategory) && isDateType(c.dataType)) ||
           looksLikeDateTableName(d.name);
         if (!isDateDim) continue;
         // Facts that relate to D via an ACTIVE relationship, tagged with grain.
@@ -1275,8 +1331,11 @@ export const BPA_RULES: ReadonlyArray<BPARule> = [
         if (toCol.isKey) continue;
         // Skip date tables (their date column is the natural key, often unmarked).
         const isDateDim =
-          (toTable?.columns.some((c) => (c.dataCategory ?? '').toLowerCase() === 'time') ??
-            false) ||
+          (toTable !== undefined &&
+            (isMarkedDateTable(toTable) ||
+              toTable.columns.some(
+                (c) => isTimeDataCategory(c.dataCategory) && isDateType(c.dataType),
+              ))) ||
           looksLikeDateTableName(r.toTable);
         if (isDateDim) continue;
         const key = `${r.toTable}[${r.toColumn}]`;
@@ -1893,6 +1952,15 @@ function columnRefRaw(table: string, column: string): string {
   return `'${table}'[${column}]`;
 }
 
+function findColumn(table: TMDLTable, columnName: string): TMDLColumn | undefined {
+  const normalized = normalizeName(columnName);
+  return table.columns.find((column) => normalizeName(column.name) === normalized);
+}
+
+function normalizeName(name: string): string {
+  return name.trim().toLowerCase();
+}
+
 function stripDaxComments(expr: string): string {
   return expr
     .replace(/\/\*[\s\S]*?\*\//g, ' ')
@@ -1994,6 +2062,40 @@ function isNumericType(dataType: string): boolean {
 
 function isDateType(dataType: string): boolean {
   return dataType === 'date' || dataType === 'dateTime';
+}
+
+function isTimeDataCategory(dataCategory: string | undefined): boolean {
+  return (dataCategory ?? '').toLowerCase() === 'time';
+}
+
+function isMarkedDateTable(table: TMDLTable): boolean {
+  if (!isTimeDataCategory(table.dataCategory)) return false;
+  return table.columns.some((column) => column.isKey && isDateType(column.dataType));
+}
+
+function isDateTableCandidate(table: TMDLTable): boolean {
+  if (isMarkedDateTable(table) || looksLikeDateTableName(table.name)) return true;
+  return table.columns.some(
+    (column) => isTimeDataCategory(column.dataCategory) && isDateType(column.dataType),
+  );
+}
+
+function dateTableSources(
+  table: TMDLTable,
+): ReadonlyArray<{ readonly expression?: string; readonly kind?: string | undefined }> {
+  const sources = [
+    ...(table.expression !== undefined
+      ? [{ kind: 'calculated', expression: table.expression }]
+      : []),
+    ...(table.partitionSources ?? []),
+  ];
+  const seen = new Set<string>();
+  return sources.filter((source) => {
+    const key = source.expression?.replace(/\s+/g, ' ').trim() ?? '';
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 // CANONICAL Tabular-Editor ruleset name patterns (key/ID/year/postal/monthNo) —

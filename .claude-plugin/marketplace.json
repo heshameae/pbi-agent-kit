@@ -8,8 +8,8 @@
     {
       "name": "pbi-mcp-ts",
       "source": "./",
-      "version": "0.2.0",
-      "description": "Power BI report (PBIR) authoring for Claude Code — 46-tool MCP server + 14 skills + 5 subagents + layout primitives + LLM-composed dashboard scaffolds. Pairs with @microsoft/powerbi-modeling-mcp."
+      "version": "0.1.0",
+      "description": "Power BI semantic-model beta for Claude Code — modeling-only wrapper MCP server, skills, subagents, deterministic Date/relationship/DAX/model gates, live Desktop editing, confirmed measure-intent enforcement, and optional user-owned data dictionary context. Dashboard/report/page/visual/PBIR authoring is unavailable in this beta."
     }
   ]
 }

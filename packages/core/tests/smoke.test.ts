@@ -1,8 +1,48 @@
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { VERSION } from '../src/index.js';
 
 describe('pbi-core smoke', () => {
   it('exports VERSION', () => {
-    expect(VERSION).toBe('0.1.0');
+    const packageJson = readPackageJson('../package.json');
+
+    expect(VERSION).toBe(packageJson.version);
+  });
+
+  it('keeps workspace package versions in sync', () => {
+    const versions = workspacePackageJsonPaths().map((packageJsonPath) => {
+      const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf8')) as { version: string };
+      return packageJson.version;
+    });
+
+    expect(new Set(versions)).toEqual(new Set([VERSION]));
   });
 });
+
+function readPackageJson(relativePath: string): { version: string } {
+  const packageJsonPath = resolve(dirname(fileURLToPath(import.meta.url)), relativePath);
+  return JSON.parse(readFileSync(packageJsonPath, 'utf8')) as { version: string };
+}
+
+function workspacePackageJsonPaths(): string[] {
+  const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
+  const workspaceYaml = readFileSync(resolve(repoRoot, 'pnpm-workspace.yaml'), 'utf8');
+  const patterns = workspaceYaml
+    .split(/\r?\n/)
+    .map((line) => /^-\s*['"]?([^'"]+)['"]?\s*$/.exec(line.trim())?.[1])
+    .filter((pattern): pattern is string => pattern !== undefined);
+  const packageJsonPaths = [resolve(repoRoot, 'package.json')];
+  for (const pattern of patterns) {
+    if (!pattern.endsWith('/*')) continue;
+    const directory = resolve(repoRoot, pattern.slice(0, -2));
+    if (!existsSync(directory)) continue;
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const packageJsonPath = resolve(directory, entry.name, 'package.json');
+      if (existsSync(packageJsonPath)) packageJsonPaths.push(packageJsonPath);
+    }
+  }
+  return packageJsonPaths;
+}

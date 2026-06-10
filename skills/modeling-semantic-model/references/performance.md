@@ -34,7 +34,7 @@ Guidance for evaluating semantic model performance: memory analysis, query optim
 
 Unused columns waste memory and slow refresh without contributing to any report or measure. Detection approaches:
 
-**Via TMDL analysis (static):** Grep all `.tmdl` files for column references in measures, calculated columns, and relationships. Columns not referenced anywhere are candidates for removal. Caveat: this misses references from report visual bindings.
+**Via model/report evidence:** Use model inventory plus report bindings/runtime query evidence. Static TMDL scans may only produce removal candidates, never authoritative removal guidance.
 
 **Via Workspace Monitoring (runtime):** Query logs reveal which columns are actually scanned during queries. Columns never scanned over a sustained period are candidates for removal.
 

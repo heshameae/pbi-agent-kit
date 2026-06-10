@@ -4,6 +4,8 @@ How the DAX engine works: Formula Engine (FE) vs. Storage Engine (SE) architectu
 
 > **Related references:** [`references/dax-performance.md`](./dax-performance.md) — DAX001–021 pattern catalog + QRY001–004 · [`references/model-optimization.md`](./model-optimization.md) — MDL001–010, DL001–002
 
+**Identifier guard:** Concrete table, column, and measure names in examples are illustrative only. Production DAX must resolve identifiers from live model metadata, deterministic planner output, the validated user spec, or explicit user confirmation; never copy example names into a user model.
+
 ---
 
 ## Section 1: How the Engine Works

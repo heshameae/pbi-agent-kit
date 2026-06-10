@@ -1,27 +1,29 @@
 ---
 name: modeling-semantic-model
-description: "Use when authoring or reading TMDL — tab indentation, triple-slash descriptions, measures-before-columns ordering, formatString, summarizeBy none, lineageTag errors, relationship direction, naming conventions (no Fact/Dim prefix), RLS, calculated tables, calculation groups, Direct Lake partition syntax"
+description: "Use when interpreting tool-emitted TMDL or offline CI generation — tab indentation, triple-slash descriptions, measures-before-columns ordering, formatString, summarizeBy none, lineageTag errors, relationship direction, naming conventions (no Fact/Dim prefix), RLS, calculated tables, calculation groups, Direct Lake partition syntax"
 user-invocable: false
 ---
 
 # Modeling Semantic Models
 
-Ground rules and conventions for authoring Power BI semantic models: TMDL syntax, naming, columns, relationships, and Power Query M.
+Ground rules and conventions for Power BI semantic models: TMDL syntax, naming, columns, relationships, and Power Query M. Production/live model changes must go through supported MCP model tools; never hand-edit TMDL while Desktop is open and never use Python/file-surgery fallbacks for pbi-mcp-ts operations.
 
 ## When to Use
 
-- Before writing or modifying any TMDL file (measures, columns, tables, relationships, RLS roles)
+- When interpreting tool-emitted TMDL or generating offline CI artifacts
 - When naming tables, columns, or measures
 - When designing relationships or adding Power Query M transformations
 - When preparing a model for AI / Copilot readiness
 - When emitting TMDL from a code path (e.g., `pbi_model_export`)
 
+Do not use this skill as permission for manual production edits. If no supported MCP model tool exists for a requested live change, report it as unsupported/manual instead of editing TMDL files.
+
 ## When NOT to Use
 
 - DAX performance optimization → load `authoring-measures`
-- Report PBIR file authoring → load `designing-reports`
+- Report PBIR file authoring → in the modeling-only beta, say report/PBIR authoring is unavailable and offer modeling-only preparation. Internal dogfood full-profile report design loads `designing-reports`.
 - Running or interpreting model quality checks → load `reviewing-models`
-- SVG visual measures → load `authoring-svg-visuals`
+- SVG visual measures → load `authoring-measures`
 
 ## Quick Reference
 
@@ -39,6 +41,8 @@ Ground rules and conventions for authoring Power BI semantic models: TMDL syntax
 ## Critical Rules (no exceptions)
 
 - **Connect LIVE by default** — call model tools WITHOUT `folderPath` first. With Power BI Desktop open this edits the live model and changes appear immediately (the user presses Ctrl+S to persist). Pass `folderPath` (a `.SemanticModel/definition` folder) only when there is no live Desktop instance — offline/CI — or when a tool's error explicitly says no live instance was found. If a write fails with a ConnectFolder / "needs a live instance" error while Desktop is open, retry once WITHOUT `folderPath`; if it still fails, report the exact error and stop — do not silently fall back to hand-editing TMDL.
+- **Modeling beta scope** — in the modeling-only beta, dashboard/report/page/visual/PBIR authoring is unavailable. If a user asks to build, edit, lay out, format, or publish a dashboard or report, do not attempt report work and do not suggest raw PBIR edits. Say report authoring is not available in this beta, then offer modeling-only support: live model analysis, KPI/spec preparation, DAX measures, governed Date tables, relationships, model checks, refresh, and regulated readiness.
+- **No Python/file-surgery fallback** — never use `python`, `python3`, `pip`, Python one-liners, shell byte patches, or CRLF rewrite scripts to inspect data ranges, parse files, or mutate `.SemanticModel`, `.Report`, `.tmdl`, `.pbip`, CSV, or other Power BI project artifacts. Use MCP tools, deterministic planners, and repo-native Node/TypeScript tooling; if no supported tool can perform the operation, stop and report it as unsupported.
 - **Tab-only indentation** — spaces trigger `TmdlFormatException`; 1 tab per nesting level
 - **`///` sets Description** — must be immediately above the declaration; no blank line between `///` and the object
 - **`//` comments not supported in TMDL** — use only inside M or DAX blocks
@@ -49,9 +53,13 @@ Ground rules and conventions for authoring Power BI semantic models: TMDL syntax
 - **Numeric KEY/ID columns must be `summarizeBy: none` (ERROR)** — a *visible numeric* column that is a key/ID (also postal code, year, month number) defaulting to `sum`/etc. silently aggregates in visuals; set `summarizeBy: none` (or hide it + expose a measure). This is a BPA **error** (MOD014), distinct from the broader string/attribute `none` guidance in `references/columns-relationships.md` (`dg4:30635`)
 - **`DIVIDE` over `/`** — safe zero-protection for general use; exception: `/` inside row iterators (SUMX/AVERAGEX) where the denominator is guaranteed non-zero, to avoid an FE callback (DAX018) → `references/dax-query-rules.md`
 - **Leave `PBI_*` annotations** — Power BI internal metadata; do not add or remove them
-- **No `Fact`/`Dim` prefixes** — tables use business-friendly names: plural facts (`Sales`), singular dims (`Product`)
-- **Mark the date table** — the model needs a date/calendar table marked as a date table for time intelligence to work (`DATEADD`/`SAMEPERIODLASTYEAR`/`TOTALYTD` return BLANK otherwise). Mark it with `pbi_table_mark_as_date(tableName, dateColumn)`, or equivalently set `dataCategory: Time` on the table **and** `isKey` on its date column. An unmarked date/calendar table is BPA MODB2; no date table at all is MODB1 (`dg4:30095`, `dg4:30105`)
+- **No `Fact`/`Dim` prefixes** — tables use business-friendly names: plural fact/event names (`<BusinessProcessPlural>`), singular dimension/entity names (`<BusinessEntity>`)
+- **Create/prove the Date table through governed tools** — for a new Date/Calendar table, use `pbi_date_table_create_governed`. It must ask when Date policy or refresh-before-probe policy is ambiguous, prove fact-date evidence before writing, generate dynamic fact-anchored bounds from observed fact min/max evidence, write explicit generated-column metadata, mark the table as Date, and optionally create the Date relationships. For an existing Date table, call `pbi_model_plan_date_table` before editing calendar bounds, marking, disabling Auto Date/Time, or diagnosing Date-table blank rows. The governed Date table must have a continuous unique daily key and cover observed fact min/max dates. Do not use literal guessed dates or `TODAY()`/`NOW()` as the default calendar anchor; future padding requires explicit `futureHorizonDays`, and refresh before probing requires explicit approval. If a no-refresh proof fails, stop and ask whether to run the MCP `pbi_model_refresh` path; do not retry with refresh or ask the user to click Desktop Refresh on your own. If any governed Date proof is blocked or incomplete, do not use `pbi_dax_query` as a fallback, do not provide manual DAX, and do not switch to primitive `pbi_table_create` / `pbi_table_mark_as_date` Date writes; report the structured blocker. Then mark existing proven Date tables with `pbi_table_mark_as_date(tableName, dateColumn, facts)` when needed. Do not set Date-table `dataCategory: Time` or date-key metadata through primitive table/column update tools; those writes bypass proof and are refused. An unmarked date/calendar table is BPA MODB2; no date table at all is MODB1 (`dg4:30095`, `dg4:30105`)
+- **Refresh is live tooling, not a user chore** — use `pbi_model_refresh` when Import tables or calculated tables need materialization and refresh is explicitly approved. If approval is missing, ask for refresh authorization and stop. Ctrl+S persists metadata; it does not refresh/process data. Ask the user to refresh only if the live refresh tool is unavailable or returns a concrete unsupported-operation error.
 - **A relationship between two fact tables is an ERROR** — never relate fact→fact directly; route both facts through a shared (conformed) dimension instead (`references/columns-relationships.md` has the build recipe). This is BPA MOD009 (`awesome-copilot-pbi-data.xml:11851`)
+- **Start actuals/targets joins with the combined planner** — for actuals-vs-targets, budget-vs-actuals, forecast, or planning comparisons, call `pbi_model_plan_actuals_targets_join` first. It routes non-temporal shared axes to star-schema planning and temporal axes to date-grain proof before asking any grain question. Ask only for unobservable business policy after proof, such as allocation or missing-target behavior.
+- **Apply shared dimensions through the batch tool** — for live cross-fact categorical/shared-axis joins, call `pbi_model_plan_star_schema_join` to inspect, then `pbi_model_apply_star_schema_join` with explicit axes to dry-run or write. Do not manually replay table-create/key/relationship/hide-FK primitives; if the apply tool is unavailable or unsupported, stop and report the operation as unsupported.
+- **Prove target/actual date grain before rewriting or asking** — before activating date relationships, removing date-related `TREATAS`/`USERELATIONSHIP`, or before asking the user to choose target grain/day/month/year in target, budget, forecast, or planning workflows, call `pbi_model_plan_date_table` for Date coverage and `pbi_model_plan_date_grain` for observable fact grain. Do not infer daily/monthly grain from names or existing DAX. Ask only for unobservable business policy after proof, such as allocation or missing-target behavior.
 - **`isAvailableInMdx: false` on hidden columns** not used as a `sortByColumn`, hierarchy level, or variation → `references/columns-relationships.md`
 - **Avoid `double`** — use `decimal` or `int64`; floating point causes roundoff errors and degraded performance → `references/columns-relationships.md`
 

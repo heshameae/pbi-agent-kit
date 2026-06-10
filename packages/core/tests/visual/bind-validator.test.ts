@@ -231,7 +231,7 @@ describe('validateVisualBindingPlan', () => {
     expect(report.status).toBe('valid');
   });
 
-  it('passes a bridge-annotated measure on a covered axis on the bridge_from table', () => {
+  it('blocks a bridge-annotated measure on a duplicate fact-side FK axis', () => {
     visualAdd(defn, PAGE, { visualType: 'barChart', name: 'v1' });
     const report = validateVisualBindingPlan(
       defn,
@@ -244,7 +244,8 @@ describe('validateVisualBindingPlan', () => {
       { modelPath: modelDefn },
     );
 
-    expect(report.status).toBe('valid');
+    expect(report.status).toBe('blocked');
+    expect(report.findings.map((f) => f.code)).toContain('MODEL_MOD005');
   });
 
   it('blocks a bridge-annotated measure on an uncovered axis on the bridge_from table', () => {

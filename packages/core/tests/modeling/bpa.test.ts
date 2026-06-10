@@ -422,6 +422,9 @@ interface TblOpts {
   isAutoDateTable?: boolean;
   description?: string;
   storageMode?: 'import' | 'directQuery' | 'dual' | 'directLake';
+  dataCategory?: string;
+  expression?: string;
+  partitionSources?: ReadonlyArray<{ readonly kind?: string; readonly expression: string }>;
 }
 function tbl(name: string, o: TblOpts = {}) {
   return {
@@ -433,6 +436,9 @@ function tbl(name: string, o: TblOpts = {}) {
     isAutoDateTable: o.isAutoDateTable ?? false,
     description: o.description,
     storageMode: o.storageMode,
+    dataCategory: o.dataCategory,
+    expression: o.expression,
+    partitionSources: o.partitionSources,
   };
 }
 function rel(
@@ -500,12 +506,30 @@ describe('BPA severity recalibrations (FINAL contract)', () => {
     const model = makeModel({
       tables: [
         tbl('Fact', { columns: [c('Fact', 'DimKey', { dataType: 'int64', isHidden: false })] }),
-        dimTable('Dim'),
+        tbl('Dim', {
+          columns: [c('Dim', 'DimKey', { dataType: 'int64', isKey: true, isHidden: true })],
+        }),
       ],
       relationships: [rel('r', 'Fact', 'DimKey', 'Dim', 'DimKey')],
     });
     const f = has(runBPA(model), 'MOD005');
     expect(f?.severity).toBe('warning');
+  });
+
+  it('MOD005 escalates duplicate visible fact-side FK fields to error', () => {
+    const model = makeModel({
+      tables: [
+        tbl('Fact', { columns: [c('Fact', 'Business Axis', { dataType: 'string' })] }),
+        tbl('Business Axis', {
+          columns: [c('Business Axis', 'Business Axis', { dataType: 'string', isKey: true })],
+        }),
+      ],
+      relationships: [rel('r', 'Fact', 'Business Axis', 'Business Axis', 'Business Axis')],
+    });
+
+    const f = has(runBPA(model), 'MOD005');
+    expect(f?.severity).toBe('error');
+    expect(f?.message).toContain('source-of-truth');
   });
 
   it('DAX003 (IFERROR) is now warning', () => {
@@ -833,6 +857,19 @@ describe('BPA MODB1 / MODB2 — date table', () => {
     const model = makeModel({
       tables: [
         tbl('Date', {
+          columns: [c('Date', 'TheDate', { dataType: 'dateTime', isKey: true })],
+          dataCategory: 'Time',
+        }),
+      ],
+    });
+    expect(has(runBPA(model), 'MODB1')).toBeFalsy();
+    expect(has(runBPA(model), 'MODB2')).toBeFalsy();
+  });
+
+  it('MODB1 passes when a date column is marked dataCategory Time', () => {
+    const model = makeModel({
+      tables: [
+        tbl('Date', {
           columns: [c('Date', 'TheDate', { dataType: 'dateTime', dataCategory: 'Time' })],
         }),
       ],
@@ -846,6 +883,89 @@ describe('BPA MODB1 / MODB2 — date table', () => {
     });
     const f = has(runBPA(model), 'MODB2');
     expect(f?.severity).toBe('warning');
+  });
+});
+
+describe('BPA MOD029 — date table calendar bounds', () => {
+  it('errors when a date table uses literal hardcoded CALENDAR bounds', () => {
+    const model = makeModel({
+      tables: [
+        tbl('Calendar', {
+          dataCategory: 'Time',
+          columns: [
+            c('Calendar', 'Date', { dataType: 'dateTime', isKey: true, dataCategory: 'Time' }),
+          ],
+          expression: 'CALENDAR(DATE(2020,1,1), DATE(2026,12,31))',
+        }),
+      ],
+    });
+
+    const f = has(runBPA(model), 'MOD029');
+    expect(f?.severity).toBe('error');
+    expect(f?.message).toContain('literal hardcoded calendar bounds');
+  });
+
+  it('reports one MOD029 finding when the same Date source appears with different source-kind metadata', () => {
+    const model = makeModel({
+      tables: [
+        tbl('Calendar', {
+          dataCategory: 'Time',
+          columns: [c('Calendar', 'Date', { dataType: 'dateTime', isKey: true })],
+          expression: 'CALENDAR(DATE(2020, 1, 1), DATE(2026, 12, 31))',
+          partitionSources: [
+            { expression: 'CALENDAR(DATE(2020, 1, 1), DATE(2026, 12, 31))' },
+            { kind: 'm', expression: 'CALENDAR(DATE(2020, 1, 1), DATE(2026, 12, 31))' },
+          ],
+        }),
+      ],
+    });
+
+    expect(runBPA(model).filter((finding) => finding.ruleId === 'MOD029')).toHaveLength(1);
+  });
+
+  it('errors when a date table uses TODAY/NOW as a volatile calendar anchor', () => {
+    const model = makeModel({
+      tables: [
+        tbl('Calendar', {
+          dataCategory: 'Time',
+          columns: [c('Calendar', 'Date', { dataType: 'dateTime', isKey: true })],
+          expression: "CALENDAR(MIN('Events'[EventDate]), DATE(YEAR(TODAY()) + 1, 12, 31))",
+        }),
+      ],
+    });
+
+    const f = has(runBPA(model), 'MOD029');
+    expect(f?.severity).toBe('error');
+    expect(f?.message).toContain('volatile current-date anchor');
+  });
+
+  it('passes when a date table is anchored to observed fact min/max expressions', () => {
+    const model = makeModel({
+      tables: [
+        tbl('Events', { columns: [c('Events', 'EventDate', { dataType: 'dateTime' })] }),
+        tbl('Calendar', {
+          dataCategory: 'Time',
+          columns: [c('Calendar', 'Date', { dataType: 'dateTime', isKey: true })],
+          expression:
+            "CALENDAR(MINX('Events', 'Events'[EventDate]), MAXX('Events', 'Events'[EventDate]))",
+        }),
+      ],
+    });
+
+    expect(has(runBPA(model), 'MOD029')).toBeFalsy();
+  });
+
+  it('does not flag literal dates on non-calendar business tables', () => {
+    const model = makeModel({
+      tables: [
+        tbl('Rates', {
+          expression: 'ROW("EffectiveDate", DATE(2020,1,1), "Rate", 0.15)',
+          columns: [c('Rates', 'EffectiveDate', { dataType: 'dateTime' })],
+        }),
+      ],
+    });
+
+    expect(has(runBPA(model), 'MOD029')).toBeFalsy();
   });
 });
 
@@ -1178,10 +1298,13 @@ describe('BPA MOD018 — time intelligence without a marked date table', () => {
     expect(f?.severity).toBe('error');
   });
 
-  it('passes when a dataCategory Time column is present', () => {
+  it('passes when a table-level dataCategory Time date key is present', () => {
     const model = makeModel({
       tables: [
-        dateDim('Date'),
+        tbl('Date', {
+          columns: [c('Date', 'DateKey', { dataType: 'date', isKey: true })],
+          dataCategory: 'Time',
+        }),
         tbl('Sales', {
           measures: [meas('Sales', 'YTD', "TOTALYTD(SUM('Sales'[Amount]), 'Date'[DateKey])")],
         }),

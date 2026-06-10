@@ -21,7 +21,7 @@ Author, validate, and test Power Query M expressions in semantic model import pa
 
 - DAX measure authoring — use the `authoring-measures` skill instead
 - Semantic model relationship or table design — use the `modeling-semantic-model` skill
-- Report-layer work (visuals, pages, filters) — use the `pbi-visuals` / `pbi-filters` skills
+- Report-layer work (dashboards, report pages, visuals, filters, slicers, themes, bookmarks, or PBIR files) — in the modeling beta, say report authoring is not available and offer modeling-only preparation instead
 
 ## Quick Reference
 

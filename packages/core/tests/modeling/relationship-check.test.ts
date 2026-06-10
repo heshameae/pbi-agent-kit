@@ -223,6 +223,101 @@ describe('relationshipCheck (single candidate)', () => {
     expect(result.valid).toBe(true);
   });
 
+  it('blocks direct relationships between fact-like tables', () => {
+    const model: TMDLModel = {
+      modelPath: '/',
+      tables: [
+        {
+          ...tbl('FactPrimary', [
+            { ...col('FactPrimary', 'SharedKey', 'int64'), summarizeBy: 'none' },
+            { ...col('FactPrimary', 'Amount', 'decimal'), summarizeBy: 'sum' },
+          ]),
+          measures: [
+            {
+              table: 'FactPrimary',
+              name: 'Primary Amount',
+              expression: 'SUM(FactPrimary[Amount])',
+              isHidden: false,
+              annotations: {},
+            },
+          ],
+        },
+        {
+          ...tbl('FactSecondary', [
+            { ...col('FactSecondary', 'SharedKey', 'int64'), summarizeBy: 'none' },
+            { ...col('FactSecondary', 'Amount', 'decimal'), summarizeBy: 'sum' },
+          ]),
+          measures: [
+            {
+              table: 'FactSecondary',
+              name: 'Secondary Amount',
+              expression: 'SUM(FactSecondary[Amount])',
+              isHidden: false,
+              annotations: {},
+            },
+          ],
+        },
+      ],
+      relationships: [],
+    };
+
+    const result = relationshipCheck(
+      {
+        fromTable: 'FactPrimary',
+        fromColumn: 'SharedKey',
+        toTable: 'FactSecondary',
+        toColumn: 'SharedKey',
+      },
+      model,
+    );
+
+    expect(result.valid).toBe(false);
+    expect(result.blocking.map((b) => b.code)).toContain('direct-fact-to-fact');
+  });
+
+  it('does not treat a dimension as fact-like only because it hosts a helper measure', () => {
+    const model: TMDLModel = {
+      modelPath: '/',
+      tables: [
+        {
+          ...tbl('FactPrimary', [
+            { ...col('FactPrimary', 'SharedKey', 'int64'), summarizeBy: 'none' },
+            { ...col('FactPrimary', 'Amount', 'decimal'), summarizeBy: 'sum' },
+          ]),
+        },
+        {
+          ...tbl('DimShared', [
+            { ...col('DimShared', 'SharedAxis', 'int64'), summarizeBy: 'none' },
+            col('DimShared', 'Label', 'string'),
+          ]),
+          measures: [
+            {
+              table: 'DimShared',
+              name: 'Visible Members',
+              expression: 'COUNTROWS(DimShared)',
+              isHidden: false,
+              annotations: {},
+            },
+          ],
+        },
+      ],
+      relationships: [],
+    };
+
+    const result = relationshipCheck(
+      {
+        fromTable: 'FactPrimary',
+        fromColumn: 'SharedKey',
+        toTable: 'DimShared',
+        toColumn: 'SharedAxis',
+      },
+      model,
+    );
+
+    expect(result.valid).toBe(true);
+    expect(result.blocking.map((b) => b.code)).not.toContain('direct-fact-to-fact');
+  });
+
   it('blocks a second active path on the same table pair', () => {
     const result = relationshipCheck(
       {

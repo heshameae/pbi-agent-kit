@@ -11,10 +11,12 @@
 
 import { z } from 'zod';
 
+const NonEmptyString = z.string().trim().min(1);
+
 export const FieldRefSchema = z
   .object({
-    table: z.string(),
-    column: z.string(),
+    table: NonEmptyString,
+    column: NonEmptyString,
     kind: z.enum(['measure', 'column']),
     aggregation: z.enum(['sum', 'avg', 'count', 'min', 'max']).optional(),
     isHidden: z.boolean(),
@@ -30,6 +32,10 @@ export const FieldRefSchema = z
 
 const MeasureFieldRef = FieldRefSchema.refine((fr) => fr.kind === 'measure', {
   message: "page-question measures must be measure FieldRefs (kind:'measure')",
+});
+
+const ColumnFieldRef = FieldRefSchema.refine((fr) => fr.kind === 'column', {
+  message: "time-intelligence dateRefs must be column FieldRefs (kind:'column')",
 });
 
 export const MeasureSpecSchema = z
@@ -76,6 +82,88 @@ export const DimSpecSchema = z.object({
   sourceColumns: z.array(FieldRefSchema),
   attributeColumns: z.array(FieldRefSchema).optional(),
 });
+
+export const BusinessTermSchema = z.object({
+  name: NonEmptyString,
+  status: z.enum(['draft', 'confirmed', 'deprecated']),
+  definition: NonEmptyString,
+  aliases: z.array(NonEmptyString).optional(),
+  owner: NonEmptyString.optional(),
+  sourceRefs: z.array(FieldRefSchema).optional(),
+  caveats: z.array(NonEmptyString).optional(),
+});
+
+export const MeasureTimeIntelligenceSchema = z.object({
+  dateRefs: z.array(ColumnFieldRef).optional(),
+  dateTable: NonEmptyString.optional(),
+  dateColumn: NonEmptyString.optional(),
+  period: NonEmptyString.optional(),
+  comparison: NonEmptyString.optional(),
+  grain: NonEmptyString.optional(),
+  calendarPolicy: NonEmptyString.optional(),
+  incompletePeriodBehavior: NonEmptyString.optional(),
+});
+
+export const MeasureIntentSchema = z.object({
+  measureName: NonEmptyString,
+  status: z.enum(['draft', 'confirmed']),
+  owner: NonEmptyString,
+  definition: NonEmptyString,
+  sourceRefs: z.array(FieldRefSchema).nonempty(),
+  grain: NonEmptyString,
+  additivity: NonEmptyString,
+  filters: z.array(NonEmptyString),
+  format: NonEmptyString,
+  unit: NonEmptyString,
+  caveats: z.array(NonEmptyString),
+  businessTermRefs: z.array(NonEmptyString).optional(),
+  timeIntelligence: MeasureTimeIntelligenceSchema.optional(),
+});
+
+const TIME_INTELLIGENCE_FUNCTIONS = [
+  'TOTALYTD',
+  'TOTALQTD',
+  'TOTALMTD',
+  'DATESYTD',
+  'DATESQTD',
+  'DATESMTD',
+  'DATESINPERIOD',
+  'DATESBETWEEN',
+  'DATEADD',
+  'SAMEPERIODLASTYEAR',
+  'PARALLELPERIOD',
+  'FIRSTDATE',
+  'LASTDATE',
+  'STARTOFYEAR',
+  'STARTOFQUARTER',
+  'STARTOFMONTH',
+  'ENDOFYEAR',
+  'ENDOFQUARTER',
+  'ENDOFMONTH',
+  'PREVIOUSYEAR',
+  'PREVIOUSQUARTER',
+  'PREVIOUSMONTH',
+  'PREVIOUSDAY',
+  'NEXTYEAR',
+  'NEXTQUARTER',
+  'NEXTMONTH',
+  'NEXTDAY',
+  'OPENINGBALANCEYEAR',
+  'OPENINGBALANCEQUARTER',
+  'OPENINGBALANCEMONTH',
+  'CLOSINGBALANCEYEAR',
+  'CLOSINGBALANCEQUARTER',
+  'CLOSINGBALANCEMONTH',
+] as const;
+
+const TIME_INTELLIGENCE_PATTERN = new RegExp(
+  `\\b(?:${TIME_INTELLIGENCE_FUNCTIONS.join('|')})\\s*\\(`,
+  'i',
+);
+
+export function expressionUsesTimeIntelligence(expression: string): boolean {
+  return TIME_INTELLIGENCE_PATTERN.test(expression);
+}
 
 // --- sub-types (hand-defined from v6 build trace; pending review) ----------
 
@@ -124,8 +212,10 @@ export const DashboardSpecSchema = z
     modelPath: z.string(),
     reportPath: z.string(),
     pages: z.array(PageSpecSchema),
-    missingMeasures: z.array(MeasureSpecSchema),
+    missingMeasures: z.array(MeasureSpecSchema).default([]),
     missingDims: z.array(DimSpecSchema),
+    businessTerms: z.array(BusinessTermSchema).optional(),
+    measureIntents: z.array(MeasureIntentSchema).optional(),
     userDecisions: z.array(UserDecisionSchema),
     clarifyingQuestions: z.array(ClarifyingQuestionSchema).optional(),
     blockers: z.array(BlockerSchema).optional(),
@@ -146,11 +236,91 @@ export const DashboardSpecSchema = z
         message: "status 'blocked' requires at least one blocker",
       });
     }
+    if (v.status !== 'ready') return;
+
+    v.measureIntents?.forEach((intent, index) => {
+      if (intent.status === 'draft') {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['measureIntents', index, 'status'],
+          message: `status 'ready' rejects draft measure intent '${intent.measureName}'`,
+        });
+      }
+    });
+
+    const businessTermsByName = new Map(v.businessTerms?.map((term) => [term.name, term]) ?? []);
+    v.measureIntents?.forEach((intent, intentIndex) => {
+      intent.businessTermRefs?.forEach((termRef, termIndex) => {
+        const term = businessTermsByName.get(termRef);
+        if (!term) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['measureIntents', intentIndex, 'businessTermRefs', termIndex],
+            message: `status 'ready' rejects unknown business term '${termRef}' referenced by measure intent '${intent.measureName}'`,
+          });
+        } else if (term.status === 'draft') {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['measureIntents', intentIndex, 'businessTermRefs', termIndex],
+            message: `status 'ready' rejects draft business term '${termRef}' referenced by measure intent '${intent.measureName}'`,
+          });
+        } else if (term.status === 'deprecated') {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['measureIntents', intentIndex, 'businessTermRefs', termIndex],
+            message: `status 'ready' rejects deprecated business term '${termRef}' referenced by measure intent '${intent.measureName}'`,
+          });
+        }
+      });
+    });
+
+    const confirmedMeasureIntents = new Map(
+      v.measureIntents
+        ?.filter((intent) => intent.status === 'confirmed')
+        .map((intent) => [intent.measureName, intent]) ?? [],
+    );
+    v.missingMeasures.forEach((measure, index) => {
+      const intent = confirmedMeasureIntents.get(measure.name);
+      if (!intent) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['missingMeasures', index, 'name'],
+          message: `status 'ready' requires a confirmed measure intent matching missing measure '${measure.name}'`,
+        });
+      } else if (
+        expressionUsesTimeIntelligence(measure.expression) &&
+        !hasConfirmedTimeIntelligenceEvidence(intent)
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['measureIntents', v.measureIntents?.indexOf(intent) ?? 0, 'timeIntelligence'],
+          message: `status 'ready' requires confirmed time-intelligence evidence for measure '${measure.name}'`,
+        });
+      }
+    });
   });
+
+function hasConfirmedTimeIntelligenceEvidence(
+  intent: z.infer<typeof MeasureIntentSchema>,
+): boolean {
+  const time = intent.timeIntelligence;
+  return (
+    time !== undefined &&
+    (time.dateRefs?.length ?? 0) > 0 &&
+    time.dateTable !== undefined &&
+    time.dateColumn !== undefined &&
+    time.grain !== undefined &&
+    time.calendarPolicy !== undefined &&
+    time.incompletePeriodBehavior !== undefined
+  );
+}
 
 export type FieldRef = z.infer<typeof FieldRefSchema>;
 export type MeasureSpec = z.infer<typeof MeasureSpecSchema>;
 export type DimSpec = z.infer<typeof DimSpecSchema>;
+export type BusinessTerm = z.infer<typeof BusinessTermSchema>;
+export type MeasureTimeIntelligence = z.infer<typeof MeasureTimeIntelligenceSchema>;
+export type MeasureIntent = z.infer<typeof MeasureIntentSchema>;
 export type QuestionSpec = z.infer<typeof QuestionSpecSchema>;
 export type PageSpec = z.infer<typeof PageSpecSchema>;
 export type ClarifyingQuestion = z.infer<typeof ClarifyingQuestionSchema>;

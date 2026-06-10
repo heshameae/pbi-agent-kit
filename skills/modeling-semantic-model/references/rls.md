@@ -1,6 +1,6 @@
 # Row-Level & Object-Level Security Reference
 
-Row-Level Security (RLS) restricts which *rows* a user can see; Object-Level Security (OLS) restricts which *tables and columns* a user can see at all. Both are defined on **roles** in the semantic model. This reference is dataset-agnostic — all table/column names below (`Sales`, `Customer`, `Region`, `Date`, `User Security`, `Email`) are generic placeholders. Substitute the real names from the connected model.
+Row-Level Security (RLS) restricts which *rows* a user can see; Object-Level Security (OLS) restricts which *tables and columns* a user can see at all. Both are defined on **roles** in the semantic model. This reference is dataset-agnostic: all table/column/value names below are placeholders. Substitute only names and values confirmed from the connected model or user policy.
 
 ## Overview
 
@@ -17,11 +17,11 @@ Apply RLS to dimensions and let the filter propagate to the fact table through r
 - Easier to maintain.
 
 ```dax
-// On Customer dimension — propagates to Sales through the relationship
-[Region] = "West"
+// On a security dimension — propagates through the relationship
+[<SecurityAttribute>] = "<AllowedValue>"
 ```
 
-If a dimension (e.g. `Region`) already has a relationship to the fact table, you do **not** need to add a separate `tablePermission` on the fact table.
+If the filtered dimension already has a relationship to the fact table, you do **not** need to add a separate `tablePermission` on the fact table.
 
 ### 2. Create minimal, additive roles
 
@@ -44,11 +44,11 @@ Data-driven rules scale better than fixed per-role rules:
 Fixed rules, one role per group:
 
 ```dax
-// Role: West Region
-[Region] = "West"
+// Role: <Allowed Group A>
+[<SecurityAttribute>] = "<AllowedValueA>"
 
-// Role: East Region
-[Region] = "East"
+// Role: <Allowed Group B>
+[<SecurityAttribute>] = "<AllowedValueB>"
 ```
 
 **Pros:** simple, clear. **Cons:** does not scale, requires a role per group.
@@ -76,11 +76,11 @@ User identity drives the filter — a single role serves everyone:
 
 ### Pattern 1: Direct user mapping
 
-The user's email lives directly in a dimension table:
+The user's identifier lives directly in a secured dimension table:
 
 ```dax
-// On Customer table
-[Customer Email] = USERPRINCIPALNAME()
+// On secured dimension table
+[<UserPrincipalColumn>] = USERPRINCIPALNAME()
 ```
 
 ### Pattern 2: Security table
@@ -88,29 +88,29 @@ The user's email lives directly in a dimension table:
 A separate table maps users to the values they may see:
 
 ```
-User Security table:
-| Email        | Region |
+Security mapping table:
+| <UserIdentifierColumn> | <SecurityAttribute> |
 |--------------|--------|
-| joe@co.com   | West   |
-| sue@co.com   | East   |
+| <user-a>     | <AllowedValueA> |
+| <user-b>     | <AllowedValueB> |
 ```
 
 ```dax
-// On Region dimension
-[Region] IN
+// On the secured dimension
+[<SecurityAttribute>] IN
     SELECTCOLUMNS(
-        FILTER('User Security', [Email] = USERPRINCIPALNAME()),
-        "Region", [Region]
+        FILTER('<SecurityTable>', [<UserIdentifierColumn>] = USERPRINCIPALNAME()),
+        "<SecurityAttribute>", [<SecurityAttribute>]
     )
 ```
 
 Equivalent form using `CALCULATETABLE`:
 
 ```dax
-'Sales'[Region ID] IN
+'<FactTable>'[<SecurityKeyColumn>] IN
     CALCULATETABLE(
-        VALUES('User Security'[Region ID]),
-        'User Security'[Email] = USERNAME()
+        VALUES('<SecurityTable>'[<SecurityKeyColumn>]),
+        '<SecurityTable>'[<UserIdentifierColumn>] = USERNAME()
     )
 ```
 
@@ -137,12 +137,12 @@ PATHCONTAINS('Employee'[Manager Path], USERNAME())
 
 ### Pattern 4: Multiple rules combined
 
-Combine conditions, e.g. own region OR a global-viewer flag:
+Combine conditions, e.g. a mapped security value OR a global-viewer flag:
 
 ```dax
-// Own region OR global viewer
-[Region] = LOOKUPVALUE('User Security'[Region], 'User Security'[Email], USERPRINCIPALNAME())
-    || LOOKUPVALUE('User Security'[Is Global], 'User Security'[Email], USERPRINCIPALNAME()) = TRUE()
+// Own mapped value OR global viewer
+[<SecurityAttribute>] = LOOKUPVALUE('<SecurityTable>'[<SecurityAttribute>], '<SecurityTable>'[<UserIdentifierColumn>], USERPRINCIPALNAME())
+    || LOOKUPVALUE('<SecurityTable>'[<GlobalFlagColumn>], '<SecurityTable>'[<UserIdentifierColumn>], USERPRINCIPALNAME()) = TRUE()
 ```
 
 ### Pattern 5: Role lookup with SWITCH (hierarchical security)
@@ -151,16 +151,16 @@ A manager sees everything, others see only their slice:
 
 ```dax
 VAR CurrentUser = USERNAME()
-VAR UserRole = LOOKUPVALUE('User Roles'[Role], 'User Roles'[Email], CurrentUser)
+VAR UserRole = LOOKUPVALUE('<UserRoleTable>'[<RoleColumn>], '<UserRoleTable>'[<UserIdentifierColumn>], CurrentUser)
 RETURN
     SWITCH(
         UserRole,
-        "Manager", TRUE(),
-        "Salesperson", [Salesperson Email] = CurrentUser,
-        "Regional Manager", [Region] IN (
+        "<AllAccessRole>", TRUE(),
+        "<OwnRowsRole>", [<OwnerIdentifierColumn>] = CurrentUser,
+        "<MappedAccessRole>", [<SecurityAttribute>] IN (
             SELECTCOLUMNS(
-                FILTER('User Regions', 'User Regions'[Email] = CurrentUser),
-                "Region", 'User Regions'[Region]
+                FILTER('<UserSecurityMapping>', '<UserSecurityMapping>'[<UserIdentifierColumn>] = CurrentUser),
+                "<SecurityAttribute>", '<UserSecurityMapping>'[<SecurityAttribute>]
             )
         ),
         FALSE()  // default deny
@@ -176,29 +176,32 @@ VAR UserRole = CUSTOMDATA()
 RETURN
     SWITCH(
         UserRole,
-        "RepA", [Sales Territory] = "West",
-        "RepB", [Sales Territory] = "East",
-        "Manager", TRUE(),
+        "<RestrictedRoleA>", [<SecurityAttribute>] = "<AllowedValueA>",
+        "<RestrictedRoleB>", [<SecurityAttribute>] = "<AllowedValueB>",
+        "<AllAccessRole>", TRUE(),
         FALSE()  // default deny
     )
 ```
 
 ### Pattern 7: Time-based security
 
-Restrict how far back a user can see based on their role:
+Restrict how far back a user can see based on their role using governed policy dates from a security/policy table. Do not anchor RLS windows to the current system date unless the user explicitly asks for rolling-date security and accepts refresh/query-time semantics.
 
 ```dax
-VAR UserRole = LOOKUPVALUE('User Roles'[Role], 'User Roles'[Email], USERNAME())
+VAR UserRole =
+    LOOKUPVALUE (
+        '<UserRoleTable>'[<RoleColumn>],
+        '<UserRoleTable>'[<UserIdentifierColumn>],
+        USERNAME()
+    )
 VAR CutoffDate =
-    SWITCH(
-        UserRole,
-        "Executive", DATE(1900, 1, 1),  // all historical data
-        "Manager", TODAY() - 365,       // last year
-        "Analyst", TODAY() - 90,        // last 90 days
-        TODAY()                         // current day only
+    LOOKUPVALUE (
+        '<RolePolicyTable>'[<CutoffDateColumn>],
+        '<RolePolicyTable>'[<RoleColumn>],
+        UserRole
     )
 RETURN
-    [Date] >= CutoffDate
+    '<FactOrDateTable>'[<DateColumn>] >= CutoffDate
 ```
 
 ## Best Practices: FilterExpression Library
@@ -207,13 +210,13 @@ Reusable DAX filter-expression shapes for `tablePermission` filters:
 
 | Pattern | FilterExpression |
 |---------|------------------|
-| Static value | `'Region'[Region] = "West"` |
-| Dynamic by user name | `'Employee'[Email] = USERNAME()` |
-| Dynamic by UPN | `'Employee'[UPN] = USERPRINCIPALNAME()` |
-| Multiple values | `'Region'[Region] IN { "West", "Central" }` |
-| Compound condition | `'Region'[Region] IN { "West", "Central" } && 'Product'[Category] <> "Confidential"` |
-| Security table | `'Sales'[Region ID] IN CALCULATETABLE(VALUES('User Security'[Region ID]), 'User Security'[Email] = USERNAME())` |
-| Manager hierarchy | `PATHCONTAINS('Employee'[Manager Path], USERNAME())` |
+| Static value | `'<SecuredTable>'[<SecurityAttribute>] = "<AllowedValue>"` |
+| Dynamic by user name | `'<UserTable>'[<UserIdentifierColumn>] = USERNAME()` |
+| Dynamic by UPN | `'<UserTable>'[<UserPrincipalColumn>] = USERPRINCIPALNAME()` |
+| Multiple values | `'<SecuredTable>'[<SecurityAttribute>] IN { "<AllowedValueA>", "<AllowedValueB>" }` |
+| Compound condition | `'<SecuredTable>'[<SecurityAttribute>] IN { "<AllowedValueA>", "<AllowedValueB>" } && '<PolicyTable>'[<PolicyAttribute>] <> "<ExcludedValue>"` |
+| Security table | `'<FactTable>'[<SecurityKeyColumn>] IN CALCULATETABLE(VALUES('<SecurityTable>'[<SecurityKeyColumn>]), '<SecurityTable>'[<UserIdentifierColumn>] = USERNAME())` |
+| Manager hierarchy | `PATHCONTAINS('<HierarchyTable>'[<PathColumn>], USERNAME())` |
 
 ### Least privilege (default-deny)
 
@@ -221,11 +224,11 @@ Always default to restrictive access; grant only when a mapping row exists:
 
 ```dax
 VAR UserPermissions =
-    FILTER('User Access', 'User Access'[Email] = USERNAME())
+    FILTER('<UserAccessTable>', '<UserAccessTable>'[<UserIdentifierColumn>] = USERNAME())
 RETURN
     IF(
         COUNTROWS(UserPermissions) > 0,
-        [Territory] IN SELECTCOLUMNS(UserPermissions, "Territory", 'User Access'[Territory]),
+        [<SecurityAttribute>] IN SELECTCOLUMNS(UserPermissions, "<SecurityAttribute>", '<UserAccessTable>'[<SecurityAttribute>]),
         FALSE()  // no access if not explicitly granted
     )
 ```
@@ -235,16 +238,16 @@ RETURN
 Validate the user's role against an allow-list before applying the filter, denying any unexpected role:
 
 ```dax
-VAR UserRole = LOOKUPVALUE('User Roles'[Role], 'User Roles'[Email], USERNAME())
-VAR AllowedRoles = { "Analyst", "Manager", "Executive" }
+VAR UserRole = LOOKUPVALUE('<UserRoleTable>'[<RoleColumn>], '<UserRoleTable>'[<UserIdentifierColumn>], USERNAME())
+VAR AllowedRoles = { "<RestrictedRole>", "<MappedAccessRole>", "<AllAccessRole>" }
 RETURN
     IF(
         UserRole IN AllowedRoles,
         SWITCH(
             UserRole,
-            "Analyst", [Department] = LOOKUPVALUE('User Departments'[Department], 'User Departments'[Email], USERNAME()),
-            "Manager", [Region] = LOOKUPVALUE('User Regions'[Region], 'User Regions'[Email], USERNAME()),
-            "Executive", TRUE()
+            "<RestrictedRole>", [<SecurityAttribute>] = LOOKUPVALUE('<UserSecurityMapping>'[<SecurityAttribute>], '<UserSecurityMapping>'[<UserIdentifierColumn>], USERNAME()),
+            "<MappedAccessRole>", [<SecurityAttribute>] IN SELECTCOLUMNS(FILTER('<UserSecurityMapping>', '<UserSecurityMapping>'[<UserIdentifierColumn>] = USERNAME()), "<SecurityAttribute>", '<UserSecurityMapping>'[<SecurityAttribute>]),
+            "<AllAccessRole>", TRUE()
         ),
         FALSE()  // deny unexpected roles
     )
@@ -268,8 +271,8 @@ For dynamic RLS, return no data for unknown users:
 
 ```dax
 IF(
-    USERPRINCIPALNAME() IN VALUES('User Security'[Email]),
-    [Region] IN SELECTCOLUMNS( /* ... */ ),
+    USERPRINCIPALNAME() IN VALUES('<SecurityTable>'[<UserPrincipalColumn>]),
+    [<SecurityAttribute>] IN SELECTCOLUMNS( /* ... */ ),
     FALSE()
 )
 ```
@@ -287,8 +290,8 @@ For a bidirectional relationship under RLS, enable **Apply security filter in bo
 
 OLS restricts access to whole tables or specific columns, hiding the object's metadata from the role entirely. It is not exposed in the Power BI Desktop UI — it is set via the model metadata (TMDL/TMSL or scripting). Use OLS for:
 
-- Hiding sensitive columns (e.g. salary, SSN, `Email`, `Phone`).
-- Restricting whole tables (e.g. a `Salary` table).
+- Hiding sensitive columns confirmed by policy.
+- Restricting whole tables confirmed by policy.
 - Combining with RLS for comprehensive access control.
 
 The metadata permission for a table or column under a role is one of:
@@ -303,11 +306,11 @@ Conceptually, hiding objects for a role:
 
 ```
 // Hide a whole table from the role
-TablePermission('Salary').MetadataPermission = None
+TablePermission('<SensitiveTable>').MetadataPermission = None
 
 // Hide specific columns
-TablePermission('Customer').ColumnPermissions['Email'].MetadataPermission = None
-TablePermission('Customer').ColumnPermissions['Phone'].MetadataPermission = None
+TablePermission('<SensitiveTable>').ColumnPermissions['<SensitiveColumnA>'].MetadataPermission = None
+TablePermission('<SensitiveTable>').ColumnPermissions['<SensitiveColumnB>'].MetadataPermission = None
 ```
 
 ## Model Permissions
@@ -322,18 +325,20 @@ Each role carries a model-level permission:
 | `Refresh` | Refresh only (no read). |
 | `Administrator` | Full access. |
 
-## TMDL Role-File Emission Shape
+## Role Definition Tooling
 
-Each role is a separate file in the `roles/` folder. The file declares the model permission and one DAX filter expression per filtered table.
+Create/update roles only through supported security-role/modeling tools. If unavailable, mark the operation unsupported/manual and do not author `roles/*.tmdl` files or `model.tmdl` refs in a live workflow.
 
-### File: `roles/Regional Manager.tmdl`
+For offline CI generation only, each role is serialized as a separate file in the `roles/` folder. The file declares the model permission and one DAX filter expression per filtered table.
+
+### File: `roles/<RoleName>.tmdl`
 
 ```tmdl
-/// Access restricted to East region
-role 'Regional Manager'
+/// Access restricted by confirmed policy
+role '<RoleName>'
 	modelPermission: read
 
-	tablePermission Sales = [Region] = "East"
+	tablePermission '<SecuredTable>' = [<SecurityAttribute>] = "<AllowedValue>"
 ```
 
 **Key rules:**
@@ -343,7 +348,7 @@ role 'Regional Manager'
 - `tablePermission <TableName> = <DAX filter>` — the DAX filter expression restricts rows for that table.
 - One `tablePermission` per table; multiple tables can be filtered within the same role.
 - For OLS, a table or column carries a metadata permission (`columnPermission`) set to `none` to hide it from the role.
-- In `model.tmdl`, add `ref role <Name>` for each role.
+- In offline CI-generated `model.tmdl`, add `ref role <Name>` for each role. Do not hand-edit this ref in production/live workflows.
 
 ### Role membership is NOT stored in TMDL
 
@@ -354,10 +359,10 @@ The role's *definition* (filters, permissions) lives in TMDL, but the *members* 
 PBI="https://api.powerbi.com/v1.0/myorg"
 cat > /tmp/body.json << 'EOF'
 {
-  "identifier": "user@contoso.com",
+  "identifier": "<user-or-group-identifier>",
   "principalType": "User",
   "datasetUserAccessRight": "Read",
-  "roles": ["Regional Manager"]
+  "roles": ["<RoleName>"]
 }
 EOF
 az rest --method post \

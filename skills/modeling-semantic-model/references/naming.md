@@ -6,6 +6,8 @@ Rules for standardizing naming conventions in Power BI semantic models (TMDL for
 
 Names must align with the business terminology used by people in the organization. Never assume terminology -- always confirm with the user or infer from existing patterns in the model. The model should be an authoritative source of truth for terminology.
 
+Naming can support measure intent, but it cannot confirm it. Treat data dictionary/glossary entries and user confirmation as the evidence for `confirmed` business meaning; field names alone are `draft` hints. If a proposed rename, synonym, time-intelligence suffix, target label, or RAG label could change interpretation, return `needs-user-input` and ask. Do not infer formulas or business definitions from naming conventions.
+
 ## Rule Categories
 
 ### 1. Human-Readable Names (No Programming Conventions)
@@ -41,8 +43,8 @@ Names must align with the business terminology used by people in the organizatio
 | `TotDelCst` | `Total Delivery Cost` |
 | `inv_lines_cnt` | `Invoice Lines` |
 | `frght` | `Freight` |
-| `shp_dt` | `Ship Date` |
-| `CustKey` | `Customer Key` |
+| `<role>_dt` | `<Role> Date` |
+| `<entity>Key` | `<Entity> Key` |
 | `BillDocTypeCd` | `Billing Document Type Code` |
 | `NI_COGS` | `Net Invoice COGS` |
 

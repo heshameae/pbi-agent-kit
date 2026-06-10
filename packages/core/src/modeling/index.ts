@@ -27,6 +27,16 @@ export type {
   ModelRelationshipLink,
   TreatasBridgeMeasure,
 } from './field-index.js';
+export { buildDataDictionary } from './data-dictionary.js';
+export type {
+  DataDictionary,
+  DataDictionaryCounts,
+  DataDictionaryField,
+  DataDictionaryMeasure,
+  DataDictionaryOptions,
+  DataDictionaryRelationship,
+  DataDictionaryTable,
+} from './data-dictionary.js';
 export {
   resolveSemanticModelDefinition,
   resolveSiblingSemanticModelDefinition,
@@ -43,6 +53,36 @@ export {
   isKeyLikeColumn,
   validateBridge,
 } from './grain.js';
+export {
+  buildDateGrainProbeQuery,
+  buildDateTableCoverageProbeQuery,
+  classifyObservedDateGrain,
+  deriveRequiredDateCoverageFacts,
+  findCalendarSourceRisks,
+  parseDateGrainProbeResult,
+  parseDateTableCoverageProbeResult,
+  planDateGrain,
+  planDateTableCoverage,
+} from './date-grain-plan.js';
+export type {
+  CalendarSourceRisk,
+  DateGrainBlocker,
+  DateGrainFactInput,
+  DateGrainPlanOptions,
+  DateGrainPlanResult,
+  DateGrainProbeEvidence,
+  DateGrainWritePlanItem,
+  DateRelationshipPlan,
+  DateTableCoverageBlocker,
+  DateTableCoveragePlanOptions,
+  DateTableCoveragePlanResult,
+  DateTableCoverageProbeEvidence,
+  DateTableFactCoverage,
+  DateTableKeyProbeEvidence,
+  DateTruncatingMeasureCandidate,
+  FactDateGrainPlan,
+  ObservedDateGrain,
+} from './date-grain-plan.js';
 export { deriveCardinality } from './cardinality.js';
 export { classifyTable } from './fact-classifier.js';
 export type { TableClassification, TableKind } from './fact-classifier.js';
@@ -64,3 +104,26 @@ export type {
   DaxReferenceCheckResult,
   UncommittedMeasureRef,
 } from './dax-reference-check.js';
+export { planStarSchemaSharedDimensions } from './star-schema-plan.js';
+export type {
+  AxisMissingBlocker,
+  AxisTypeMismatchBlocker,
+  AxisUnusableBlocker,
+  ConfigureDimensionKeyPlanItem,
+  CreateCalculatedTablePlanItem,
+  CreateRelationshipsPlanItem,
+  HideSourceColumnsPlanItem,
+  NoSharedAxesBlocker,
+  NoUsableSharedAxesBlocker,
+  RepairRelationshipsPlanItem,
+  RelationshipRepairUnsupportedBlocker,
+  StarSchemaColumnRef,
+  StarSchemaRelationshipPlan,
+  StarSchemaRelationshipRepairPlan,
+  StarSchemaSharedDimensionBlocker,
+  StarSchemaSharedDimensionPlan,
+  StarSchemaSharedDimensionPlanOptions,
+  StarSchemaSharedDimensionPlanResult,
+  StarSchemaWritePlanItem,
+  TableNotFoundBlocker,
+} from './star-schema-plan.js';

@@ -4,6 +4,8 @@ Valid-query authoring rules: syntax, SUMMARIZECOLUMNS vs SUMMARIZE, CALCULATE fi
 
 **Source:** ruiromano powerbi-agentic-plugins dax-query-guidelines.md
 
+**Identifier guard:** Concrete table, column, and measure names in examples are illustrative only. Production DAX must resolve identifiers from live model metadata, deterministic planner output, the validated user spec, or explicit user confirmation; never copy example names into a user model.
+
 ---
 
 ## Comments

@@ -21,15 +21,15 @@ Each individual finding must follow this structure:
 **Example:**
 
 ```
-### Check 2.2 — Unsplit DateTime Column: 'Sales'[Order Timestamp]
+### Check 2.2 — Unsplit DateTime Column: '<TableName>'[<DateTimeColumn>]
 
-**Issue:** The column 'Sales'[Order Timestamp] uses dataType: dateTime with second-level precision, creating near-unique cardinality and a large dictionary.
+**Issue:** The column '<TableName>'[<DateTimeColumn>] uses dataType: dateTime with second-level precision, creating near-unique cardinality and a large dictionary.
 
-**Fix:** Split into 'Sales'[Order Date] (dataType: date) and 'Sales'[Order Time] (dataType: time). If the combined value is needed for display, create a DAX measure rather than a calculated column.
+**Fix:** Split into '<TableName>'[<DateColumn>] (dataType: date) and '<TableName>'[<TimeColumn>] (dataType: time). If the combined value is needed for display, create a DAX measure rather than a calculated column.
 
 **Explain:** Near-unique DateTime columns can consume the majority of model memory. Splitting reduces dictionary size by 90%+ and improves refresh time.
 
-**Test:** Run VertiPaq Analyzer in Tabular Editor 3 before and after the split. Confirm the dictionary size for the date column is significantly smaller. Confirm no existing measures or visuals reference 'Sales'[Order Timestamp] directly (or update them first).
+**Test:** Run VertiPaq Analyzer in Tabular Editor 3 before and after the split. Confirm the dictionary size for the date column is significantly smaller. Confirm no existing measures or visuals reference '<TableName>'[<DateTimeColumn>] directly (or update them first).
 ```
 
 ---

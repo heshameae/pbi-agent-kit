@@ -34,6 +34,32 @@ describe('parseTableFile', () => {
     expect(col.isKey).toBe(true);
   });
 
+  it('keeps an absent column dataType as unknown instead of assuming string', () => {
+    const tbl = parseTableFile('table T\n\tcolumn Untyped\n\t\tsourceColumn: Untyped\n');
+    expect(tbl?.columns[0]?.dataType).toBe('unknown');
+  });
+
+  it('parses serializer-style bare booleans and case-insensitive property keys', () => {
+    const tbl = parseTableFile(
+      [
+        'table T',
+        '\tisHidden',
+        '\tcolumn Date',
+        '\t\tDATATYPE: dateTime',
+        '\t\tisKey',
+        '\t\tisHidden',
+        '\t\tisAvailableInMdx: false',
+        '',
+      ].join('\n'),
+    );
+    expect(tbl?.isHidden).toBe(true);
+    const col = tbl?.columns[0];
+    expect(col?.dataType).toBe('dateTime');
+    expect(col?.isKey).toBe(true);
+    expect(col?.isHidden).toBe(true);
+    expect(col?.isAvailableInMdx).toBe(false);
+  });
+
   it('parses dataCategory and formatString on a column', () => {
     const tbl = parseTableFile(
       [
@@ -58,6 +84,86 @@ describe('parseTableFile', () => {
     expect(amount?.dataCategory).toBeUndefined();
   });
 
+  it('parses table-level dataCategory', () => {
+    const tbl = parseTableFile(
+      [
+        'table Calendar',
+        '\tdataCategory: Time',
+        '\tcolumn Date',
+        '\t\tdataType: dateTime',
+        '',
+      ].join('\n'),
+    );
+
+    expect(tbl?.dataCategory).toBe('Time');
+  });
+
+  it('does not parse fenced partition source body lines as table metadata', () => {
+    const tbl = parseTableFile(
+      [
+        'table Orders',
+        '\tpartition Orders = m',
+        '\t\tmode: import',
+        '\t\tsource = ```',
+        '\t\t\tlet',
+        '\t\t\t\tdataCategory: Time',
+        '\t\t\t\tSource = #table({}, {})',
+        '\t\t\tin',
+        '\t\t\t\tSource',
+        '\t\t\t```',
+        '\tcolumn Order Date',
+        '\t\tdataType: dateTime',
+        '',
+      ].join('\n'),
+    );
+
+    expect(tbl?.dataCategory).toBeUndefined();
+    expect(tbl?.partitionSources).toHaveLength(1);
+    expect(tbl?.partitionSources?.[0]?.expression).toContain('dataCategory: Time');
+    expect(tbl?.columns[0]?.name).toBe('Order Date');
+  });
+
+  it('does not parse indented partition source body lines as table metadata', () => {
+    const tbl = parseTableFile(
+      [
+        'table Source',
+        '\tpartition Source = m',
+        '\t\tmode: import',
+        '\t\tsource = m',
+        '\t\t\tlet',
+        '\t\t\t\tdataCategory: Time',
+        '\t\t\t\tSource = #table({}, {})',
+        '\t\t\tin',
+        '\t\t\t\tSource',
+        '\tcolumn Source Date',
+        '\t\tdataType: dateTime',
+        '',
+      ].join('\n'),
+    );
+
+    expect(tbl?.dataCategory).toBeUndefined();
+    expect(tbl?.partitionSources).toHaveLength(1);
+    expect(tbl?.partitionSources?.[0]?.expression).toContain('dataCategory: Time');
+    expect(tbl?.columns[0]?.name).toBe('Source Date');
+  });
+
+  it('parses partition headers whose quoted names contain equals signs', () => {
+    const tbl = parseTableFile(
+      [
+        'table Calendar',
+        "\tpartition 'Date = Calendar' = calculated",
+        '\t\tsource = CALENDAR(DATE(2025, 1, 1), DATE(2025, 12, 31))',
+        '\tcolumn Date',
+        '\t\tdataType: dateTime',
+        '',
+      ].join('\n'),
+    );
+
+    expect(tbl?.isCalculated).toBe(true);
+    expect(tbl?.expression).toContain('CALENDAR');
+    expect(tbl?.partitionSources?.[0]?.kind).toBe('calculated');
+  });
+
   // M1 — calculated-column expression (inline `column 'X' = <DAX>` form).
   it('parses an inline calculated column expression and marks isCalculated', () => {
     const tbl = parseTableFile(
@@ -69,6 +175,15 @@ describe('parseTableFile', () => {
     expect(col.isCalculated).toBe(true);
     expect(col.expression).toBe('[Price] - [Cost]');
     expect(col.formatString).toBe('#,0');
+  });
+
+  it('parses calculated column names that contain equals signs', () => {
+    const tbl = parseTableFile("table T\n\tcolumn 'A = B' = [A] & [B]\n");
+    const col = tbl?.columns[0];
+
+    expect(col?.name).toBe('A = B');
+    expect(col?.expression).toBe('[A] & [B]');
+    expect(col?.isCalculated).toBe(true);
   });
 
   // M1 — multi-line calc column (`column X =` then indented continuation).
@@ -185,12 +300,29 @@ describe('parseTableFile', () => {
     expect(m.formatString).toBe('#,0');
   });
 
+  it('parses measure names that contain equals signs', () => {
+    const tbl = parseTableFile("table T\n\tmeasure 'A = B' = [A] + [B]\n");
+    const measure = tbl?.measures[0];
+
+    expect(measure?.name).toBe('A = B');
+    expect(measure?.expression).toBe('[A] + [B]');
+  });
+
   // M5 — measure displayFolder (regression: the parser previously dropped it).
   it('captures displayFolder on a measure (previously discarded)', () => {
     const tbl = parseTableFile(
       'table T\n\tmeasure Foo = SUM(T[X])\n\t\tformatString: #,0\n\t\tdisplayFolder: KPIs\n',
     );
     expect(tbl?.measures[0]?.displayFolder).toBe('KPIs');
+  });
+
+  it('parses serializer-style bare isHidden on measures without appending it to DAX', () => {
+    const tbl = parseTableFile(
+      ['table T', '\tmeasure HiddenMetric = SUM(T[X])', '\t\tisHidden'].join('\n'),
+    );
+    const m = tbl?.measures[0];
+    expect(m?.isHidden).toBe(true);
+    expect(m?.expression).toBe('SUM(T[X])');
   });
 
   it('parses measure annotations', () => {
@@ -262,6 +394,69 @@ describe('parseTableFile', () => {
     expect(b?.isAutoDateTable).toBe(true);
     expect(c?.isAutoDateTable).toBe(false);
   });
+
+  it('captures only calculated partition source as table expression', () => {
+    const calculated = parseTableFile(
+      [
+        'table Calendar',
+        '\tcolumn Date',
+        '\t\tdataType: dateTime',
+        '\tpartition Calendar = calculated',
+        '\t\tmode: import',
+        '\t\tsource = CALENDAR(DATE(2020,1,1), DATE(2020,12,31))',
+        '',
+      ].join('\n'),
+    );
+    const imported = parseTableFile(
+      [
+        'table T',
+        '\tcolumn A',
+        '\t\tdataType: string',
+        '\tpartition T = m',
+        '\t\tmode: import',
+        '\t\tsource = let Source = 1 in Source',
+        '',
+      ].join('\n'),
+    );
+
+    expect(calculated?.isCalculated).toBe(true);
+    expect(calculated?.expression).toContain('CALENDAR');
+    expect(calculated?.partitionSources).toEqual([
+      {
+        kind: 'calculated',
+        expression: 'CALENDAR(DATE(2020,1,1), DATE(2020,12,31))',
+      },
+    ]);
+    expect(imported?.isCalculated).toBe(false);
+    expect(imported?.expression).toBeUndefined();
+    expect(imported?.partitionSources).toEqual([
+      { kind: 'm', expression: 'let Source = 1 in Source' },
+    ]);
+  });
+
+  it('captures fenced multiline partition sources', () => {
+    const tbl = parseTableFile(
+      [
+        'table Calendar',
+        '\tpartition Calendar = calculated',
+        '\t\tmode: import',
+        '\t\tsource = ```',
+        '\t\t\tCALENDAR(',
+        '\t\t\t    DATE(2020,1,1),',
+        '\t\t\t    DATE(2020,12,31)',
+        '\t\t\t)',
+        '\t\t\t```',
+        '',
+      ].join('\n'),
+    );
+
+    expect(tbl?.isCalculated).toBe(true);
+    expect(tbl?.partitionSources?.[0]?.kind).toBe('calculated');
+    const expression = tbl?.partitionSources?.[0]?.expression;
+    expect(expression).toContain('CALENDAR(');
+    expect(expression).toContain('DATE(2020,1,1)');
+    expect(expression).toContain('DATE(2020,12,31)');
+  });
 });
 
 describe('parseRelationshipsFile', () => {
@@ -271,11 +466,33 @@ describe('parseRelationshipsFile', () => {
     );
     expect(rels.length).toBe(1);
     expect(rels[0]).toMatchObject({
+      id: 'r1',
+      identityProven: true,
       fromTable: 'A',
       fromColumn: 'B',
       toTable: 'My Table',
       toColumn: 'My Col',
       isActive: true,
+    });
+  });
+
+  it('parses quoted relationship table identifiers with escaped apostrophes', () => {
+    const rels = parseRelationshipsFile(
+      "relationship r1\n\tfromColumn: 'Bob''s Sales'.Key\n\ttoColumn: Calendar.Date\n",
+    );
+
+    expect(rels).toHaveLength(1);
+    expect(rels[0]?.fromTable).toBe("Bob's Sales");
+    expect(rels[0]?.fromColumn).toBe('Key');
+  });
+
+  it('normalizes quoted relationship identifiers before marking identity proven', () => {
+    const rels = parseRelationshipsFile(
+      "relationship 'Sales Date Rel'\n\tfromColumn: Sales.Date\n\ttoColumn: Calendar.Date\n",
+    );
+    expect(rels[0]).toMatchObject({
+      id: 'Sales Date Rel',
+      identityProven: true,
     });
   });
 
@@ -434,10 +651,11 @@ describe('parseTMDLFolder', () => {
     expect(model.relationships.length).toBe(2);
   });
 
-  // M2 — omit `roles` entirely when the model has no roles/ directory.
-  it('leaves roles undefined for a model with no roles directory', () => {
+  // M2 — omit `roles` entirely when empty, but mark folder role enumeration captured.
+  it('leaves roles undefined and marks capture for a model with no roles directory', () => {
     const model = parseTMDLFolder(STAR_GOOD);
     expect(model.roles).toBeUndefined();
+    expect(model.rolesCaptured).toBe(true);
   });
 
   // M1/M2/M4/M5/M6 end-to-end via the rls-model fixture (1 fact, 1 dim, 1 role).
