@@ -1,3 +1,4 @@
+import { isNumericType, isTemporalType, normalizeDataType } from './data-types.js';
 import { classifyTable } from './fact-classifier.js';
 import {
   type DirectedFilterEdge,
@@ -165,7 +166,7 @@ function looksFactLike(model: TMDLModel, table: TMDLTable): boolean {
   if (classification.kind === 'fact' && classification.confidence >= 0.6) return true;
   return table.columns.some(
     (column) =>
-      ['int64', 'decimal', 'double'].includes(column.dataType.toLowerCase()) &&
+      isNumericType(column.dataType) &&
       column.summarizeBy !== undefined &&
       column.summarizeBy.toLowerCase() !== 'none',
   );
@@ -309,15 +310,9 @@ export function typesCompatible(a: TMDLColumn, b: TMDLColumn): boolean {
   const leftDataType = normalizeDataType(a.dataType);
   const rightDataType = normalizeDataType(b.dataType);
   if (leftDataType === rightDataType) return true;
-  const numerics = new Set(['int64', 'decimal', 'double']);
-  if (numerics.has(leftDataType) && numerics.has(rightDataType)) return true;
-  const temporal = new Set(['date', 'datetime']);
-  if (temporal.has(leftDataType) && temporal.has(rightDataType)) return true;
+  if (isNumericType(leftDataType) && isNumericType(rightDataType)) return true;
+  if (isTemporalType(leftDataType) && isTemporalType(rightDataType)) return true;
   return false;
-}
-
-function normalizeDataType(dataType: string): string {
-  return dataType.trim().toLowerCase();
 }
 
 function detectCycles(model: TMDLModel): ReadonlyArray<RelationshipFinding> {

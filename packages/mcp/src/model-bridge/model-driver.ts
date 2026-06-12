@@ -214,6 +214,10 @@ export interface ConnectOpts {
   readonly forceFolder?: boolean;
 }
 
+export interface DaxQueryOptions {
+  readonly includeRawDiagnostics?: boolean;
+}
+
 // Build the Microsoft-MCP request envelope: { request: { operation, ...params } };
 // `List` puts its params under `request.filter` (reference repo behavior).
 export function operationArgs(
@@ -250,15 +254,42 @@ function parseResult(result: McpToolResult): unknown {
   if (result.structuredContent !== undefined && result.structuredContent !== null) {
     return result.structuredContent;
   }
-  const text = result.content?.find((c) => c.type === 'text')?.text;
-  if (text) {
-    try {
-      return JSON.parse(text);
-    } catch {
-      return text;
-    }
+  return parseTextPayloads(result)[0]?.payload;
+}
+
+interface ParsedTextPayload {
+  readonly source: string;
+  readonly payload: unknown;
+}
+
+function parseTextPayloads(result: McpToolResult): ParsedTextPayload[] {
+  return (result.content ?? [])
+    .map((content, index): ParsedTextPayload | undefined => {
+      if (content.type !== 'text' || !content.text) return undefined;
+      return { source: `content[${index}].text`, payload: parseTextPayload(content.text) };
+    })
+    .filter((payload): payload is ParsedTextPayload => payload !== undefined);
+}
+
+function parseTextPayload(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
   }
-  return undefined;
+}
+
+function parseDaxContentPayloads(result: McpToolResult): ParsedTextPayload[] {
+  return (result.content ?? []).flatMap((content, index): ParsedTextPayload[] => {
+    if (content.type === 'text' && content.text) {
+      return [{ source: `content[${index}].text`, payload: parseTextPayload(content.text) }];
+    }
+    if (content.type === 'resource' && content.resource?.mimeType === 'text/csv') {
+      const payload = parseDaxCsvResource(content.resource.text ?? '', content.resource.uri);
+      return payload ? [{ source: `content[${index}].resource`, payload }] : [];
+    }
+    return [];
+  });
 }
 
 // DAX result shapes differ by host. The local @microsoft/powerbi-modeling-mcp
@@ -266,6 +297,8 @@ function parseResult(result: McpToolResult): unknown {
 //   { success, operation, message, data: { columns: [{ name, dataType }],
 //     rows: [[v0, v1, ...]], rowCount, wasTruncated, truncationReason, filePath } }
 // and some builds wrap those same columnar tables under result/table containers.
+// The beta.2 Windows MCP returns {success:true} as text and the actual DAX
+// table as a sibling text/csv resource.
 // The public Execute-Queries REST shape is instead { results: [{ tables: [{
 // rows: [{ "[Col]": v }] }] }] } (array-of-objects). Normalize local columnar
 // tables into rows keyed by column name so pbi_dax_query callers and the
@@ -298,6 +331,236 @@ export function normalizeDaxResult(payload: unknown): unknown {
   // REST { results/tables } shape, an already-keyed { rows: [{}] }, or any other
   // object — leave it untouched; extractRows / pickArray handle those.
   return payload;
+}
+
+const DAX_RAW_SHAPE_NODE_LIMIT = 24;
+const DAX_RAW_SHAPE_DEPTH_LIMIT = 6;
+const DAX_RAW_SHAPE_KEY_LIMIT = 16;
+
+function attachDaxRawDiagnostics(
+  normalized: unknown,
+  rawPayload: unknown,
+  source: string,
+): unknown {
+  if (!isRecord(normalized)) return normalized;
+  if (normalized.wasTruncated === true) return normalized;
+  const rowCount = typeof normalized.rowCount === 'number' ? normalized.rowCount : 0;
+  if (rowCount > 0 || daxPayloadHasRows(normalized)) return normalized;
+  return { ...normalized, rawDiagnostics: { source, ...summarizeDaxPayloadShape(rawPayload) } };
+}
+
+function daxPayloadHasRows(payload: unknown, depth = 0): boolean {
+  if (depth > DAX_RAW_SHAPE_DEPTH_LIMIT) return false;
+  if (Array.isArray(payload)) {
+    return payload.some((item) => daxPayloadHasRows(item, depth + 1));
+  }
+  if (!isRecord(payload)) return false;
+  if (Array.isArray(payload.rows) && payload.rows.length > 0) return true;
+  return Object.values(payload).some((value) => daxPayloadHasRows(value, depth + 1));
+}
+
+function summarizeDaxPayloadShape(payload: unknown): Record<string, unknown> {
+  const shape: Record<string, Record<string, unknown>> = {};
+  collectDaxPayloadShape(payload, '$', 0, shape);
+  return {
+    payloadType: daxShapeType(payload),
+    ...(isRecord(payload) ? { topLevelKeys: boundedKeys(payload) } : {}),
+    shape,
+  };
+}
+
+function collectDaxPayloadShape(
+  value: unknown,
+  pathName: string,
+  depth: number,
+  out: Record<string, Record<string, unknown>>,
+): void {
+  if (depth > DAX_RAW_SHAPE_DEPTH_LIMIT || Object.keys(out).length >= DAX_RAW_SHAPE_NODE_LIMIT) {
+    return;
+  }
+  const nodeId = `node${Object.keys(out).length}`;
+  if (Array.isArray(value)) {
+    out[nodeId] = {
+      path: pathName,
+      type: 'array',
+      length: value.length,
+      ...(value.length > 0 ? { firstType: daxShapeType(value[0]) } : {}),
+      ...(isRecord(value[0]) ? { firstKeys: boundedKeys(value[0]) } : {}),
+      ...(Array.isArray(value[0]) ? { firstLength: value[0].length } : {}),
+    };
+    if (value.length > 0) collectDaxPayloadShape(value[0], `${pathName}[0]`, depth + 1, out);
+    return;
+  }
+  if (!isRecord(value)) {
+    out[nodeId] = { path: pathName, type: daxShapeType(value) };
+    return;
+  }
+
+  const keys = boundedKeys(value);
+  out[nodeId] = { path: pathName, type: 'object', keys };
+  const priority = ['data', 'results', 'tables', 'rows', 'columns', 'value', 'values', 'content'];
+  const orderedKeys = [
+    ...priority.filter((key) => key in value),
+    ...keys.filter((key) => !priority.includes(key)),
+  ];
+  for (const key of orderedKeys) {
+    if (Object.keys(out).length >= DAX_RAW_SHAPE_NODE_LIMIT) break;
+    collectDaxPayloadShape(value[key], `${pathName}.${key}`, depth + 1, out);
+  }
+}
+
+function boundedKeys(record: Record<string, unknown>): string[] {
+  return Object.keys(record).slice(0, DAX_RAW_SHAPE_KEY_LIMIT);
+}
+
+function daxShapeType(value: unknown): string {
+  if (value === null) return 'null';
+  if (Array.isArray(value)) return 'array';
+  return typeof value;
+}
+
+interface ParsedDaxToolResult {
+  readonly payload: unknown;
+  readonly source: string;
+}
+
+function parseDaxToolResult(result: McpToolResult): ParsedDaxToolResult {
+  const hasStructured = result.structuredContent !== undefined && result.structuredContent !== null;
+  const structured = result.structuredContent;
+  if (hasStructured && !isDaxSuccessEnvelopeWithoutResultData(structured)) {
+    return { payload: structured, source: 'structuredContent' };
+  }
+
+  const textPayloads = expandDaxTextPayloads(parseDaxContentPayloads(result));
+  const textCandidate =
+    textPayloads.find((candidate) => isDaxFailureEnvelope(candidate.payload)) ??
+    textPayloads.find((candidate) => hasDaxResultShape(candidate.payload)) ??
+    textPayloads.find((candidate) => typeof candidate.payload === 'string');
+  if (textCandidate) return textCandidate;
+  if (hasStructured) return { payload: structured, source: 'structuredContent' };
+  return textPayloads[0] ?? { payload: undefined, source: 'none' };
+}
+
+function expandDaxTextPayloads(payloads: readonly ParsedTextPayload[]): ParsedTextPayload[] {
+  const expanded: ParsedTextPayload[] = [];
+  for (const payload of payloads) {
+    expanded.push(payload);
+    collectEmbeddedTextPayloads(payload.payload, payload.source, 0, expanded);
+  }
+  return expanded;
+}
+
+function collectEmbeddedTextPayloads(
+  value: unknown,
+  source: string,
+  depth: number,
+  out: ParsedTextPayload[],
+): void {
+  if (depth > DAX_RAW_SHAPE_DEPTH_LIMIT) return;
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => {
+      collectEmbeddedTextPayloads(item, `${source}[${index}]`, depth + 1, out);
+    });
+    return;
+  }
+  if (!isRecord(value)) return;
+
+  for (const [key, child] of Object.entries(value)) {
+    if (key === 'content' && Array.isArray(child)) {
+      child.forEach((part, index) => {
+        const partSource = `${source}.content[${index}]`;
+        if (isRecord(part) && part.type === 'text' && typeof part.text === 'string') {
+          const nestedSource = `${partSource}.text`;
+          const nestedPayload = parseTextPayload(part.text);
+          out.push({ source: nestedSource, payload: nestedPayload });
+          collectEmbeddedTextPayloads(nestedPayload, nestedSource, depth + 1, out);
+          return;
+        }
+        collectEmbeddedTextPayloads(part, partSource, depth + 1, out);
+      });
+      continue;
+    }
+    collectEmbeddedTextPayloads(child, `${source}.${key}`, depth + 1, out);
+  }
+}
+
+function isDaxFailureEnvelope(value: unknown): boolean {
+  return isRecord(value) && value.success === false;
+}
+
+function isDaxSuccessEnvelopeWithoutResultData(value: unknown): boolean {
+  return isRecord(value) && value.success === true && !hasDaxResultShape(value);
+}
+
+function hasDaxResultShape(value: unknown, depth = 0): boolean {
+  if (depth > DAX_RAW_SHAPE_DEPTH_LIMIT) return false;
+  if (Array.isArray(value)) {
+    return value.some((item) => hasDaxResultShape(item, depth + 1));
+  }
+  if (!isRecord(value)) return false;
+  if (Array.isArray(value.rows) || Array.isArray(value.columns)) return true;
+  return Object.values(value).some((child) => hasDaxResultShape(child, depth + 1));
+}
+
+function parseDaxCsvResource(csv: string, uri?: string): NormalizedDaxTable | null {
+  const records = parseCsvRecords(csv);
+  if (records.length === 0) return null;
+  const columns = records[0] ?? [];
+  if (columns.length === 0) return null;
+  const rows = records.slice(1).filter((row) => !isEmptyCsvTrailingRow(row));
+  return {
+    columns,
+    rows: rows.map((row) => zipDaxRow(columns, row)),
+    rowCount: rows.length,
+    ...(uri ? { filePath: uri } : {}),
+  };
+}
+
+function parseCsvRecords(csv: string): string[][] {
+  const records: string[][] = [];
+  let row: string[] = [];
+  let field = '';
+  let inQuotes = false;
+
+  for (let i = 0; i < csv.length; i += 1) {
+    const char = csv[i];
+    if (inQuotes) {
+      if (char === '"' && csv[i + 1] === '"') {
+        field += '"';
+        i += 1;
+      } else if (char === '"') {
+        inQuotes = false;
+      } else {
+        field += char;
+      }
+      continue;
+    }
+
+    if (char === '"') {
+      inQuotes = true;
+    } else if (char === ',') {
+      row.push(field);
+      field = '';
+    } else if (char === '\n' || char === '\r') {
+      row.push(field);
+      records.push(row);
+      row = [];
+      field = '';
+      if (char === '\r' && csv[i + 1] === '\n') i += 1;
+    } else {
+      field += char;
+    }
+  }
+
+  if (field.length > 0 || row.length > 0) {
+    row.push(field);
+    records.push(row);
+  }
+  return records;
+}
+
+function isEmptyCsvTrailingRow(row: readonly string[]): boolean {
+  return row.length === 1 && row[0] === '';
 }
 
 interface NormalizedDaxTable {
@@ -388,9 +651,7 @@ function mergeDaxColumnarTables(tables: ReadonlyArray<NormalizedDaxTable>): Norm
     rows,
     rowCount,
     ...(wasTruncated ? { wasTruncated: true as const } : {}),
-    ...(truncationReasons.size > 0
-      ? { truncationReason: [...truncationReasons].join('; ') }
-      : {}),
+    ...(truncationReasons.size > 0 ? { truncationReason: [...truncationReasons].join('; ') } : {}),
     ...(filePaths.size === 1 ? { filePath: [...filePaths][0] } : {}),
   };
 }
@@ -1090,11 +1351,30 @@ export class ModelDriver {
   async listRolesRaw(expectedConnection?: ConnectionInfo): Promise<Record<string, unknown>[]> {
     return this.#live(() => this.#listRolesRawUnlocked(), expectedConnection);
   }
-  async daxQuery(query: string, expectedConnection?: ConnectionInfo): Promise<unknown> {
-    return this.#live(
-      async () => normalizeDaxResult(await this.call(MS_TOOLS.dax, 'Execute', { query })),
-      expectedConnection,
-    );
+  async daxQuery(
+    query: string,
+    expectedConnection?: ConnectionInfo,
+    options: DaxQueryOptions = {},
+  ): Promise<unknown> {
+    return this.#live(async () => {
+      let result: McpToolResult;
+      try {
+        result = await this.#client.callTool(MS_TOOLS.dax, operationArgs('Execute', { query }));
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        throw new Error(redactConnectionSecrets(`${MS_TOOLS.dax}/Execute failed: ${msg}`));
+      }
+      if (result.isError) {
+        const text =
+          result.content?.find((c) => c.type === 'text')?.text ?? `${MS_TOOLS.dax}/Execute errored`;
+        throw new Error(redactConnectionSecrets(text));
+      }
+      const raw = parseDaxToolResult(result);
+      const normalized = normalizeDaxResult(raw.payload);
+      return options.includeRawDiagnostics
+        ? attachDaxRawDiagnostics(normalized, raw.payload, raw.source)
+        : normalized;
+    }, expectedConnection);
   }
 
   async refreshModel(
@@ -1569,8 +1849,26 @@ export class ModelDriver {
     dateColumn: string,
     expectedConnection?: ConnectionInfo,
   ): Promise<unknown> {
-    await this.updateTable({ name: tableName, dataCategory: 'Time' }, expectedConnection);
-    return this.updateColumn({ tableName, name: dateColumn, isKey: true }, expectedConnection);
+    const tableResult = await this.updateTable(
+      { name: tableName, dataCategory: 'Time' },
+      expectedConnection,
+    );
+    try {
+      const columnResult = await this.updateColumn(
+        { tableName, name: dateColumn, isKey: true },
+        expectedConnection,
+      );
+      return { marked: true, tableResult, columnResult };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (!isImportModeDateKeyWriteRejection(message)) throw err;
+      return {
+        marked: true,
+        tableResult,
+        columnKeySkipped: true,
+        columnKeyWarning: message.replace(/^column_operations\/Update failed:\s*/i, ''),
+      };
+    }
   }
 
   // -- relationships --
@@ -1694,6 +1992,11 @@ export class ModelDriver {
       expectedConnection,
     );
   }
+}
+
+function isImportModeDateKeyWriteRejection(message: string): boolean {
+  if (!/\bisKey\b/i.test(message)) return false;
+  return /\b(?:DirectQuery|Import)\b|only supported|not supported|not valid/i.test(message);
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {

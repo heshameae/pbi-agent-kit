@@ -1,5 +1,16 @@
 export * from './types.js';
 export {
+  isBooleanType,
+  isNumericColumn,
+  isNumericType,
+  isStringType,
+  isTemporalColumn,
+  isTemporalType,
+  normalizeDataType,
+  toCanonicalDataType,
+} from './data-types.js';
+export type { CanonicalDataType } from './data-types.js';
+export {
   parseTMDLFolder,
   parseTableFile,
   parseRelationshipsFile,

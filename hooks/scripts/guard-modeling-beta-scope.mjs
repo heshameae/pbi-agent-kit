@@ -7,11 +7,11 @@ const SCOPE_NOTICE =
 
 // Matches report/dashboard skill or agent NAMES (keyword match in a prompt or
 // tool input). Must list every non-modeling skill/agent that lives in the repo
-// (now under skills-report/ and agents-report/) so a stale slash-expansion or
+// (now under archive/skills/ and archive/agents/) so a stale slash-expansion or
 // Skill/Task call by name is still refused even though those are no longer
 // auto-scanned into the modeling-beta plugin surface.
 const REPORT_SKILL_OR_AGENT_PATTERN =
-  /\b(?:planning-dashboards|designing-reports|pbi-report|pbi-pages|pbi-visuals|pbi-layout|pbi-themes|pbi-filters|pbi-bookmarks|pbi-status|pbi-validate|reviewing-reports|lineage-analysis|report-builder|report-reviewer)\b/i;
+  /\b(?:planning-dashboards|designing-reports|pbi-report|pbi-pages|pbi-visuals|pbi-layout|pbi-themes|pbi-filters|pbi-bookmarks|pbi-status|pbi-validate|reviewing-reports|pbi-scaffold|lineage-analysis|pbi-designer|pbi-report-reviewer|pbi-report-validator|report-builder|report-reviewer)\b/i;
 const REPORT_MCP_TOOL_PATTERN =
   /^mcp__.*__pbi_(?:report|page|visual|theme|filter|bookmark|format|layout)_/i;
 const REPORT_OBJECT_PATTERN =

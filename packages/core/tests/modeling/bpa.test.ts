@@ -744,6 +744,18 @@ describe('BPA MOD011 — strict relationship datatype mismatch', () => {
     });
     expect(has(runBPA(model), 'MOD011')).toBeFalsy();
   });
+
+  it('does not flag casing-only live metadata differences', () => {
+    const model = makeModel({
+      tables: [
+        tbl('Fact', { columns: [c('Fact', 'K', { dataType: 'Int64' })] }),
+        tbl('Dim', { columns: [c('Dim', 'K', { dataType: 'int64', isKey: true })] }),
+      ],
+      relationships: [rel('r', 'Fact', 'K', 'Dim', 'K')],
+    });
+
+    expect(has(runBPA(model), 'MOD011')).toBeFalsy();
+  });
 });
 
 describe('BPA MOD012 — snowflake', () => {
@@ -842,6 +854,23 @@ describe('BPA FMT003 / FMT004 — column formatting', () => {
     const f = has(runBPA(model), 'FMT004');
     expect(f?.severity).toBe('warning');
   });
+
+  it('accepts live PascalCase numeric types for column formatting checks', () => {
+    const model = makeModel({
+      tables: [
+        tbl('Fact', {
+          columns: [
+            c('Fact', 'Amount', { dataType: 'Decimal', summarizeBy: 'Sum' }),
+            c('Fact', 'Ratio', { dataType: 'Double', formatString: '0.00' }),
+          ],
+        }),
+      ],
+    });
+    const findings = runBPA(model);
+
+    expect(has(findings, 'FMT003')?.severity).toBe('warning');
+    expect(has(findings, 'FMT004')?.severity).toBe('warning');
+  });
 });
 
 describe('BPA MODB1 / MODB2 — date table', () => {
@@ -875,6 +904,24 @@ describe('BPA MODB1 / MODB2 — date table', () => {
       ],
     });
     expect(has(runBPA(model), 'MODB1')).toBeFalsy();
+  });
+
+  it('accepts live PascalCase DateTime in date-table detection', () => {
+    const missingDateTable = makeModel({
+      tables: [tbl('Sales', { columns: [c('Sales', 'OrderDate', { dataType: 'DateTime' })] })],
+    });
+    expect(has(runBPA(missingDateTable), 'MODB1')?.severity).toBe('warning');
+
+    const markedDateTable = makeModel({
+      tables: [
+        tbl('Date', {
+          columns: [c('Date', 'TheDate', { dataType: 'DateTime', isKey: true })],
+          dataCategory: 'Time',
+        }),
+      ],
+    });
+    expect(has(runBPA(markedDateTable), 'MODB1')).toBeFalsy();
+    expect(has(runBPA(markedDateTable), 'MODB2')).toBeFalsy();
   });
 
   it('MODB2 warns on a Calendar-named table not marked as date table', () => {
@@ -1897,6 +1944,23 @@ describe('BPA FMT005-007 — formatting', () => {
     expect(v.every((f) => f.severity === 'info')).toBe(true);
   });
 
+  it('FMT006 accepts live PascalCase geography data types', () => {
+    const model = makeModel({
+      tables: [
+        tbl('Geo', {
+          columns: [
+            c('Geo', 'Country', { dataType: 'String' }),
+            c('Geo', 'Latitude', { dataType: 'Double' }),
+          ],
+        }),
+      ],
+    });
+
+    const v = runBPA(model).filter((x) => x.ruleId === 'FMT006');
+
+    expect(v.length).toBe(2);
+  });
+
   it('FMT006 skips when dataCategory is already set', () => {
     const model = makeModel({
       tables: [
@@ -1949,6 +2013,14 @@ describe('BPA FMT005-007 — formatting', () => {
       tables: [tbl('Date', { columns: [c('Date', 'MonthNo', { dataType: 'int64' })] })],
     });
     expect(has(runBPA(numeric), 'FMT007')).toBeFalsy();
+  });
+
+  it('FMT007 accepts live PascalCase string type', () => {
+    const model = makeModel({
+      tables: [tbl('Date', { columns: [c('Date', 'Month', { dataType: 'String' })] })],
+    });
+
+    expect(has(runBPA(model), 'FMT007')?.severity).toBe('warning');
   });
 });
 

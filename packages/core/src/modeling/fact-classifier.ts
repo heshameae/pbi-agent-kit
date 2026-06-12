@@ -1,3 +1,4 @@
+import { isNumericType } from './data-types.js';
 import type { TMDLColumn, TMDLModel, TMDLTable } from './types.js';
 
 export type TableKind = 'fact' | 'dimension' | 'unknown';
@@ -43,7 +44,7 @@ export function classifyTable(model: TMDLModel, tableName: string): TableClassif
     if (r.toTable === tableName) isToSide = true;
   }
 
-  const numericCount = table.columns.filter((c) => isNumericDataType(c.dataType)).length;
+  const numericCount = table.columns.filter((c) => isNumericType(c.dataType)).length;
 
   // FACT: sits on the many side AND carries aggregatable measures/quantities or
   // fans out to multiple dimensions.
@@ -72,12 +73,8 @@ function isSummarizableNumericColumn(column: TMDLColumn): boolean {
   return (
     column.summarizeBy !== undefined &&
     column.summarizeBy.toLowerCase() !== 'none' &&
-    isNumericDataType(column.dataType)
+    isNumericType(column.dataType)
   );
-}
-
-function isNumericDataType(dataType: string): boolean {
-  return ['int64', 'decimal', 'double'].includes(dataType);
 }
 
 function clamp(n: number): number {

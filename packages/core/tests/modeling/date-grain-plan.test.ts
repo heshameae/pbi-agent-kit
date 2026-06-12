@@ -106,6 +106,38 @@ describe('date grain planner', () => {
     expect(query).toMatch(/"gapCount",[\s\S]+,\n\s+"minDate"/);
   });
 
+  it('accepts live PascalCase temporal and numeric metadata', () => {
+    const m = model([
+      tbl('Actual', [
+        col('Actual', 'Event Date', 'DateTime'),
+        col('Actual', 'Amount', 'Decimal', { summarizeBy: 'Sum' }),
+      ]),
+    ]);
+
+    const result = planDateGrain(
+      m,
+      { facts: [{ tableName: 'Actual', dateColumn: 'Event Date' }] },
+      [
+        {
+          tableName: 'Actual',
+          dateColumn: 'Event Date',
+          rowCount: 1,
+          nonBlankDateCount: 1,
+          distinctDateCount: 1,
+          distinctMonthStartCount: 1,
+          nonMonthStartDateCount: 0,
+          monthsWithMultipleDates: 0,
+          maxDistinctDatesPerMonth: 1,
+        },
+      ],
+    );
+
+    expect(result.blockers.map((blocker) => blocker.code)).not.toContain(
+      'date-column-not-temporal',
+    );
+    expect(result.facts[0]?.metadata.dateCompatible).toBe(true);
+  });
+
   it('classifies non-month-start fact dates as day grain and allows plain additive measures', () => {
     const m = model(
       [
@@ -273,7 +305,7 @@ describe('date grain planner', () => {
     expect(result.facts[0]?.writePlan).toEqual([]);
   });
 
-  it('requires gap-free exact daily proof before marking a plain additive target measure safe', () => {
+  it('allows sparse day-level facts on day visuals and plain additive measures', () => {
     const m = model([
       tbl('Forecast', [
         col('Forecast', 'Forecast Date', 'dateTime'),
@@ -308,7 +340,8 @@ describe('date grain planner', () => {
     );
 
     expect(result.facts[0]?.observedGrain).toBe('day');
-    expect(result.facts[0]?.measureGuidance.plainSumSafe).toBe(false);
+    expect(result.facts[0]?.measureGuidance.plainSumSafe).toBe(true);
+    expect(result.facts[0]?.measureGuidance.safeVisualDateGrain).toBe('day-or-above');
     expect(result.facts[0]?.writePlan).toEqual([]);
   });
 
@@ -390,6 +423,7 @@ describe('date grain planner', () => {
 
     expect(result.facts[0]?.observedGrain).toBe('day');
     expect(result.facts[0]?.measureGuidance.plainSumSafe).toBe(false);
+    expect(result.facts[0]?.measureGuidance.safeVisualDateGrain).toBe('unknown');
     expect(result.facts[0]?.writePlan).toEqual([]);
     expect(result.dateTableCoverage?.blockers).toContainEqual(
       expect.objectContaining({
@@ -496,6 +530,77 @@ describe('date grain planner', () => {
 
     expect(result.facts[0]?.observedGrain).toBe('day');
     expect(result.facts[0]?.writePlan).toEqual([]);
+  });
+
+  it('emits date relationship writes for sparse day-level facts when Date coverage is valid', () => {
+    const m = model(
+      [
+        tbl('Forecast', [
+          col('Forecast', 'Forecast Date', 'dateTime'),
+          col('Forecast', 'Amount', 'decimal', { summarizeBy: 'sum' }),
+        ]),
+        tbl('Calendar', [col('Calendar', 'Date', 'dateTime', { isKey: true })], [], {
+          dataCategory: 'Time',
+        }),
+      ],
+      [relationship],
+    );
+
+    const sparseFactEvidence = {
+      tableName: 'Forecast',
+      dateColumn: 'Forecast Date',
+      rowCount: 45,
+      nonBlankDateCount: 45,
+      distinctDateCount: 40,
+      distinctMonthStartCount: 2,
+      nonMonthStartDateCount: 43,
+      monthsWithMultipleDates: 2,
+      maxDistinctDatesPerMonth: 21,
+      blankDateCount: 0,
+      duplicateDateCount: 5,
+      gapCount: 19,
+      nonMidnightTimeCount: 0,
+      minDate: '2025-01-01T00:00:00',
+      maxDate: '2025-02-28T00:00:00',
+    };
+
+    const result = planDateGrain(
+      m,
+      {
+        facts: [{ tableName: 'Forecast', dateColumn: 'Forecast Date' }],
+        dateTable: 'Calendar',
+        dateColumn: 'Date',
+        dateTableCoverageEvidence: {
+          dateTable: {
+            tableName: 'Calendar',
+            dateColumn: 'Date',
+            rowCount: 59,
+            nonBlankDateCount: 59,
+            distinctDateCount: 59,
+            blankDateCount: 0,
+            duplicateDateCount: 0,
+            gapCount: 0,
+            nonMidnightTimeCount: 0,
+            minDate: '2025-01-01T00:00:00',
+            maxDate: '2025-02-28T00:00:00',
+          },
+          facts: [sparseFactEvidence],
+        },
+      },
+      [sparseFactEvidence],
+    );
+
+    expect(result.facts[0]?.observedGrain).toBe('day');
+    expect(result.facts[0]?.measureGuidance.plainSumSafe).toBe(true);
+    expect(result.facts[0]?.measureGuidance.safeVisualDateGrain).toBe('day-or-above');
+    expect(result.facts[0]?.writePlan).toEqual([
+      {
+        action: 'activate-date-relationship',
+        id: 'Forecast_Date_Calendar_Date',
+        description:
+          'Observed day-level date values support activating the existing date relationship.',
+      },
+    ]);
   });
 
   it('does not emit date relationship writes to an unmarked date endpoint', () => {
@@ -1045,6 +1150,76 @@ describe('date grain planner', () => {
     );
   });
 
+  it('accepts a Time-category Date table with proven unique daily key when Import metadata lacks isKey', () => {
+    const m = model(
+      [
+        tbl('Fact', [col('Fact', 'Date', 'dateTime')]),
+        tbl('Calendar', [col('Calendar', 'Date', 'dateTime', { isKey: false })], [], {
+          dataCategory: 'Time',
+        }),
+      ],
+      [
+        {
+          id: 'Fact_Date_Calendar_Date',
+          fromTable: 'Fact',
+          fromColumn: 'Date',
+          toTable: 'Calendar',
+          toColumn: 'Date',
+          isActive: true,
+          crossFilteringBehavior: 'single',
+          cardinality: 'manyToOne',
+        },
+      ],
+    );
+
+    const result = planDateTableCoverage(
+      m,
+      {
+        dateTable: 'Calendar',
+        dateColumn: 'Date',
+        facts: [{ tableName: 'Fact', dateColumn: 'Date' }],
+      },
+      {
+        dateTable: {
+          tableName: 'Calendar',
+          dateColumn: 'Date',
+          rowCount: 31,
+          nonBlankDateCount: 31,
+          distinctDateCount: 31,
+          blankDateCount: 0,
+          duplicateDateCount: 0,
+          gapCount: 0,
+          nonMidnightTimeCount: 0,
+          minDate: '2025-01-01T00:00:00',
+          maxDate: '2025-01-31T00:00:00',
+        },
+        facts: [
+          {
+            tableName: 'Fact',
+            dateColumn: 'Date',
+            rowCount: 10,
+            nonBlankDateCount: 10,
+            distinctDateCount: 10,
+            distinctMonthStartCount: 1,
+            nonMonthStartDateCount: 9,
+            monthsWithMultipleDates: 1,
+            maxDistinctDatesPerMonth: 10,
+            blankDateCount: 0,
+            duplicateDateCount: 0,
+            gapCount: 21,
+            nonMidnightTimeCount: 0,
+            minDate: '2025-01-01T00:00:00',
+            maxDate: '2025-01-31T00:00:00',
+          },
+        ],
+      },
+    );
+
+    expect(result.status).toBe('valid');
+    expect(result.dateTable.isMarkedDateTable).toBe(true);
+    expect(result.blockers.map((blocker) => blocker.code)).not.toContain('date-column-not-key');
+  });
+
   it('blocks volatile TODAY or NOW calendar anchors instead of accepting current-date bounds', () => {
     const m = model([
       tbl('Fact', [col('Fact', 'Date', 'dateTime')]),
@@ -1170,6 +1345,26 @@ describe('date grain planner', () => {
       { tableName: 'Actual', dateColumn: 'Date' },
       { tableName: 'Target', dateColumn: 'Date' },
     ]);
+  });
+
+  it('derives required fact-date coverage from live PascalCase fact-like metadata', () => {
+    const m = model([
+      tbl('Target', [
+        col('Target', 'Date', 'DateTime'),
+        col('Target', 'Target Amount', 'Decimal', { summarizeBy: 'Sum' }),
+      ]),
+      tbl('Calendar', [col('Calendar', 'Date', 'DateTime', { isKey: true })], [], {
+        dataCategory: 'Time',
+      }),
+    ]);
+
+    expect(
+      deriveRequiredDateCoverageFacts(m, {
+        dateTable: 'Calendar',
+        dateColumn: 'Date',
+        facts: [],
+      }),
+    ).toEqual([{ tableName: 'Target', dateColumn: 'Date' }]);
   });
 
   it('returns blocked, not unknown, when the requested governed date table is missing', () => {

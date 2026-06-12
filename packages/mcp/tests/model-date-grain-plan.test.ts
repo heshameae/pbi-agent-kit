@@ -45,6 +45,43 @@ function jsonPayload(result: Awaited<ReturnType<Client['callTool']>>): Record<st
   return text ? (JSON.parse(text) as Record<string, unknown>) : {};
 }
 
+const DATE_PROOF_FORBIDDEN_FALLBACK_TOOLS = [
+  'pbi_dax_query',
+  'pbi_model_refresh',
+  'pbi_table_create',
+  'pbi_table_update',
+  'pbi_table_mark_as_date',
+  'pbi_column_create',
+  'pbi_column_update',
+  'pbi_relationship_create',
+  'pbi_relationship_update',
+  'pbi_relationship_activate',
+];
+
+function expectDateProofParseShapeStopGuidance(value: unknown): void {
+  const payload = value as Record<string, unknown>;
+  expect(payload.blockedAction).toBe('stop-before-date-write');
+  expect(payload.forbiddenFallbackTools).toEqual(
+    expect.arrayContaining(DATE_PROOF_FORBIDDEN_FALLBACK_TOOLS),
+  );
+  expect(payload.forbiddenFallbackInputs).toEqual(expect.arrayContaining(['probeData:false']));
+  expect(payload.forbiddenFallbackModes).toEqual(
+    expect.arrayContaining([
+      'manual DAX',
+      'probeData:false',
+      'model processing',
+      'Desktop restart',
+      'primitive Date writes',
+      'primitive relationship writes',
+    ]),
+  );
+  const nextStep = String(payload.nextStep ?? '');
+  expect(nextStep).toMatch(/stop/i);
+  expect(nextStep).toContain('pbi_dax_query');
+  expect(nextStep).toContain('pbi_model_refresh');
+  expect(nextStep).toContain('probeData:false');
+}
+
 function liveSnapshot() {
   return {
     modelPath: '(live)',
@@ -310,6 +347,74 @@ describe('date grain planner tool', () => {
     ]);
   });
 
+  it('reports sparse day-level proof as day-or-above visual safe without enabling writes', async () => {
+    process.env.PBI_REPORT_MCP_DISABLE_LIVE_PROBE = '1';
+    setModelDriverForTests({
+      async ensureConnection() {
+        return { mode: 'live', connectionString: 'Data Source=localhost:61234;' };
+      },
+      async getModelSnapshot() {
+        return liveSnapshot();
+      },
+      async daxQuery() {
+        return {
+          results: [
+            {
+              tables: [
+                {
+                  rows: [
+                    {
+                      '[__table]': 'Target',
+                      '[__column]': 'Date',
+                      '[rowCount]': 20,
+                      '[nonBlankDateCount]': 20,
+                      '[distinctDateCount]': 10,
+                      '[distinctMonthStartCount]': 1,
+                      '[nonMonthStartDateCount]': 9,
+                      '[monthsWithMultipleDates]': 1,
+                      '[maxDistinctDatesPerMonth]': 10,
+                      '[blankDateCount]': 0,
+                      '[duplicateDateCount]': 10,
+                      '[gapCount]': 5,
+                      '[nonMidnightTimeCount]': 0,
+                      '[minDate]': '2025-01-01T00:00:00',
+                      '[maxDate]': '2025-01-15T00:00:00',
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        };
+      },
+    } as unknown as Parameters<typeof setModelDriverForTests>[0]);
+
+    const result = await withClient((client) =>
+      client.callTool({
+        name: 'pbi_model_plan_date_grain',
+        arguments: {
+          facts: [{ tableName: 'Target', dateColumn: 'Date' }],
+        },
+      }),
+    );
+
+    const payload = jsonPayload(result);
+    expect(payload.probeStatus).toMatchObject({
+      status: 'succeeded',
+      evidenceRows: 1,
+      expectedEvidenceRows: 1,
+      queriedFacts: 1,
+      probeMode: 'proof',
+    });
+    const facts = (payload.plan as Record<string, unknown>).facts as Record<string, unknown>[];
+    expect(facts[0]?.observedGrain).toBe('day');
+    expect(facts[0]?.writePlan).toEqual([]);
+    expect(facts[0]?.measureGuidance).toMatchObject({
+      plainSumSafe: true,
+      safeVisualDateGrain: 'day-or-above',
+    });
+  });
+
   it('fails closed in metadata-only mode instead of inventing date grain', async () => {
     process.env.PBI_REPORT_MCP_DISABLE_LIVE_PROBE = '1';
     let daxCalls = 0;
@@ -351,7 +456,7 @@ describe('date grain planner tool', () => {
     expect(facts[0]?.writePlan).toEqual([]);
   });
 
-  it('marks a live probe incomplete when no evidence rows parse', async () => {
+  it('reports a parse-shape defect when an expected ROW proof normalizes to zero rows', async () => {
     process.env.PBI_REPORT_MCP_DISABLE_LIVE_PROBE = '1';
     setModelDriverForTests({
       async ensureConnection() {
@@ -361,7 +466,17 @@ describe('date grain planner tool', () => {
         return liveSnapshot();
       },
       async daxQuery() {
-        return { results: [{ tables: [{ rows: [] }] }] };
+        return {
+          columns: ['[__table]', '[rowCount]'],
+          rows: [],
+          rowCount: 0,
+          rawDiagnostics: {
+            payloadType: 'object',
+            shape: {
+              node0: { path: '$', type: 'object' },
+            },
+          },
+        };
       },
     } as unknown as Parameters<typeof setModelDriverForTests>[0]);
 
@@ -378,15 +493,67 @@ describe('date grain planner tool', () => {
 
     const payload = jsonPayload(result);
     expect(payload.probeStatus).toMatchObject({
-      status: 'incomplete',
+      status: 'parse-shape-unrecognized',
+      reason: 'proof-parse-shape-unrecognized',
       evidenceRows: 0,
       expectedEvidenceRows: 1,
       queriedFacts: 1,
-      reason:
-        'The live DAX probe returned no parseable evidence for at least one requested fact date column.',
+      diagnostics: {
+        rowCount: 0,
+        rawDiagnostics: {
+          payloadType: 'object',
+          shape: {
+            node0: { path: '$', type: 'object' },
+          },
+        },
+      },
     });
+    expectDateProofParseShapeStopGuidance(payload.probeStatus);
+    expect(JSON.stringify(payload.probeStatus).toLowerCase()).not.toMatch(/no data|reopen/);
     const facts = (payload.plan as Record<string, unknown>).facts as Record<string, unknown>[];
     expect(facts[0]?.observedGrain).toBe('unknown');
+  });
+
+  it('reports a parse-shape defect when raw proof rows exist but no evidence parses', async () => {
+    process.env.PBI_REPORT_MCP_DISABLE_LIVE_PROBE = '1';
+    setModelDriverForTests({
+      async ensureConnection() {
+        return { mode: 'live', connectionString: 'Data Source=localhost:61234;' };
+      },
+      async getModelSnapshot() {
+        return liveSnapshot();
+      },
+      async daxQuery() {
+        return { results: [{ tables: [{ rows: [{ unexpectedShape: true }] }] }] };
+      },
+    } as unknown as Parameters<typeof setModelDriverForTests>[0]);
+
+    const result = await withClient((client) =>
+      client.callTool({
+        name: 'pbi_model_plan_date_grain',
+        arguments: {
+          facts: [{ tableName: 'Target', dateColumn: 'Date' }],
+          dateTable: 'Calendar',
+          dateColumn: 'Date',
+        },
+      }),
+    );
+
+    const payload = jsonPayload(result);
+    expect(payload.probeStatus).toMatchObject({
+      status: 'parse-shape-unrecognized',
+      reason: 'proof-parse-shape-unrecognized',
+      evidenceRows: 0,
+      expectedEvidenceRows: 1,
+      queriedFacts: 1,
+      diagnostics: {
+        rowCount: 1,
+        sampleRow: { unexpectedShape: true },
+      },
+    });
+    expectDateProofParseShapeStopGuidance(payload.probeStatus);
+    expect(String((payload.probeStatus as Record<string, unknown>).rationale)).toMatch(/ROW\(\)/);
+    expect(JSON.stringify(payload.probeStatus).toLowerCase()).not.toMatch(/no data|reopen/);
   });
 
   it('runs one live date-table coverage proof and blocks uncovered fact dates', async () => {
@@ -498,6 +665,82 @@ describe('date grain planner tool', () => {
     });
     const blockers = plan.blockers as Record<string, unknown>[];
     expect(blockers.map((blocker) => blocker.code)).toContain('date-table-start-after-fact-min');
+  });
+
+  it('reports a date-table parse-shape defect when raw coverage rows exist but no evidence parses', async () => {
+    process.env.PBI_REPORT_MCP_DISABLE_LIVE_PROBE = '1';
+    setModelDriverForTests({
+      async ensureConnection() {
+        return { mode: 'live', connectionString: 'Data Source=localhost:61234;' };
+      },
+      async getModelSnapshot() {
+        return liveSnapshot();
+      },
+      async daxQuery() {
+        return { results: [{ tables: [{ rows: [{ unexpectedCoverageShape: true }] }] }] };
+      },
+    } as unknown as Parameters<typeof setModelDriverForTests>[0]);
+
+    const result = await withClient((client) =>
+      client.callTool({
+        name: 'pbi_model_plan_date_table',
+        arguments: {
+          dateTable: 'Calendar',
+          dateColumn: 'Date',
+          facts: [{ tableName: 'Actual', dateColumn: 'Date' }],
+        },
+      }),
+    );
+
+    const payload = jsonPayload(result);
+
+    expect(payload.probeStatus).toMatchObject({
+      status: 'parse-shape-unrecognized',
+      reason: 'proof-parse-shape-unrecognized',
+      evidenceRows: 0,
+      diagnostics: {
+        rowCount: 1,
+        sampleRow: { unexpectedCoverageShape: true },
+      },
+    });
+    expectDateProofParseShapeStopGuidance(payload.probeStatus);
+  });
+
+  it('reports a parse-shape defect when expected coverage proof normalizes to zero rows', async () => {
+    process.env.PBI_REPORT_MCP_DISABLE_LIVE_PROBE = '1';
+    setModelDriverForTests({
+      async ensureConnection() {
+        return { mode: 'live', connectionString: 'Data Source=localhost:61234;' };
+      },
+      async getModelSnapshot() {
+        return liveSnapshot();
+      },
+      async daxQuery() {
+        return { results: [{ tables: [{ rows: [] }] }] };
+      },
+    } as unknown as Parameters<typeof setModelDriverForTests>[0]);
+
+    const result = await withClient((client) =>
+      client.callTool({
+        name: 'pbi_model_plan_date_table',
+        arguments: {
+          dateTable: 'Calendar',
+          dateColumn: 'Date',
+          facts: [{ tableName: 'Actual', dateColumn: 'Date' }],
+        },
+      }),
+    );
+
+    const payload = jsonPayload(result);
+
+    expect(payload.probeStatus).toMatchObject({
+      status: 'parse-shape-unrecognized',
+      reason: 'proof-parse-shape-unrecognized',
+      evidenceRows: 0,
+      expectedEvidenceRows: 3,
+      diagnostics: { rowCount: 0 },
+    });
+    expectDateProofParseShapeStopGuidance(payload.probeStatus);
   });
 
   it('refuses volatile TODAY/NOW calendar table creation before connecting to a model', async () => {
@@ -994,6 +1237,449 @@ describe('date grain planner tool', () => {
     );
   });
 
+  it('creates governed Date relationships for sparse Import facts without requiring manual isKey repair', async () => {
+    const relationships: unknown[] = [];
+    let calendarExists = false;
+    let calendarMarked = false;
+    const calendarColumnNames = [
+      'Date',
+      'Year',
+      'Quarter',
+      'Quarter No',
+      'Month No',
+      'Month Name',
+      'Month Short',
+      'Year Month',
+      'Day',
+      'Day Of Week',
+      'Day Of Week No',
+      'Is Weekend',
+    ];
+    const calendarColumnMetadata = new Map<string, Record<string, unknown>>(
+      calendarColumnNames.map((name) => [name, { dataType: 'unknown' }]),
+    );
+    const snapshot = () => ({
+      modelPath: '(live)',
+      tables: [
+        {
+          name: 'Fact',
+          columns: [
+            {
+              table: 'Fact',
+              name: 'Order Date',
+              dataType: 'dateTime',
+              isHidden: false,
+              isKey: false,
+              isCalculated: false,
+            },
+            {
+              table: 'Fact',
+              name: 'Ship Date',
+              dataType: 'dateTime',
+              isHidden: false,
+              isKey: false,
+              isCalculated: false,
+            },
+          ],
+          measures: [],
+          isHidden: false,
+          isCalculated: false,
+          isAutoDateTable: false,
+        },
+        {
+          name: 'Target',
+          columns: [
+            {
+              table: 'Target',
+              name: 'Date',
+              dataType: 'dateTime',
+              isHidden: false,
+              isKey: false,
+              isCalculated: false,
+            },
+          ],
+          measures: [],
+          isHidden: false,
+          isCalculated: false,
+          isAutoDateTable: false,
+        },
+        ...(calendarExists
+          ? [
+              {
+                name: 'Calendar',
+                columns: calendarColumnNames.map((name) => {
+                  const metadata = calendarColumnMetadata.get(name) ?? {};
+                  return {
+                    table: 'Calendar',
+                    name,
+                    dataType: typeof metadata.dataType === 'string' ? metadata.dataType : 'unknown',
+                    isHidden: false,
+                    isKey: false,
+                    isCalculated: false,
+                    ...(typeof metadata.summarizeBy === 'string'
+                      ? { summarizeBy: metadata.summarizeBy }
+                      : {}),
+                    ...(calendarMarked && name === 'Date' ? { dataCategory: 'Time' } : {}),
+                  };
+                }),
+                measures: [],
+                isHidden: false,
+                isCalculated: true,
+                isAutoDateTable: false,
+                ...(calendarMarked ? { dataCategory: 'Time' } : {}),
+              },
+            ]
+          : []),
+      ],
+      relationships: relationships.map((relationship, index) => ({
+        id: `date_rel_${index}`,
+        identityProven: true,
+        crossFilteringBehavior: 'single',
+        cardinality: 'manyToOne',
+        ...(relationship as Record<string, unknown>),
+      })),
+    });
+    const factRows = [
+      {
+        '[__kind]': 'fact',
+        '[__table]': 'Fact',
+        '[__column]': 'Order Date',
+        '[rowCount]': 20,
+        '[nonBlankDateCount]': 20,
+        '[distinctDateCount]': 10,
+        '[distinctMonthStartCount]': 1,
+        '[nonMonthStartDateCount]': 9,
+        '[monthsWithMultipleDates]': 1,
+        '[maxDistinctDatesPerMonth]': 10,
+        '[blankDateCount]': 0,
+        '[duplicateDateCount]': 10,
+        '[gapCount]': 5,
+        '[nonMidnightTimeCount]': 0,
+        '[minDate]': '2025-01-01T00:00:00',
+        '[maxDate]': '2025-01-15T00:00:00',
+      },
+      {
+        '[__kind]': 'fact',
+        '[__table]': 'Fact',
+        '[__column]': 'Ship Date',
+        '[rowCount]': 20,
+        '[nonBlankDateCount]': 20,
+        '[distinctDateCount]': 10,
+        '[distinctMonthStartCount]': 1,
+        '[nonMonthStartDateCount]': 9,
+        '[monthsWithMultipleDates]': 1,
+        '[maxDistinctDatesPerMonth]': 10,
+        '[blankDateCount]': 0,
+        '[duplicateDateCount]': 10,
+        '[gapCount]': 5,
+        '[nonMidnightTimeCount]': 0,
+        '[minDate]': '2025-01-02T00:00:00',
+        '[maxDate]': '2025-01-16T00:00:00',
+      },
+      {
+        '[__kind]': 'fact',
+        '[__table]': 'Target',
+        '[__column]': 'Date',
+        '[rowCount]': 20,
+        '[nonBlankDateCount]': 20,
+        '[distinctDateCount]': 10,
+        '[distinctMonthStartCount]': 1,
+        '[nonMonthStartDateCount]': 9,
+        '[monthsWithMultipleDates]': 1,
+        '[maxDistinctDatesPerMonth]': 10,
+        '[blankDateCount]': 0,
+        '[duplicateDateCount]': 10,
+        '[gapCount]': 5,
+        '[nonMidnightTimeCount]': 0,
+        '[minDate]': '2025-01-01T00:00:00',
+        '[maxDate]': '2025-01-15T00:00:00',
+      },
+    ];
+    setModelDriverForTests({
+      async ensureConnection() {
+        return { mode: 'live', connectionString: 'Data Source=localhost:61234;' };
+      },
+      async getModelSnapshot() {
+        return snapshot();
+      },
+      async refreshModel() {
+        return { refreshed: true };
+      },
+      async createTable() {
+        calendarExists = true;
+        return { created: true };
+      },
+      async updateColumn(definition: { name: string }) {
+        calendarColumnMetadata.set(definition.name, {
+          ...(calendarColumnMetadata.get(definition.name) ?? {}),
+          ...definition,
+        });
+        return { updated: true };
+      },
+      async markAsDateTable() {
+        calendarMarked = true;
+        return {
+          marked: true,
+          columnKeySkipped: true,
+          columnKeyWarning: 'Setting IsKey property is only supported for DirectQuery mode tables.',
+        };
+      },
+      async createRelationship(definition: unknown) {
+        relationships.push(definition);
+        return { created: true };
+      },
+      async daxQuery() {
+        return {
+          results: [
+            {
+              tables: [
+                {
+                  rows: [
+                    {
+                      '[__kind]': 'date-table',
+                      '[__table]': 'Calendar',
+                      '[__column]': 'Date',
+                      '[rowCount]': 16,
+                      '[nonBlankDateCount]': 16,
+                      '[distinctDateCount]': 16,
+                      '[blankDateCount]': 0,
+                      '[duplicateDateCount]': 0,
+                      '[gapCount]': 0,
+                      '[nonMidnightTimeCount]': 0,
+                      '[minDate]': '2025-01-01T00:00:00',
+                      '[maxDate]': '2025-01-16T00:00:00',
+                    },
+                    ...factRows,
+                  ],
+                },
+              ],
+            },
+          ],
+        };
+      },
+    } as unknown as Parameters<typeof setModelDriverForTests>[0]);
+
+    const result = await withClient((client) =>
+      client.callTool({
+        name: 'pbi_date_table_create_governed',
+        arguments: {
+          tableName: 'Calendar',
+          dateColumn: 'Date',
+          facts: [
+            { tableName: 'Fact', dateColumn: 'Order Date' },
+            { tableName: 'Fact', dateColumn: 'Ship Date' },
+            { tableName: 'Target', dateColumn: 'Date' },
+          ],
+          rangePolicy: 'observed-min-max',
+          refreshBeforeProbe: true,
+        },
+      }),
+    );
+
+    const payload = jsonPayload(result);
+    expect(result.isError, JSON.stringify(payload, null, 2)).not.toBe(true);
+    expect(payload.status).toBe('created');
+    expect(payload.markResult).toMatchObject({ columnKeySkipped: true });
+    expect(relationships).toEqual([
+      expect.objectContaining({
+        fromTable: 'Fact',
+        fromColumn: 'Order Date',
+        toTable: 'Calendar',
+        toColumn: 'Date',
+        isActive: true,
+      }),
+      expect.objectContaining({
+        fromTable: 'Fact',
+        fromColumn: 'Ship Date',
+        toTable: 'Calendar',
+        toColumn: 'Date',
+        isActive: false,
+      }),
+      expect.objectContaining({
+        fromTable: 'Target',
+        fromColumn: 'Date',
+        toTable: 'Calendar',
+        toColumn: 'Date',
+        isActive: true,
+      }),
+    ]);
+  });
+
+  it('surfaces proof-parse-shape-unrecognized when post-write governed coverage rows are unparseable', async () => {
+    let calendarExists = false;
+    let marked = false;
+    let daxCalls = 0;
+    const snapshot = () => {
+      const base = liveSnapshot();
+      return {
+        ...base,
+        tables: [
+          ...base.tables,
+          ...(calendarExists
+            ? [
+                {
+                  name: 'Date',
+                  columns: [
+                    {
+                      table: 'Date',
+                      name: 'Date',
+                      dataType: 'dateTime',
+                      summarizeBy: 'none',
+                      dataCategory: marked ? 'Time' : undefined,
+                      isHidden: false,
+                      isKey: marked,
+                      isCalculated: false,
+                    },
+                  ],
+                  measures: [],
+                  isHidden: false,
+                  isCalculated: true,
+                  isAutoDateTable: false,
+                  ...(marked ? { dataCategory: 'Time' } : {}),
+                },
+              ]
+            : []),
+        ],
+      };
+    };
+    setModelDriverForTests({
+      async ensureConnection() {
+        return { mode: 'live', connectionString: 'Data Source=localhost:61234;' };
+      },
+      async getModelSnapshot() {
+        return snapshot();
+      },
+      async createTable() {
+        calendarExists = true;
+        return { created: true };
+      },
+      async refreshModel() {
+        return { refreshed: true };
+      },
+      async updateColumn() {
+        return { updated: true };
+      },
+      async markAsDateTable() {
+        marked = true;
+        return { marked: true };
+      },
+      async daxQuery() {
+        daxCalls += 1;
+        if (daxCalls === 1) {
+          return {
+            results: [
+              {
+                tables: [
+                  {
+                    rows: [
+                      {
+                        '[__kind]': 'fact',
+                        '[__table]': 'Actual',
+                        '[__column]': 'Date',
+                        '[rowCount]': 1,
+                        '[nonBlankDateCount]': 1,
+                        '[distinctDateCount]': 1,
+                        '[distinctMonthStartCount]': 1,
+                        '[nonMonthStartDateCount]': 0,
+                        '[monthsWithMultipleDates]': 0,
+                        '[maxDistinctDatesPerMonth]': 1,
+                        '[blankDateCount]': 0,
+                        '[duplicateDateCount]': 0,
+                        '[gapCount]': 0,
+                        '[nonMidnightTimeCount]': 0,
+                        '[minDate]': '2025-01-01T00:00:00',
+                        '[maxDate]': '2025-01-01T00:00:00',
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
+          };
+        }
+        if (daxCalls === 2) {
+          return {
+            results: [
+              {
+                tables: [
+                  {
+                    rows: [
+                      {
+                        '[__kind]': 'date-table',
+                        '[__table]': 'Date',
+                        '[__column]': 'Date',
+                        '[rowCount]': 1,
+                        '[nonBlankDateCount]': 1,
+                        '[distinctDateCount]': 1,
+                        '[blankDateCount]': 0,
+                        '[duplicateDateCount]': 0,
+                        '[gapCount]': 0,
+                        '[nonMidnightTimeCount]': 0,
+                        '[minDate]': '2025-01-01T00:00:00',
+                        '[maxDate]': '2025-01-01T00:00:00',
+                      },
+                      {
+                        '[__kind]': 'fact',
+                        '[__table]': 'Actual',
+                        '[__column]': 'Date',
+                        '[rowCount]': 1,
+                        '[nonBlankDateCount]': 1,
+                        '[distinctDateCount]': 1,
+                        '[distinctMonthStartCount]': 1,
+                        '[nonMonthStartDateCount]': 0,
+                        '[monthsWithMultipleDates]': 0,
+                        '[maxDistinctDatesPerMonth]': 1,
+                        '[blankDateCount]': 0,
+                        '[duplicateDateCount]': 0,
+                        '[gapCount]': 0,
+                        '[nonMidnightTimeCount]': 0,
+                        '[minDate]': '2025-01-01T00:00:00',
+                        '[maxDate]': '2025-01-01T00:00:00',
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
+          };
+        }
+        return { results: [{ tables: [{ rows: [{ unexpectedCoverageShape: true }] }] }] };
+      },
+    } as unknown as Parameters<typeof setModelDriverForTests>[0]);
+
+    const result = await withClient((client) =>
+      client.callTool({
+        name: 'pbi_date_table_create_governed',
+        arguments: {
+          tableName: 'Date',
+          dateColumn: 'Date',
+          facts: [{ tableName: 'Actual', dateColumn: 'Date' }],
+          rangePolicy: 'observed-min-max',
+          refreshBeforeProbe: false,
+        },
+      }),
+    );
+
+    const payload = jsonPayload(result);
+
+    expect(payload.status).toBe('blocked');
+    expect(payload).toMatchObject({
+      reason: 'proof-parse-shape-unrecognized',
+      code: 'proof-parse-shape-unrecognized',
+      evidenceRows: 0,
+      probeDiagnostics: {
+        rowCount: 1,
+        sampleRow: { unexpectedCoverageShape: true },
+      },
+    });
+    expect(String(payload.message)).toMatch(/tool\/parse defect/i);
+    expectDateProofParseShapeStopGuidance(payload);
+    expect(String(payload.nextStep)).toMatch(/report the structured/i);
+    expect(String(payload.nextStep)).not.toMatch(/reopen/i);
+    expect(calendarExists).toBe(true);
+    expect(marked).toBe(true);
+  });
+
   it('surfaces a structured probe-failed error (with the DAX message) when the probe throws', async () => {
     // daxQuery throws on a DAX engine error / non-tabular result. Governed create
     // must prove fact-date evidence before any table/metadata/relationship write,
@@ -1106,8 +1792,145 @@ describe('date grain planner tool', () => {
     expect(payload.nextStep).toMatch(/refreshBeforeProbe:true/i);
     expect(payload.nextStep).toMatch(/do not run manual dax probes/i);
     expect(payload.forbiddenFallbackTools).toEqual(
-      expect.arrayContaining(['pbi_dax_query', 'pbi_table_create', 'pbi_table_mark_as_date']),
+      expect.arrayContaining(DATE_PROOF_FORBIDDEN_FALLBACK_TOOLS),
     );
+    expect(payload.forbiddenFallbackInputs).toEqual(expect.arrayContaining(['probeData:false']));
+    expect(calendarExists).toBe(false);
+    expect(columnMetadataUpdated).toBe(false);
+    expect(marked).toBe(false);
+    expect(relationshipCreated).toBe(false);
+  });
+
+  it('surfaces proof-parse-shape-unrecognized when governed create receives unparseable proof rows', async () => {
+    let calendarExists = false;
+    let columnMetadataUpdated = false;
+    let marked = false;
+    let relationshipCreated = false;
+    setModelDriverForTests({
+      async ensureConnection() {
+        return { mode: 'live', connectionString: 'Data Source=localhost:61234;' };
+      },
+      async getModelSnapshot() {
+        return liveSnapshot();
+      },
+      async createTable() {
+        calendarExists = true;
+        return { created: true };
+      },
+      async updateColumn() {
+        columnMetadataUpdated = true;
+        return { updated: true };
+      },
+      async markAsDateTable() {
+        marked = true;
+        return { marked: true };
+      },
+      async createRelationship() {
+        relationshipCreated = true;
+        return { created: true };
+      },
+      async daxQuery() {
+        return { results: [{ tables: [{ rows: [{ unexpectedShape: true }] }] }] };
+      },
+    } as unknown as Parameters<typeof setModelDriverForTests>[0]);
+
+    const result = await withClient((client) =>
+      client.callTool({
+        name: 'pbi_date_table_create_governed',
+        arguments: {
+          tableName: 'Date',
+          dateColumn: 'Date',
+          facts: [{ tableName: 'Actual', dateColumn: 'Date' }],
+          rangePolicy: 'observed-min-max',
+          refreshBeforeProbe: false,
+        },
+      }),
+    );
+
+    const payload = jsonPayload(result);
+    const serialized = JSON.stringify(payload).toLowerCase();
+
+    expect(result.isError).toBe(true);
+    expect(payload).toMatchObject({
+      gate: 'governed-date-table-create',
+      status: 'blocked',
+      reason: 'proof-parse-shape-unrecognized',
+      code: 'proof-parse-shape-unrecognized',
+      evidenceRows: 0,
+      probeDiagnostics: {
+        rowCount: 1,
+        sampleRow: { unexpectedShape: true },
+      },
+    });
+    expect(String(payload.message)).toMatch(/tool\/parse defect/i);
+    expect(String(payload.nextStep)).toMatch(/do not request model processing/i);
+    expectDateProofParseShapeStopGuidance(payload);
+    expect(serialized).not.toMatch(/no data|reopen/);
+    expect(calendarExists).toBe(false);
+    expect(columnMetadataUpdated).toBe(false);
+    expect(marked).toBe(false);
+    expect(relationshipCreated).toBe(false);
+  });
+
+  it('keeps governed create on proof-parse-shape-unrecognized when expected proof rows normalize empty', async () => {
+    let calendarExists = false;
+    let columnMetadataUpdated = false;
+    let marked = false;
+    let relationshipCreated = false;
+    setModelDriverForTests({
+      async ensureConnection() {
+        return { mode: 'live', connectionString: 'Data Source=localhost:61234;' };
+      },
+      async getModelSnapshot() {
+        return liveSnapshot();
+      },
+      async createTable() {
+        calendarExists = true;
+        return { created: true };
+      },
+      async updateColumn() {
+        columnMetadataUpdated = true;
+        return { updated: true };
+      },
+      async markAsDateTable() {
+        marked = true;
+        return { marked: true };
+      },
+      async createRelationship() {
+        relationshipCreated = true;
+        return { created: true };
+      },
+      async daxQuery() {
+        return { results: [{ tables: [{ rows: [] }] }] };
+      },
+    } as unknown as Parameters<typeof setModelDriverForTests>[0]);
+
+    const result = await withClient((client) =>
+      client.callTool({
+        name: 'pbi_date_table_create_governed',
+        arguments: {
+          tableName: 'Date',
+          dateColumn: 'Date',
+          facts: [{ tableName: 'Actual', dateColumn: 'Date' }],
+          rangePolicy: 'observed-min-max',
+          refreshBeforeProbe: false,
+        },
+      }),
+    );
+
+    const payload = jsonPayload(result);
+
+    expect(result.isError).toBe(true);
+    expect(payload).toMatchObject({
+      gate: 'governed-date-table-create',
+      status: 'blocked',
+      reason: 'proof-parse-shape-unrecognized',
+      code: 'proof-parse-shape-unrecognized',
+      evidenceRows: 0,
+      probeDiagnostics: { rowCount: 0 },
+    });
+    expect(String(payload.message)).toMatch(/tool\/parse defect/i);
+    expectDateProofParseShapeStopGuidance(payload);
     expect(calendarExists).toBe(false);
     expect(columnMetadataUpdated).toBe(false);
     expect(marked).toBe(false);
@@ -1985,7 +2808,7 @@ describe('date grain planner tool', () => {
     expect(activated).toBe(false);
   });
 
-  it('refuses inactive temporal relationship creation before writing', async () => {
+  it('requires live proof before inactive temporal relationship creation', async () => {
     const snapshot = liveSnapshot();
     snapshot.tables = [
       ...snapshot.tables,
@@ -2036,8 +2859,151 @@ describe('date grain planner tool', () => {
 
     const payload = jsonPayload(result);
     expect(result.isError).toBe(true);
-    expect(payload.reason).toBe('inactive-date-relationship-create-refused');
+    expect(payload.reason).toBe('probe-failed');
     expect(created).toBe(false);
+  });
+
+  it('creates inactive role-playing Date relationships after live proof succeeds', async () => {
+    const snapshot = {
+      modelPath: '(live)',
+      tables: [
+        {
+          name: 'Forecast',
+          columns: [
+            {
+              table: 'Forecast',
+              name: 'Date',
+              dataType: 'dateTime',
+              isHidden: false,
+              isKey: false,
+              isCalculated: false,
+            },
+            {
+              table: 'Forecast',
+              name: 'Amount',
+              dataType: 'decimal',
+              summarizeBy: 'sum',
+              isHidden: false,
+              isKey: false,
+              isCalculated: false,
+            },
+          ],
+          measures: [],
+          isHidden: false,
+          isCalculated: false,
+          isAutoDateTable: false,
+        },
+        {
+          name: 'Calendar',
+          columns: [
+            {
+              table: 'Calendar',
+              name: 'Date',
+              dataType: 'dateTime',
+              isHidden: false,
+              isKey: false,
+              isCalculated: false,
+            },
+          ],
+          measures: [],
+          isHidden: false,
+          isCalculated: true,
+          isAutoDateTable: false,
+          dataCategory: 'Time',
+          partitionSources: [
+            {
+              kind: 'calculated',
+              expression:
+                "CALENDAR(MINX('Forecast', 'Forecast'[Date]), MAXX('Forecast', 'Forecast'[Date]))",
+            },
+          ],
+        },
+      ],
+      relationships: [],
+    };
+    let createdDefinition: unknown;
+    setModelDriverForTests({
+      async ensureConnection() {
+        return { mode: 'live', connectionString: 'Data Source=localhost:61234;' };
+      },
+      async getCachedSnapshot() {
+        return snapshot;
+      },
+      async daxQuery() {
+        return {
+          results: [
+            {
+              tables: [
+                {
+                  rows: [
+                    {
+                      '[__kind]': 'date-table',
+                      '[__table]': 'Calendar',
+                      '[__column]': 'Date',
+                      '[rowCount]': 59,
+                      '[nonBlankDateCount]': 59,
+                      '[distinctDateCount]': 59,
+                      '[blankDateCount]': 0,
+                      '[duplicateDateCount]': 0,
+                      '[gapCount]': 0,
+                      '[nonMidnightTimeCount]': 0,
+                      '[minDate]': '2025-01-01T00:00:00',
+                      '[maxDate]': '2025-02-28T00:00:00',
+                    },
+                    {
+                      '[__kind]': 'fact',
+                      '[__table]': 'Forecast',
+                      '[__column]': 'Date',
+                      '[rowCount]': 45,
+                      '[nonBlankDateCount]': 45,
+                      '[distinctDateCount]': 40,
+                      '[distinctMonthStartCount]': 2,
+                      '[nonMonthStartDateCount]': 43,
+                      '[monthsWithMultipleDates]': 2,
+                      '[maxDistinctDatesPerMonth]': 21,
+                      '[blankDateCount]': 0,
+                      '[duplicateDateCount]': 5,
+                      '[gapCount]': 19,
+                      '[nonMidnightTimeCount]': 0,
+                      '[minDate]': '2025-01-01T00:00:00',
+                      '[maxDate]': '2025-02-28T00:00:00',
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        };
+      },
+      async createRelationship(definition: unknown) {
+        createdDefinition = definition;
+        return { created: true };
+      },
+    } as unknown as Parameters<typeof setModelDriverForTests>[0]);
+
+    const result = await withClient((client) =>
+      client.callTool({
+        name: 'pbi_relationship_create',
+        arguments: {
+          fromTable: 'Forecast',
+          fromColumn: 'Date',
+          toTable: 'Calendar',
+          toColumn: 'Date',
+          isActive: false,
+        },
+      }),
+    );
+
+    const payload = jsonPayload(result);
+    expect(result.isError, JSON.stringify(payload, null, 2)).not.toBe(true);
+    expect(payload.created).toBe(true);
+    expect(createdDefinition).toMatchObject({
+      fromTable: 'Forecast',
+      fromColumn: 'Date',
+      toTable: 'Calendar',
+      toColumn: 'Date',
+      isActive: false,
+    });
   });
 
   it('refuses bidirectional active date relationship creation before live proof', async () => {
@@ -2154,7 +3120,10 @@ describe('date grain planner tool', () => {
 
     const payload = jsonPayload(result);
     expect(result.isError).toBe(true);
-    expect(payload.reason).toBe('date-table-coverage-blocked');
+    expect(payload.reason).toBe('proof-parse-shape-unrecognized');
+    expect(payload.code).toBe('proof-parse-shape-unrecognized');
+    expect(payload.probeDiagnostics).toMatchObject({ rowCount: 0 });
+    expectDateProofParseShapeStopGuidance(payload);
     expect(created).toBe(false);
   });
 
@@ -2532,7 +3501,10 @@ describe('date grain planner tool', () => {
 
     const payload = jsonPayload(result);
     expect(result.isError).toBe(true);
-    expect(payload.reason).toBe('date-table-coverage-blocked');
+    expect(payload.reason).toBe('proof-parse-shape-unrecognized');
+    expect(payload.code).toBe('proof-parse-shape-unrecognized');
+    expect(payload.probeDiagnostics).toMatchObject({ rowCount: 0 });
+    expectDateProofParseShapeStopGuidance(payload);
     expect(updated).toBe(false);
   });
 

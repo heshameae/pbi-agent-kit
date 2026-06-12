@@ -1,3 +1,4 @@
+import { isNumericType, isTemporalType } from './data-types.js';
 import { classifyTable } from './fact-classifier.js';
 import { relationshipCheck } from './relationship-check.js';
 import type { TMDLColumn, TMDLMeasure, TMDLModel, TMDLRelationship, TMDLTable } from './types.js';
@@ -271,8 +272,6 @@ export interface DateGrainUnsupportedColumnBlocker {
   readonly message: string;
 }
 
-const TEMPORAL_TYPES = new Set(['date', 'datetime']);
-
 export function planDateGrain(
   model: TMDLModel,
   options: DateGrainPlanOptions,
@@ -343,6 +342,7 @@ export function planDateGrain(
     const factEvidence = evidenceByKey.get(probeKey(fact.tableName, fact.dateColumn));
     const observedGrain = classifyObservedDateGrain(factEvidence);
     const exactDayProof = isExactDayGrainProof(factEvidence);
+    const dayRelationshipSafe = isDayRelationshipDateGrainSafe(observedGrain, factEvidence);
     const relationship = resolveDateRelationship(model, table, column, options);
     const dateTruncatingMeasureCandidates = findDateTruncatingMeasureCandidates(
       model,
@@ -352,7 +352,7 @@ export function planDateGrain(
     const writePlan = buildWritePlan(
       model,
       observedGrain,
-      exactDayProof,
+      dayRelationshipSafe,
       relationship,
       dateCoverage?.status === 'valid',
     );
@@ -368,6 +368,7 @@ export function planDateGrain(
         observedGrain,
         exactDayProof,
         dateTruncatingMeasureCandidates,
+        dayRelationshipSafe,
       ),
       writePlan,
     };
@@ -547,7 +548,7 @@ export function planDateTableCoverage(
       message: `Date key "${options.dateTable}"[${options.dateColumn}] is ${column.dataType}, not date/dateTime.`,
     });
   }
-  if (column && !column.isKey) {
+  if (table && column && !column.isKey && !isMarkedDateTable(table, column)) {
     blockers.push({
       code: 'date-column-not-key',
       table: options.dateTable,
@@ -677,7 +678,11 @@ export function planDateTableCoverage(
       columnExists: column !== undefined,
       isAutoDateTable: table?.isAutoDateTable ?? false,
       isMarkedDateTable: table && column ? isMarkedDateTable(table, column) : false,
-      isTemporalKey: column !== undefined && isTemporalColumn(column) && column.isKey,
+      isTemporalKey:
+        table !== undefined &&
+        column !== undefined &&
+        isTemporalColumn(column) &&
+        (column.isKey || isMarkedDateTable(table, column)),
       hasVolatileAnchor,
       ...(dateTableEvidence ? { evidence: dateTableEvidence } : {}),
     },
@@ -784,6 +789,20 @@ function isExactDayGrainProof(evidence: DateGrainProbeEvidence | undefined): boo
   );
 }
 
+function isDayRelationshipDateGrainSafe(
+  observedGrain: ObservedDateGrain,
+  evidence: DateGrainProbeEvidence | undefined,
+): boolean {
+  return (
+    observedGrain === 'day' &&
+    hasCompleteDateGrainProof(evidence) &&
+    evidence.nonBlankDateCount > 0 &&
+    evidence.distinctDateCount > 0 &&
+    evidence.blankDateCount === 0 &&
+    evidence.nonMidnightTimeCount === 0
+  );
+}
+
 function missingFactPlan(fact: DateGrainFactInput): FactDateGrainPlan {
   return {
     tableName: fact.tableName,
@@ -835,7 +854,7 @@ function dateColumnMetadata(column: TMDLColumn): FactDateGrainPlan['metadata'] {
 }
 
 function isTemporalColumn(column: TMDLColumn): boolean {
-  return TEMPORAL_TYPES.has(column.dataType.toLowerCase());
+  return isTemporalType(column.dataType);
 }
 
 function resolveDateRelationship(
@@ -1011,11 +1030,11 @@ function otherRelationshipTable(plan: ExistingDateRelationshipPlan, tableName: s
 function buildWritePlan(
   model: TMDLModel,
   observedGrain: ObservedDateGrain,
-  exactDayProof: boolean,
+  dayRelationshipSafe: boolean,
   relationship: DateRelationshipPlan,
   dateCoverageValid: boolean,
 ): ReadonlyArray<DateGrainWritePlanItem> {
-  if (observedGrain !== 'day' || !exactDayProof) {
+  if (observedGrain !== 'day' || !dayRelationshipSafe) {
     return [];
   }
 
@@ -1071,15 +1090,17 @@ function buildMeasureGuidance(
   observedGrain: ObservedDateGrain,
   exactDayProof: boolean,
   candidates: ReadonlyArray<DateTruncatingMeasureCandidate>,
+  dayRelationshipSafe = false,
 ): FactDateGrainPlan['measureGuidance'] {
-  if (observedGrain === 'day' && exactDayProof) {
+  if (observedGrain === 'day' && dayRelationshipSafe) {
     return {
       plainSumSafe: true,
       removeDateTruncatingTreatas: candidates.length > 0,
       safeVisualDateGrain: 'day-or-above',
       dateTruncatingMeasureCandidates: candidates,
-      message:
-        'Observed fact dates include repeated sub-month date evidence strong enough for daily-grain relationship writes. After shared dimensions/date relationships are valid, a plain additive measure can preserve date-level grain; remove date-truncating TREATAS patterns.',
+      message: exactDayProof
+        ? 'Observed fact dates include complete date-only daily evidence strong enough for daily-grain relationship writes. After shared dimensions/date relationships are valid, a plain additive measure can preserve date-level grain; remove date-truncating TREATAS patterns.'
+        : 'Observed fact dates are day-level but sparse. Day-or-above visual axes, Date relationships, and plain additive measures are safe for the proven nonblank date rows after shared dimensions/date relationships are valid.',
     };
   }
 
@@ -1090,7 +1111,7 @@ function buildMeasureGuidance(
       safeVisualDateGrain: 'unknown',
       dateTruncatingMeasureCandidates: candidates,
       message:
-        'Observed fact dates look date-level but do not provide exact contiguous daily proof. Do not rewrite target/actual measures or activate date relationships automatically until grain is proven by data.',
+        'Observed fact dates look date-level but do not provide complete date-only proof. Do not rewrite target/actual measures, activate date relationships, or use day-level visuals automatically until grain is proven by data.',
     };
   }
 
@@ -1429,7 +1450,7 @@ function dateOnlyOrdinal(value: string | undefined): number | undefined {
 function isMarkedDateTable(table: TMDLTable, column: TMDLColumn): boolean {
   const tableMarked = (table.dataCategory ?? '').toLowerCase() === 'time';
   const columnMarked = (column.dataCategory ?? '').toLowerCase() === 'time';
-  return column.isKey && (tableMarked || columnMarked);
+  return tableMarked || columnMarked;
 }
 
 export function findCalendarSourceRisks(
@@ -1512,7 +1533,7 @@ function isAggregatableNumericColumn(column: TMDLColumn): boolean {
   return (
     column.summarizeBy !== undefined &&
     column.summarizeBy.toLowerCase() !== 'none' &&
-    ['int64', 'decimal', 'double'].includes(column.dataType.toLowerCase())
+    isNumericType(column.dataType)
   );
 }
 

@@ -302,7 +302,7 @@ For the complete enum reference for all 30+ TMDL object types, see `references/o
 
 - Prefer an existing date table from the source over auto-generated
 - Ensure contiguous date range with no gaps; full span of fact data
-- Mark the Date table only with `pbi_table_mark_as_date(tableName, dateColumn, facts)` after `pbi_model_plan_date_table` succeeds; do not set primitive `dataCategory: Time` / `isKey` metadata directly
+- Mark the Date table only through `pbi_date_table_create_governed` or `pbi_table_mark_as_date(tableName, dateColumn, facts)` after Date-table coverage proof succeeds; do not set primitive `dataCategory: Time` / `isKey` metadata directly. Import models may reject the `isKey` write; live unique/contiguous Date-key proof plus table `dataCategory: Time` is authoritative.
 - Configure `sortByColumn` for month name → month number
 - Disable auto-date tables in production models
 

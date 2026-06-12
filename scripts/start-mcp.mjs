@@ -1,22 +1,20 @@
 #!/usr/bin/env node
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, readdirSync, statSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {
+  buildMarkerPath,
+  computeBuildFingerprint,
+  readBuildMarker,
+  writeBuildMarker,
+} from './build-fingerprint.mjs';
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const pluginRoot = process.env.CLAUDE_PLUGIN_ROOT?.trim()
   ? process.env.CLAUDE_PLUGIN_ROOT
   : path.resolve(scriptDir, '..');
 const serverPath = path.join(pluginRoot, 'packages', 'mcp', 'dist', 'server.js');
-const buildInputPaths = [
-  path.join(pluginRoot, 'packages/mcp/src'),
-  path.join(pluginRoot, 'packages/core/src'),
-  path.join(pluginRoot, 'packages/mcp/package.json'),
-  path.join(pluginRoot, 'packages/core/package.json'),
-  path.join(pluginRoot, 'package.json'),
-  path.join(pluginRoot, 'pnpm-lock.yaml'),
-];
 
 function stderr(message) {
   process.stderr.write(`${message}\n`);
@@ -31,30 +29,29 @@ function signalExitCode(signal) {
   return 128 + (signalNumbers[signal] ?? 1);
 }
 
-function newestMtimeMs(targetPath) {
-  if (!existsSync(targetPath)) return 0;
-  const stats = statSync(targetPath);
-  if (!stats.isDirectory()) return stats.mtimeMs;
-
-  let newest = stats.mtimeMs;
-  for (const entry of readdirSync(targetPath, { withFileTypes: true })) {
-    if (entry.name === 'dist' || entry.name === 'node_modules') continue;
-    const entryPath = path.join(targetPath, entry.name);
-    newest = Math.max(newest, newestMtimeMs(entryPath));
-  }
-  return newest;
-}
-
 function isBuildStale() {
-  if (!existsSync(serverPath)) return true;
-  const builtAt = statSync(serverPath).mtimeMs;
-  return buildInputPaths.some((inputPath) => newestMtimeMs(inputPath) > builtAt);
+  if (!existsSync(serverPath)) return { stale: true, reason: 'compiled server missing' };
+  const fingerprint = computeBuildFingerprint(pluginRoot);
+  const marker = readBuildMarker(pluginRoot);
+  if (!marker || typeof marker.sha256 !== 'string') {
+    return { stale: true, reason: 'build marker missing', fingerprint };
+  }
+  if (marker.sha256 !== fingerprint.sha256) {
+    return { stale: true, reason: 'build marker mismatch', fingerprint, marker };
+  }
+  return { stale: false, reason: 'build marker current', fingerprint, marker };
 }
 
 function ensureBuilt() {
-  if (!isBuildStale()) return;
+  const initial = isBuildStale();
+  if (!initial.stale) {
+    stderr(
+      `pbi-mcp-ts: loaded build ${initial.marker.sha256.slice(0, 12)} from ${buildMarkerPath(pluginRoot)} generated ${initial.marker.generatedAt ?? 'unknown time'}.`,
+    );
+    return;
+  }
 
-  stderr('pbi-mcp-ts: compiled MCP server missing or stale; running `pnpm build`.');
+  stderr(`pbi-mcp-ts: compiled MCP server stale (${initial.reason}); running \`pnpm build\`.`);
   // shell:true on Windows so the `pnpm` shim (pnpm.cmd) resolves — bare
   // spawnSync('pnpm', …) throws ENOENT on Windows because Node won't run a
   // .cmd without a shell. Harmless on macOS/Linux.
@@ -65,7 +62,13 @@ function ensureBuilt() {
     shell: process.platform === 'win32',
   });
 
-  if (build.status === 0 && existsSync(serverPath)) return;
+  if (build.status === 0 && existsSync(serverPath)) {
+    const marker = writeBuildMarker(pluginRoot);
+    stderr(
+      `pbi-mcp-ts: loaded build ${marker.sha256.slice(0, 12)} from ${buildMarkerPath(pluginRoot)} generated ${marker.generatedAt}.`,
+    );
+    return;
+  }
 
   stderr('pbi-mcp-ts: could not build the MCP server.');
   stderr('Run `pnpm install` and `pnpm build` in the plugin repository, then restart Claude Code.');

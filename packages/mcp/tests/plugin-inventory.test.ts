@@ -46,7 +46,7 @@ const MODELING_SKILLS = [
 const MODELING_AGENTS = ['data-analyst.md', 'model-builder.md', 'model-reviewer.md'];
 
 // The 12 report skills that must never appear under skills/ (they live in
-// skills-report/). Hardcoding the packaging inventory here is intentional and is
+// archive/skills/). Hardcoding the packaging inventory here is intentional and is
 // NOT a dataset hardcode — these are first-party skill directory names that the
 // launch gate exists to pin.
 const REPORT_SKILLS = [
@@ -64,7 +64,21 @@ const REPORT_SKILLS = [
   'reviewing-reports',
 ];
 
-const REPORT_AGENTS = ['report-builder.md', 'report-reviewer.md'];
+const ARCHIVED_REPORT_SKILLS = [
+  ...REPORT_SKILLS,
+  'pbi-scaffold',
+  'pbi-scaffold-drill',
+  'pbi-scaffold-kpi-grid',
+  'pbi-scaffold-overview',
+];
+
+const REPORT_AGENTS = [
+  'pbi-designer.md',
+  'pbi-report-reviewer.md',
+  'pbi-report-validator.md',
+  'report-builder.md',
+  'report-reviewer.md',
+];
 
 describe('plugin effective-inventory launch gate', () => {
   describe('.claude-plugin/plugin.json', () => {
@@ -113,22 +127,22 @@ describe('plugin effective-inventory launch gate', () => {
       }
     });
 
-    it('all 12 report skills exist under skills-report/', () => {
-      const reportShipped = new Set(dirNames('skills-report'));
-      for (const reportSkill of REPORT_SKILLS) {
+    it('all report-authoring skills exist under archive/skills/', () => {
+      const reportShipped = new Set(dirNames('archive/skills'));
+      for (const reportSkill of ARCHIVED_REPORT_SKILLS) {
         expect(
           reportShipped.has(reportSkill),
-          `${reportSkill} should be under skills-report/`,
+          `${reportSkill} should be under archive/skills/`,
         ).toBe(true);
       }
     });
 
-    it('report agents live under agents-report/ and NOT under agents/', () => {
+    it('report agents live under archive/agents/ and NOT under agents/', () => {
       const modelingAgents = new Set(markdownNames('agents'));
-      const reportAgents = new Set(markdownNames('agents-report'));
+      const reportAgents = new Set(markdownNames('archive/agents'));
       for (const agent of REPORT_AGENTS) {
         expect(modelingAgents.has(agent), `${agent} must NOT be under agents/`).toBe(false);
-        expect(reportAgents.has(agent), `${agent} should be under agents-report/`).toBe(true);
+        expect(reportAgents.has(agent), `${agent} should be under archive/agents/`).toBe(true);
       }
     });
   });

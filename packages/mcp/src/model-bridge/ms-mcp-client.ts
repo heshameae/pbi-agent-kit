@@ -24,8 +24,18 @@ export interface MsMcpSpawnConfig {
   readonly env?: Readonly<Record<string, string>>;
 }
 
+export interface McpContentItem {
+  readonly type: string;
+  readonly text?: string;
+  readonly resource?: {
+    readonly uri?: string;
+    readonly mimeType?: string;
+    readonly text?: string;
+  };
+}
+
 export interface McpToolResult {
-  readonly content?: ReadonlyArray<{ readonly type: string; readonly text?: string }>;
+  readonly content?: ReadonlyArray<McpContentItem>;
   readonly structuredContent?: unknown;
   readonly isError?: boolean;
 }

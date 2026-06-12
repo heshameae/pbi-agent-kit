@@ -29,6 +29,19 @@ describe('isDateLikeColumn / isKeyLikeColumn', () => {
     ).toBe(true);
   });
 
+  it('flags live PascalCase DateTime data type as date-like', () => {
+    expect(
+      isDateLikeColumn({
+        table: 'T',
+        name: 'X',
+        dataType: 'DateTime',
+        isHidden: false,
+        isKey: false,
+        isCalculated: false,
+      }),
+    ).toBe(true);
+  });
+
   it('flags name containing Date / Year / Month as date-like', () => {
     expect(
       isDateLikeColumn({
@@ -68,6 +81,37 @@ describe('dimColumnsOf', () => {
       .sort();
     expect(dimNames).toEqual(['DateKey']);
   });
+
+  it('excludes live PascalCase aggregated Decimal columns from dimensions', () => {
+    const dims = dimColumnsOf({
+      name: 'Fact',
+      columns: [
+        {
+          table: 'Fact',
+          name: 'Business Axis',
+          dataType: 'String',
+          isHidden: false,
+          isKey: false,
+          isCalculated: false,
+        },
+        {
+          table: 'Fact',
+          name: 'Amount',
+          dataType: 'Decimal',
+          summarizeBy: 'Sum',
+          isHidden: false,
+          isKey: false,
+          isCalculated: false,
+        },
+      ],
+      measures: [],
+      isHidden: false,
+      isCalculated: false,
+      isAutoDateTable: false,
+    });
+
+    expect(dims.map((column) => column.name)).toEqual(['Business Axis']);
+  });
 });
 
 describe('inferGrain', () => {
@@ -93,6 +137,72 @@ describe('validateBridge', () => {
     const model = parseTMDLFolder(STAR_GOOD);
     const result = validateBridge(model, 'Sales', 'Product');
     expect(result.bridgeCovers).toEqual([]);
+  });
+
+  it('does not treat live PascalCase additive Decimal columns as bridge axes', () => {
+    const model = {
+      modelPath: '(live)',
+      tables: [
+        {
+          name: 'Actuals',
+          columns: [
+            {
+              table: 'Actuals',
+              name: 'Category',
+              dataType: 'String',
+              isHidden: false,
+              isKey: false,
+              isCalculated: false,
+            },
+            {
+              table: 'Actuals',
+              name: 'Amount',
+              dataType: 'Decimal',
+              summarizeBy: 'Sum',
+              isHidden: false,
+              isKey: false,
+              isCalculated: false,
+            },
+          ],
+          measures: [],
+          isHidden: false,
+          isCalculated: false,
+          isAutoDateTable: false,
+        },
+        {
+          name: 'Targets',
+          columns: [
+            {
+              table: 'Targets',
+              name: 'Category',
+              dataType: 'String',
+              isHidden: false,
+              isKey: false,
+              isCalculated: false,
+            },
+            {
+              table: 'Targets',
+              name: 'Amount',
+              dataType: 'Decimal',
+              summarizeBy: 'Sum',
+              isHidden: false,
+              isKey: false,
+              isCalculated: false,
+            },
+          ],
+          measures: [],
+          isHidden: false,
+          isCalculated: false,
+          isAutoDateTable: false,
+        },
+      ],
+      relationships: [],
+    };
+
+    const result = validateBridge(model, 'Actuals', 'Targets');
+
+    expect(result.bridgeCovers).toEqual(['Category']);
+    expect(result.bridgeBlockedAxes).toEqual([]);
   });
 
   it('throws on unknown table', () => {

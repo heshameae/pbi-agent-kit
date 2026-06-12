@@ -414,6 +414,11 @@ describe('date-table modeling params', () => {
     expect(refreshDesc).toContain('needs-user-input');
     expect(refreshDesc).not.toContain('defaults to true');
     expect(props.createRelationships).toBeDefined();
+    const createRelationshipsDesc = String(
+      props.createRelationships?.description ?? '',
+    ).toLowerCase();
+    expect(createRelationshipsDesc).toContain('first role is active');
+    expect(createRelationshipsDesc).toContain('later roles are inactive');
     expect(required).toContain('tableName');
     expect(required).toContain('dateColumn');
     expect(required).toContain('facts');
@@ -443,6 +448,18 @@ describe('date-table modeling params', () => {
     expect(relationshipDesc).toContain('do not manually replay');
   });
 
+  it('describes governed Date-axis requirements on generic star-schema planning and apply tools', () => {
+    const planDesc = byName('pbi_model_plan_star_schema_join')?.description?.toLowerCase() ?? '';
+    const applyDesc = byName('pbi_model_apply_star_schema_join')?.description?.toLowerCase() ?? '';
+
+    for (const desc of [planDesc, applyDesc]) {
+      expect(desc).toContain('temporal');
+      expect(desc).toContain('governed date');
+      expect(desc).toContain('localdatetable');
+      expect(desc).toContain('pbi_date_table_create_governed');
+    }
+  });
+
   it('does not advertise primitive table create or DAX query as Date-table fallback paths', () => {
     const table = byName('pbi_table_create');
     const tableDesc = table?.description?.toLowerCase() ?? '';
@@ -459,6 +476,30 @@ describe('date-table modeling params', () => {
     expect(daxDesc).toContain('not a date-table proof fallback');
     expect(daxDesc).toContain('does not authorize date writes');
     expect(daxDesc).toContain('pbi_date_table_create_governed');
+  });
+
+  it('forbids Date proof parse-shape fallbacks in tool descriptions and schema text', () => {
+    for (const name of [
+      'pbi_model_plan_date_grain',
+      'pbi_model_plan_date_table',
+      'pbi_date_table_create_governed',
+    ]) {
+      const desc = byName(name)?.description?.toLowerCase() ?? '';
+      expect(desc, name).toContain('parse-shape');
+      expect(desc, name).toContain('stop');
+      expect(desc, name).toContain('pbi_dax_query');
+      expect(desc, name).toContain('pbi_model_refresh');
+      expect(desc, name).toContain('probedata:false');
+    }
+
+    const grainProbeData = String(
+      paramsOf('pbi_model_plan_date_grain').probeData?.description ?? '',
+    ).toLowerCase();
+    const tableProbeData = String(
+      paramsOf('pbi_model_plan_date_table').probeData?.description ?? '',
+    ).toLowerCase();
+    expect(grainProbeData).toContain('never use probedata:false as recovery');
+    expect(tableProbeData).toContain('probedata:false is forbidden as recovery');
   });
 
   it('registers star-schema apply as the batched deterministic shared-dimension path', () => {
@@ -493,6 +534,9 @@ describe('date-table modeling params', () => {
     expect(desc).toContain('targets');
     expect(desc).toContain('star-schema');
     expect(desc).toContain('date-grain');
+    expect(desc).toContain('governed date');
+    expect(desc).toContain('localdatetable');
+    expect(desc).toContain('pbi_date_table_create_governed');
     expect(desc).toContain('before asking');
     expect(desc).toContain('allocation');
     const props = paramsOf('pbi_model_plan_actuals_targets_join');
@@ -515,7 +559,10 @@ describe('date-table modeling params', () => {
     expect(tool, 'pbi_model_refresh should be registered').toBeDefined();
     const desc = tool?.description?.toLowerCase() ?? '';
     expect(desc).toContain('refresh');
+    expect(desc).toContain('explicitly authorizes');
     expect(desc).toContain('instead of asking the user');
+    expect(desc).toContain('never use this as a fallback');
+    expect(desc).toContain('proof-parse-shape-unrecognized');
     expect(paramsOf('pbi_model_refresh').refreshType).toBeDefined();
     expect(tool?.annotations?.destructiveHint).toBe(false);
     expect(tool?.annotations?.idempotentHint).toBe(true);

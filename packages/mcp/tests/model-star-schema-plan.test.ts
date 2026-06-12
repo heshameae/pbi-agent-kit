@@ -184,7 +184,7 @@ function liveTwoTableSnapshot() {
           {
             table: 'FactLeft',
             name: 'SharedCode',
-            dataType: 'string',
+            dataType: 'String',
             isHidden: false,
             isKey: false,
             isCalculated: false,
@@ -201,7 +201,7 @@ function liveTwoTableSnapshot() {
           {
             table: 'FactRight',
             name: 'SharedCode',
-            dataType: 'string',
+            dataType: 'String',
             isHidden: false,
             isKey: false,
             isCalculated: false,
@@ -235,6 +235,139 @@ function liveTwoTableSnapshotWithSharedDate() {
     isKey: false,
     isCalculated: false,
   });
+  snapshot.tables.push(
+    {
+      name: 'LocalDateTable_Left',
+      columns: [
+        {
+          table: 'LocalDateTable_Left',
+          name: 'Date',
+          dataType: 'dateTime',
+          isHidden: false,
+          isKey: true,
+          isCalculated: false,
+        },
+      ],
+      measures: [],
+      isHidden: true,
+      isCalculated: true,
+      isAutoDateTable: true,
+    },
+    {
+      name: 'LocalDateTable_Right',
+      columns: [
+        {
+          table: 'LocalDateTable_Right',
+          name: 'Date',
+          dataType: 'dateTime',
+          isHidden: false,
+          isKey: true,
+          isCalculated: false,
+        },
+      ],
+      measures: [],
+      isHidden: true,
+      isCalculated: true,
+      isAutoDateTable: true,
+    },
+  );
+  snapshot.relationships.push(
+    {
+      id: 'left-local-date',
+      fromTable: 'FactLeft',
+      fromColumn: 'TxnDate',
+      toTable: 'LocalDateTable_Left',
+      toColumn: 'Date',
+      isActive: true,
+      crossFilteringBehavior: 'single',
+      cardinality: 'manyToOne',
+    },
+    {
+      id: 'right-local-date',
+      fromTable: 'FactRight',
+      fromColumn: 'TxnDate',
+      toTable: 'LocalDateTable_Right',
+      toColumn: 'Date',
+      isActive: true,
+      crossFilteringBehavior: 'single',
+      cardinality: 'manyToOne',
+    },
+  );
+  return snapshot;
+}
+
+function liveTwoTableSnapshotWithGovernedDate(options: { withSource?: boolean } = {}) {
+  const withSource = options.withSource !== false;
+  const snapshot = liveTwoTableSnapshotWithSharedDate();
+  const dateTable = {
+    name: 'Date',
+    dataCategory: 'Time',
+    columns: [
+      {
+        table: 'Date',
+        name: 'Date',
+        dataType: 'dateTime',
+        dataCategory: 'Time',
+        isHidden: false,
+        isKey: false,
+        isCalculated: false,
+      },
+    ],
+    measures: [],
+    isHidden: false,
+    isCalculated: true,
+    isAutoDateTable: false,
+    ...(withSource
+      ? {
+          partitionSources: [
+            {
+              kind: 'calculated',
+              expression: [
+                'CALENDAR(',
+                '  MINX(',
+                '    UNION(',
+                '      SELECTCOLUMNS(FactLeft, "Date", FactLeft[TxnDate]),',
+                '      SELECTCOLUMNS(FactRight, "Date", FactRight[TxnDate])',
+                '    ),',
+                '    [Date]',
+                '  ),',
+                '  MAXX(',
+                '    UNION(',
+                '      SELECTCOLUMNS(FactLeft, "Date", FactLeft[TxnDate]),',
+                '      SELECTCOLUMNS(FactRight, "Date", FactRight[TxnDate])',
+                '    ),',
+                '    [Date]',
+                '  )',
+                ')',
+              ].join('\n'),
+            },
+          ],
+        }
+      : {}),
+  };
+  snapshot.tables.push(dateTable);
+  snapshot.relationships.push(
+    {
+      id: 'left-governed-date',
+      fromTable: 'FactLeft',
+      fromColumn: 'TxnDate',
+      toTable: 'Date',
+      toColumn: 'Date',
+      isActive: true,
+      crossFilteringBehavior: 'single',
+      cardinality: 'manyToOne',
+    },
+    {
+      id: 'right-governed-date',
+      fromTable: 'FactRight',
+      fromColumn: 'TxnDate',
+      toTable: 'Date',
+      toColumn: 'Date',
+      isActive: true,
+      crossFilteringBehavior: 'single',
+      cardinality: 'manyToOne',
+    },
+  );
   return snapshot;
 }
 
@@ -552,7 +685,58 @@ describe('star-schema join planner tool', () => {
     ]);
   });
 
-  it('plans actuals-vs-targets joins with star-schema axes and date-grain proof in one read-only call', async () => {
+  it('surfaces governed Date requirements in general star-schema plans when shared temporal axes exist', async () => {
+    // biome-ignore lint/performance/noDelete: this test exercises live-first behavior
+    delete process.env.PBI_REPORT_MCP_DISABLE_LIVE_PROBE;
+    setModelDriverForTests({
+      async listLiveInstances() {
+        return [{ connectionString: 'Data Source=localhost:61234;' }];
+      },
+      async ensureConnection() {
+        return { mode: 'live', connectionString: 'Data Source=localhost:61234;' };
+      },
+      async getModelSnapshot() {
+        return liveTwoTableSnapshotWithSharedDate();
+      },
+      async createTable() {
+        throw new Error('read-only plan must not create tables');
+      },
+      async createRelationship() {
+        throw new Error('read-only plan must not create relationships');
+      },
+    } as unknown as Parameters<typeof setModelDriverForTests>[0]);
+
+    const result = await withClient((client) =>
+      client.callTool({
+        name: 'pbi_model_plan_star_schema_join',
+        arguments: {
+          leftTable: 'FactLeft',
+          rightTable: 'FactRight',
+          axes: ['SharedCode'],
+        },
+      }),
+    );
+
+    const payload = jsonPayload(result);
+    const plan = payload.plan as Record<string, unknown> | undefined;
+    expect(result.isError).not.toBe(true);
+    expect(payload.mode).toBe('live');
+    expect(plan?.relationshipWrites).toHaveLength(2);
+    expect(plan?.dateAxisRequirement).toEqual({
+      status: 'governed-date-table-required',
+      reason:
+        'Cross-fact modeling with temporal axes requires one governed Date table shared by every participating fact. Auto LocalDateTable relationships are per-column implementation details and do not provide a conformed report axis.',
+      suggestedTool: 'pbi_date_table_create_governed',
+      suggestedPlanTools: ['pbi_model_plan_date_table', 'pbi_model_plan_date_grain'],
+      temporalAxes: ['TxnDate'],
+      dateRefs: [
+        { tableName: 'FactLeft', dateColumn: 'TxnDate' },
+        { tableName: 'FactRight', dateColumn: 'TxnDate' },
+      ],
+    });
+  });
+
+  it('requires a governed shared Date axis for actuals-vs-targets joins even when local auto-date proof succeeds', async () => {
     // biome-ignore lint/performance/noDelete: this test exercises live-first behavior
     delete process.env.PBI_REPORT_MCP_DISABLE_LIVE_PROBE;
     let daxCalls = 0;
@@ -640,7 +824,7 @@ describe('star-schema join planner tool', () => {
     const payload = jsonPayload(result);
     expect(result.isError).not.toBe(true);
     expect(payload.mode).toBe('live');
-    expect(payload.status).toBe('ready');
+    expect(payload.status).toBe('needs-user-input');
     expect(payload.starSchemaPlan).toMatchObject({
       design: 'star-schema-shared-dimension',
       leftTable: 'FactLeft',
@@ -661,10 +845,248 @@ describe('star-schema join planner tool', () => {
         }),
       ]),
     });
+    expect(payload.dateAxisRequirement).toMatchObject({
+      status: 'governed-date-table-required',
+      reason:
+        'Cross-fact modeling with temporal axes requires one governed Date table shared by every participating fact. Auto LocalDateTable relationships are per-column implementation details and do not provide a conformed report axis.',
+      suggestedTool: 'pbi_date_table_create_governed',
+      suggestedPlanTools: ['pbi_model_plan_date_table', 'pbi_model_plan_date_grain'],
+      temporalAxes: ['TxnDate'],
+      dateRefs: [
+        { tableName: 'FactLeft', dateColumn: 'TxnDate' },
+        { tableName: 'FactRight', dateColumn: 'TxnDate' },
+      ],
+    });
+    expect(payload.requiredInputs).toEqual([
+      expect.objectContaining({
+        topic: 'governed-date-table',
+      }),
+    ]);
     expect(payload.remainingBusinessQuestions).toEqual([
       expect.objectContaining({ topic: 'allocation-or-missing-target-behavior' }),
     ]);
     expect(daxCalls).toBe(1);
+  });
+
+  it('auto-detects an existing governed shared Date axis for actuals-vs-targets readiness', async () => {
+    // biome-ignore lint/performance/noDelete: this test exercises live-first behavior
+    delete process.env.PBI_REPORT_MCP_DISABLE_LIVE_PROBE;
+    let daxCalls = 0;
+    setModelDriverForTests({
+      async listLiveInstances() {
+        return [{ connectionString: 'Data Source=localhost:61234;' }];
+      },
+      async ensureConnection() {
+        return { mode: 'live', connectionString: 'Data Source=localhost:61234;' };
+      },
+      async getModelSnapshot() {
+        return liveTwoTableSnapshotWithGovernedDate();
+      },
+      async daxQuery(query: string) {
+        daxCalls += 1;
+        expect(query).toContain("'Date'");
+        expect(query).toContain('FactLeft');
+        expect(query).toContain('FactRight');
+        return {
+          results: [
+            {
+              tables: [
+                {
+                  rows: [
+                    {
+                      '[__kind]': 'date-table',
+                      '[__table]': 'Date',
+                      '[__column]': 'Date',
+                      '[rowCount]': 10,
+                      '[nonBlankDateCount]': 10,
+                      '[distinctDateCount]': 10,
+                      '[distinctMonthStartCount]': 1,
+                      '[nonMonthStartDateCount]': 9,
+                      '[monthsWithMultipleDates]': 1,
+                      '[maxDistinctDatesPerMonth]': 10,
+                      '[nonMidnightTimeCount]': 0,
+                      '[blankDateCount]': 0,
+                      '[duplicateDateCount]': 0,
+                      '[gapCount]': 0,
+                      '[minDate]': '2025-01-01T00:00:00',
+                      '[maxDate]': '2025-01-10T00:00:00',
+                    },
+                    {
+                      '[__kind]': 'fact',
+                      '[__table]': 'FactLeft',
+                      '[__column]': 'TxnDate',
+                      '[rowCount]': 20,
+                      '[nonBlankDateCount]': 20,
+                      '[distinctDateCount]': 10,
+                      '[distinctMonthStartCount]': 1,
+                      '[nonMonthStartDateCount]': 9,
+                      '[monthsWithMultipleDates]': 1,
+                      '[maxDistinctDatesPerMonth]': 10,
+                      '[nonMidnightTimeCount]': 0,
+                      '[blankDateCount]': 0,
+                      '[duplicateDateCount]': 10,
+                      '[gapCount]': 0,
+                      '[minDate]': '2025-01-01T00:00:00',
+                      '[maxDate]': '2025-01-10T00:00:00',
+                    },
+                    {
+                      '[__kind]': 'fact',
+                      '[__table]': 'FactRight',
+                      '[__column]': 'TxnDate',
+                      '[rowCount]': 12,
+                      '[nonBlankDateCount]': 12,
+                      '[distinctDateCount]': 6,
+                      '[distinctMonthStartCount]': 1,
+                      '[nonMonthStartDateCount]': 5,
+                      '[monthsWithMultipleDates]': 1,
+                      '[maxDistinctDatesPerMonth]': 6,
+                      '[nonMidnightTimeCount]': 0,
+                      '[blankDateCount]': 0,
+                      '[duplicateDateCount]': 6,
+                      '[gapCount]': 0,
+                      '[minDate]': '2025-01-01T00:00:00',
+                      '[maxDate]': '2025-01-06T00:00:00',
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        };
+      },
+    } as unknown as Parameters<typeof setModelDriverForTests>[0]);
+
+    const result = await withClient((client) =>
+      client.callTool({
+        name: 'pbi_model_plan_actuals_targets_join',
+        arguments: {
+          leftTable: 'FactLeft',
+          rightTable: 'FactRight',
+          axes: ['SharedCode'],
+        },
+      }),
+    );
+
+    const payload = jsonPayload(result);
+    expect(result.isError).not.toBe(true);
+    expect(payload.status).toBe('ready');
+    expect(payload.requiredInputs).toBeUndefined();
+    expect(payload.dateAxisRequirement).toMatchObject({
+      status: 'governed-date-table-present',
+      dateTable: 'Date',
+      dateColumn: 'Date',
+      source: 'existing-governed-relationships',
+      temporalAxes: ['TxnDate'],
+      dateRefs: [
+        { tableName: 'FactLeft', dateColumn: 'TxnDate' },
+        { tableName: 'FactRight', dateColumn: 'TxnDate' },
+      ],
+    });
+    expect(payload.dateGrainPlan).toMatchObject({
+      probeStatus: expect.objectContaining({ status: 'succeeded' }),
+      dateTableCoverage: expect.objectContaining({ status: 'valid' }),
+    });
+    expect(daxCalls).toBe(1);
+  });
+
+  it('blocks actuals-vs-targets readiness when governed Date coverage is not valid', async () => {
+    // biome-ignore lint/performance/noDelete: this test exercises live-first behavior
+    delete process.env.PBI_REPORT_MCP_DISABLE_LIVE_PROBE;
+    setModelDriverForTests({
+      async listLiveInstances() {
+        return [{ connectionString: 'Data Source=localhost:61234;' }];
+      },
+      async ensureConnection() {
+        return { mode: 'live', connectionString: 'Data Source=localhost:61234;' };
+      },
+      async getModelSnapshot() {
+        return liveTwoTableSnapshotWithGovernedDate({ withSource: false });
+      },
+      async daxQuery() {
+        return {
+          results: [
+            {
+              tables: [
+                {
+                  rows: [
+                    {
+                      '[__kind]': 'date-table',
+                      '[__table]': 'Date',
+                      '[__column]': 'Date',
+                      '[rowCount]': 10,
+                      '[nonBlankDateCount]': 10,
+                      '[distinctDateCount]': 10,
+                      '[blankDateCount]': 0,
+                      '[duplicateDateCount]': 0,
+                      '[gapCount]': 0,
+                      '[nonMidnightTimeCount]': 0,
+                      '[minDate]': '2025-01-01T00:00:00',
+                      '[maxDate]': '2025-01-10T00:00:00',
+                    },
+                    {
+                      '[__kind]': 'fact',
+                      '[__table]': 'FactLeft',
+                      '[__column]': 'TxnDate',
+                      '[rowCount]': 20,
+                      '[nonBlankDateCount]': 20,
+                      '[distinctDateCount]': 10,
+                      '[distinctMonthStartCount]': 1,
+                      '[nonMonthStartDateCount]': 9,
+                      '[monthsWithMultipleDates]': 1,
+                      '[maxDistinctDatesPerMonth]': 10,
+                      '[nonMidnightTimeCount]': 0,
+                      '[blankDateCount]': 0,
+                      '[duplicateDateCount]': 10,
+                      '[gapCount]': 0,
+                      '[minDate]': '2025-01-01T00:00:00',
+                      '[maxDate]': '2025-01-10T00:00:00',
+                    },
+                    {
+                      '[__kind]': 'fact',
+                      '[__table]': 'FactRight',
+                      '[__column]': 'TxnDate',
+                      '[rowCount]': 12,
+                      '[nonBlankDateCount]': 12,
+                      '[distinctDateCount]': 6,
+                      '[distinctMonthStartCount]': 1,
+                      '[nonMonthStartDateCount]': 5,
+                      '[monthsWithMultipleDates]': 1,
+                      '[maxDistinctDatesPerMonth]': 6,
+                      '[nonMidnightTimeCount]': 0,
+                      '[blankDateCount]': 0,
+                      '[duplicateDateCount]': 6,
+                      '[gapCount]': 0,
+                      '[minDate]': '2025-01-01T00:00:00',
+                      '[maxDate]': '2025-01-06T00:00:00',
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        };
+      },
+    } as unknown as Parameters<typeof setModelDriverForTests>[0]);
+
+    const result = await withClient((client) =>
+      client.callTool({
+        name: 'pbi_model_plan_actuals_targets_join',
+        arguments: {
+          leftTable: 'FactLeft',
+          rightTable: 'FactRight',
+          axes: ['SharedCode'],
+        },
+      }),
+    );
+
+    const payload = jsonPayload(result);
+    expect(payload.status).toBe('blocked');
+    expect(payload.blockers).toEqual([
+      expect.objectContaining({
+        source: 'date-table',
+        code: 'calendar-source-proof-missing',
+      }),
+    ]);
   });
 
   it('does not expose executable normalized writes for a blocked axis', async () => {
@@ -1149,6 +1571,7 @@ describe('star-schema join planner tool', () => {
     const snapshot = structuredClone(liveTwoTableSnapshot()) as MutableModel;
     const operationLog: string[] = [];
     const createTableDefinitions: unknown[] = [];
+    const updateColumnDefinitions: unknown[] = [];
     const createRelationshipDefinitions: unknown[] = [];
 
     setModelDriverForTests({
@@ -1190,6 +1613,7 @@ describe('star-schema join planner tool', () => {
         return { ok: true };
       },
       async updateColumn(definition: unknown) {
+        updateColumnDefinitions.push(definition);
         const def = definition as {
           tableName: string;
           name: string;
@@ -1298,7 +1722,14 @@ describe('star-schema join planner tool', () => {
       .find((table) => table.name === 'SharedCode')
       ?.columns.find((column) => column.name === 'SharedCode');
     expect(dimensionColumn).toMatchObject({
-      dataType: 'string',
+      dataType: 'String',
+      summarizeBy: 'none',
+      isKey: true,
+    });
+    expect(updateColumnDefinitions[0]).toMatchObject({
+      tableName: 'SharedCode',
+      name: 'SharedCode',
+      dataType: 'String',
       summarizeBy: 'none',
       isKey: true,
     });
@@ -1369,13 +1800,201 @@ describe('star-schema join planner tool', () => {
     expect(payload.plannedOperations).toEqual([
       expect.objectContaining({ action: 'create-calculated-table', tableName: 'SharedCode' }),
       expect.objectContaining({ action: 'refresh-model', refreshType: 'Calculate' }),
-      expect.objectContaining({ action: 'configure-dimension-key' }),
+      expect.objectContaining({
+        action: 'configure-dimension-key',
+        tableName: 'SharedCode',
+        columnName: 'SharedCode',
+        dataType: 'String',
+      }),
       expect.objectContaining({ action: 'create-relationship' }),
       expect.objectContaining({ action: 'create-relationship' }),
       expect.objectContaining({ action: 'hide-source-column' }),
       expect.objectContaining({ action: 'hide-source-column' }),
     ]);
     expect(writeCalls).toEqual([]);
+  });
+
+  it('carries unresolved Date-axis requirements through star-schema apply dry-runs', async () => {
+    // biome-ignore lint/performance/noDelete: this test exercises live-first behavior
+    delete process.env.PBI_REPORT_MCP_DISABLE_LIVE_PROBE;
+    const writeCalls: string[] = [];
+
+    setModelDriverForTests({
+      async listLiveInstances() {
+        return [{ connectionString: 'Data Source=localhost:61234;' }];
+      },
+      async ensureConnection() {
+        return { mode: 'live', connectionString: 'Data Source=localhost:61234;' };
+      },
+      async getModelSnapshot() {
+        return liveTwoTableSnapshotWithSharedDate();
+      },
+      async createTable() {
+        writeCalls.push('create-table');
+        return { ok: true };
+      },
+      async refreshModel() {
+        writeCalls.push('refresh');
+        return { ok: true };
+      },
+      async updateColumn() {
+        writeCalls.push('update-column');
+        return { ok: true };
+      },
+      async createRelationship() {
+        writeCalls.push('create-relationship');
+        return { ok: true };
+      },
+    } as unknown as Parameters<typeof setModelDriverForTests>[0]);
+
+    const result = await withClient((client) =>
+      client.callTool({
+        name: 'pbi_model_apply_star_schema_join',
+        arguments: {
+          leftTable: 'FactLeft',
+          rightTable: 'FactRight',
+          axes: ['SharedCode'],
+          dryRun: true,
+        },
+      }),
+    );
+
+    const payload = jsonPayload(result);
+    expect(result.isError).not.toBe(true);
+    expect(payload).toMatchObject({
+      applied: false,
+      dryRun: true,
+      mode: 'live',
+      completionStatus: 'shared-dimensions-planned-date-axis-incomplete',
+      dateAxisRequirement: {
+        status: 'governed-date-table-required',
+        suggestedTool: 'pbi_date_table_create_governed',
+        temporalAxes: ['TxnDate'],
+        dateRefs: [
+          { tableName: 'FactLeft', dateColumn: 'TxnDate' },
+          { tableName: 'FactRight', dateColumn: 'TxnDate' },
+        ],
+      },
+    });
+    expect(writeCalls).toEqual([]);
+  });
+
+  it('reports categorical apply success as date-axis incomplete when shared temporal axes remain ungoverned', async () => {
+    // biome-ignore lint/performance/noDelete: this test exercises live-first behavior
+    delete process.env.PBI_REPORT_MCP_DISABLE_LIVE_PROBE;
+    const snapshot = structuredClone(liveTwoTableSnapshotWithSharedDate()) as MutableModel;
+    const operationLog: string[] = [];
+
+    setModelDriverForTests({
+      async listLiveInstances() {
+        return [{ connectionString: 'Data Source=localhost:61234;' }];
+      },
+      async ensureConnection() {
+        return { mode: 'live', connectionString: 'Data Source=localhost:61234;' };
+      },
+      async getModelSnapshot() {
+        return snapshot;
+      },
+      async createTable(definition: unknown) {
+        const def = definition as { name: string };
+        operationLog.push(`create-table:${def.name}`);
+        snapshot.tables.push({
+          name: def.name,
+          columns: [
+            {
+              table: def.name,
+              name: def.name,
+              dataType: 'unknown',
+              summarizeBy: 'sum',
+              isHidden: false,
+              isKey: false,
+              isCalculated: false,
+            },
+          ],
+          measures: [],
+          isHidden: false,
+          isCalculated: true,
+          isAutoDateTable: false,
+        });
+        return { ok: true };
+      },
+      async refreshModel(refreshType: unknown) {
+        operationLog.push(`refresh:${String(refreshType)}`);
+        return { ok: true };
+      },
+      async updateColumn(definition: unknown) {
+        const def = definition as {
+          tableName: string;
+          name: string;
+          dataType?: string;
+          summarizeBy?: string;
+          isHidden?: boolean;
+          isKey?: boolean;
+        };
+        operationLog.push(`update-column:${def.tableName}.${def.name}`);
+        const table = snapshot.tables.find((candidate) => candidate.name === def.tableName);
+        const column = table?.columns.find((candidate) => candidate.name === def.name);
+        if (!column) throw new Error(`missing test column ${def.tableName}.${def.name}`);
+        if (def.dataType !== undefined) column.dataType = def.dataType;
+        if (def.summarizeBy !== undefined) column.summarizeBy = def.summarizeBy;
+        if (def.isHidden !== undefined) column.isHidden = def.isHidden;
+        if (def.isKey !== undefined) column.isKey = def.isKey;
+        return { ok: true };
+      },
+      async createRelationship(definition: unknown) {
+        const def = definition as {
+          fromTable: string;
+          fromColumn: string;
+          toTable: string;
+          toColumn: string;
+          cardinality?: string;
+          crossFilteringBehavior?: string;
+        };
+        operationLog.push(`create-relationship:${def.fromTable}.${def.fromColumn}`);
+        snapshot.relationships.push({
+          id: `${def.fromTable}_${def.fromColumn}_${def.toTable}_${def.toColumn}`,
+          fromTable: def.fromTable,
+          fromColumn: def.fromColumn,
+          toTable: def.toTable,
+          toColumn: def.toColumn,
+          isActive: true,
+          crossFilteringBehavior: def.crossFilteringBehavior === 'both' ? 'both' : 'single',
+          cardinality: 'manyToOne',
+        });
+        return { ok: true };
+      },
+      async updateRelationship() {
+        throw new Error('no relationship repair should be needed in this fixture');
+      },
+    } as unknown as Parameters<typeof setModelDriverForTests>[0]);
+
+    const result = await withClient((client) =>
+      client.callTool({
+        name: 'pbi_model_apply_star_schema_join',
+        arguments: {
+          leftTable: 'FactLeft',
+          rightTable: 'FactRight',
+          axes: ['SharedCode'],
+        },
+      }),
+    );
+
+    const payload = jsonPayload(result);
+    expect(result.isError).not.toBe(true);
+    expect(payload.applied).toBe(true);
+    expect(payload.completionStatus).toBe('shared-dimensions-applied-date-axis-incomplete');
+    expect(payload.dateAxisRequirement).toMatchObject({
+      status: 'governed-date-table-required',
+      suggestedTool: 'pbi_date_table_create_governed',
+      temporalAxes: ['TxnDate'],
+      dateRefs: [
+        { tableName: 'FactLeft', dateColumn: 'TxnDate' },
+        { tableName: 'FactRight', dateColumn: 'TxnDate' },
+      ],
+    });
+    expect(operationLog).toContain('create-table:SharedCode');
+    expect(operationLog).toContain('create-relationship:FactLeft.SharedCode');
+    expect(operationLog).toContain('create-relationship:FactRight.SharedCode');
   });
 
   it('batch-applies planner-backed relationship repairs by proven relationship id', async () => {

@@ -86,6 +86,72 @@ describe('checkRelationships', () => {
     expect(findings.find((f) => /Key data types differ/.test(f.message))).toBeFalsy();
   });
 
+  it('treats live PascalCase type casing as compatible', () => {
+    const model: TMDLModel = {
+      modelPath: '/',
+      tables: [tbl('A', [col('A', 'k', 'String')]), tbl('B', [col('B', 'k', 'string')])],
+      relationships: [
+        {
+          id: 'r1',
+          fromTable: 'A',
+          fromColumn: 'k',
+          toTable: 'B',
+          toColumn: 'k',
+          isActive: true,
+          crossFilteringBehavior: 'single',
+        },
+      ],
+    };
+
+    const findings = checkRelationships(model);
+
+    expect(findings.find((f) => /Key data types differ/.test(f.message))).toBeFalsy();
+  });
+
+  it('treats live PascalCase temporal families as compatible', () => {
+    const model: TMDLModel = {
+      modelPath: '/',
+      tables: [tbl('A', [col('A', 'k', 'DateTime')]), tbl('B', [col('B', 'k', 'date')])],
+      relationships: [
+        {
+          id: 'r1',
+          fromTable: 'A',
+          fromColumn: 'k',
+          toTable: 'B',
+          toColumn: 'k',
+          isActive: true,
+          crossFilteringBehavior: 'single',
+        },
+      ],
+    };
+
+    const findings = checkRelationships(model);
+
+    expect(findings.find((f) => /Key data types differ/.test(f.message))).toBeFalsy();
+  });
+
+  it('treats live PascalCase numeric families as compatible', () => {
+    const model: TMDLModel = {
+      modelPath: '/',
+      tables: [tbl('A', [col('A', 'k', 'Int64')]), tbl('B', [col('B', 'k', 'Decimal')])],
+      relationships: [
+        {
+          id: 'r1',
+          fromTable: 'A',
+          fromColumn: 'k',
+          toTable: 'B',
+          toColumn: 'k',
+          isActive: true,
+          crossFilteringBehavior: 'single',
+        },
+      ],
+    };
+
+    const findings = checkRelationships(model);
+
+    expect(findings.find((f) => /Key data types differ/.test(f.message))).toBeFalsy();
+  });
+
   it('flags multiple active relationships between same pair', () => {
     const model: TMDLModel = {
       modelPath: '/',

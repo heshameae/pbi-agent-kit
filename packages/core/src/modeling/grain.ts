@@ -1,7 +1,8 @@
+import { isNumericType, isTemporalType } from './data-types.js';
 import type { BridgeAnalysis, GrainReport, TMDLColumn, TMDLModel, TMDLTable } from './types.js';
 
 export function isDateLikeColumn(column: TMDLColumn): boolean {
-  if (column.dataType === 'dateTime' || column.dataType === 'date') return true;
+  if (isTemporalType(column.dataType)) return true;
   return /(^|\s)(date|year|month|quarter|week|day)(\s|$)/i.test(column.name);
 }
 
@@ -18,11 +19,7 @@ export function dimColumnsOf(table: TMDLTable): ReadonlyArray<TMDLColumn> {
 
 function isAggregatedNumericColumn(column: TMDLColumn): boolean {
   if (column.summarizeBy && column.summarizeBy !== 'none') {
-    if (
-      column.dataType === 'int64' ||
-      column.dataType === 'decimal' ||
-      column.dataType === 'double'
-    ) {
+    if (isNumericType(column.dataType)) {
       return true;
     }
   }

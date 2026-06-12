@@ -1505,6 +1505,61 @@ describe('ModelDriver writes', () => {
     });
   });
 
+  it('markAsDateTable tolerates Import-mode isKey rejection after table Time category is set', async () => {
+    const client = liveClient();
+    const originalCallTool = client.callTool.bind(client);
+    client.callTool = async (name, args) => {
+      const op = (args as { request?: { operation?: string } }).request?.operation;
+      if (name === 'column_operations' && op === 'Update') {
+        client.calls.push({ name, args: args as Record<string, unknown> });
+        throw new Error('Setting IsKey property is only supported for DirectQuery mode tables.');
+      }
+      return originalCallTool(name, args);
+    };
+    const driver = new ModelDriver(client);
+
+    const result = await driver.markAsDateTable('Date', 'TheDate');
+
+    expect(result).toMatchObject({
+      marked: true,
+      columnKeySkipped: true,
+      columnKeyWarning: 'Setting IsKey property is only supported for DirectQuery mode tables.',
+    });
+    const tableUpdate = client.calls.find((c) => c.name === 'table_operations');
+    const columnUpdate = client.calls.find((c) => c.name === 'column_operations');
+    expect(tableUpdate?.args).toEqual({
+      request: { operation: 'Update', definitions: [{ name: 'Date', dataCategory: 'Time' }] },
+    });
+    expect(columnUpdate?.args).toEqual({
+      request: {
+        operation: 'Update',
+        definitions: [{ tableName: 'Date', name: 'TheDate', isKey: true }],
+      },
+    });
+  });
+
+  it('markAsDateTable tolerates alternate Import-mode isKey rejection wording', async () => {
+    const client = liveClient();
+    const originalCallTool = client.callTool.bind(client);
+    client.callTool = async (name, args) => {
+      const op = (args as { request?: { operation?: string } }).request?.operation;
+      if (name === 'column_operations' && op === 'Update') {
+        client.calls.push({ name, args: args as Record<string, unknown> });
+        throw new Error('Column property isKey is not valid for Import mode tables.');
+      }
+      return originalCallTool(name, args);
+    };
+    const driver = new ModelDriver(client);
+
+    const result = await driver.markAsDateTable('Date', 'TheDate');
+
+    expect(result).toMatchObject({
+      marked: true,
+      columnKeySkipped: true,
+      columnKeyWarning: 'Column property isKey is not valid for Import mode tables.',
+    });
+  });
+
   it('deleteColumn sends references + shouldCascadeDelete:false', async () => {
     const client = liveClient();
     const driver = new ModelDriver(client);
@@ -2086,6 +2141,202 @@ describe('ModelDriver.daxQuery', () => {
     expect(result.rowCount).toBe(1);
   });
 
+  it('prefers content-text DAX rows over a bare structured success envelope', async () => {
+    process.env[PIN] = 'Data Source=localhost:1;';
+    const envelope = {
+      success: true,
+      data: {
+        columns: [{ name: '[__table]' }, { name: '[rowCount]' }],
+        rows: [['Actual', 100]],
+        rowCount: 1,
+      },
+    };
+    const client = makeClient({
+      'dax_query_operations/Execute': {
+        structuredContent: { success: true },
+        content: [{ type: 'text', text: JSON.stringify(envelope) }],
+      },
+    });
+    const driver = new ModelDriver(client);
+    const result = (await driver.daxQuery('EVALUATE x')) as Record<string, unknown>;
+    expect(result.rows).toEqual([{ '[__table]': 'Actual', '[rowCount]': 100 }]);
+    expect(result.rowCount).toBe(1);
+  });
+
+  it('unwraps nested MCP text content before falling back to a bare structured success envelope', async () => {
+    process.env[PIN] = 'Data Source=localhost:1;';
+    const envelope = {
+      success: true,
+      data: {
+        columns: [{ name: '[__table]' }, { name: '[rowCount]' }],
+        rows: [['Actual', 100]],
+        rowCount: 1,
+      },
+    };
+    const client = makeClient({
+      'dax_query_operations/Execute': {
+        structuredContent: { success: true },
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              content: [{ type: 'text', text: JSON.stringify(envelope) }],
+            }),
+          },
+        ],
+      },
+    });
+    const driver = new ModelDriver(client);
+    const result = (await driver.daxQuery('EVALUATE x')) as Record<string, unknown>;
+    expect(result.rows).toEqual([{ '[__table]': 'Actual', '[rowCount]': 100 }]);
+    expect(result.rowCount).toBe(1);
+  });
+
+  it('prefers later tabular DAX text over an earlier plain text acknowledgement', async () => {
+    process.env[PIN] = 'Data Source=localhost:1;';
+    const envelope = {
+      success: true,
+      data: {
+        columns: [{ name: '[__table]' }, { name: '[rowCount]' }],
+        rows: [['Actual', 100]],
+        rowCount: 1,
+      },
+    };
+    const client = makeClient({
+      'dax_query_operations/Execute': {
+        structuredContent: { success: true },
+        content: [
+          { type: 'text', text: 'DAX Execute succeeded.' },
+          { type: 'text', text: JSON.stringify(envelope) },
+        ],
+      },
+    });
+    const driver = new ModelDriver(client);
+    const result = (await driver.daxQuery('EVALUATE x')) as Record<string, unknown>;
+    expect(result.rows).toEqual([{ '[__table]': 'Actual', '[rowCount]': 100 }]);
+    expect(result.rowCount).toBe(1);
+  });
+
+  it('reads DAX rows from CSV resources when text content is only a success acknowledgement', async () => {
+    process.env[PIN] = 'Data Source=localhost:1;';
+    const client = makeClient({
+      'dax_query_operations/Execute': {
+        content: [
+          { type: 'text', text: JSON.stringify({ success: true }) },
+          {
+            type: 'resource',
+            resource: {
+              uri: 'file:///tmp/dax.csv',
+              mimeType: 'text/csv',
+              text: '[__table],[rowCount]\r\nActual,100\r\n',
+            },
+          },
+        ],
+      },
+    });
+    const driver = new ModelDriver(client);
+    const result = (await driver.daxQuery('EVALUATE x')) as Record<string, unknown>;
+    expect(result.rows).toEqual([{ '[__table]': 'Actual', '[rowCount]': '100' }]);
+    expect(result.rowCount).toBe(1);
+  });
+
+  it('does not attach raw diagnostics to ad-hoc empty DAX results by default', async () => {
+    process.env[PIN] = 'Data Source=localhost:1;';
+    const envelope = {
+      success: true,
+      data: {
+        columns: [{ name: '[__table]' }, { name: '[rowCount]' }],
+        rows: [],
+        rowCount: 0,
+      },
+    };
+    const client = makeClient({
+      'dax_query_operations/Execute': {
+        content: [{ type: 'text', text: JSON.stringify(envelope) }],
+      },
+    });
+    const driver = new ModelDriver(client);
+    const result = (await driver.daxQuery('EVALUATE SecretTable')) as Record<string, unknown>;
+    expect(result).toMatchObject({
+      columns: ['[__table]', '[rowCount]'],
+      rows: [],
+      rowCount: 0,
+    });
+    expect(result.rawDiagnostics).toBeUndefined();
+  });
+
+  it('attaches structure-only raw diagnostics for proof callers when DAX normalizes empty', async () => {
+    process.env[PIN] = 'Data Source=localhost:1;';
+    const envelope = {
+      success: true,
+      operation: 'Execute',
+      message: 'Data Source=localhost:1; secret should not leak',
+      data: {
+        columns: [{ name: '[__table]', dataType: 'String' }, { name: '[rowCount]' }],
+        rows: [],
+        rowCount: 0,
+      },
+    };
+    const client = makeClient({
+      'dax_query_operations/Execute': {
+        content: [{ type: 'text', text: JSON.stringify(envelope) }],
+      },
+    });
+    const driver = new ModelDriver(client);
+    const result = (await driver.daxQuery('EVALUATE SecretTable', undefined, {
+      includeRawDiagnostics: true,
+    })) as Record<string, unknown>;
+    expect(result).toMatchObject({
+      columns: ['[__table]', '[rowCount]'],
+      rows: [],
+      rowCount: 0,
+    });
+    expect(result.rawDiagnostics).toMatchObject({
+      source: 'content[0].text',
+      payloadType: 'object',
+      topLevelKeys: expect.arrayContaining(['success', 'operation', 'message', 'data']),
+      shape: {
+        node0: { path: '$', type: 'object' },
+        node1: { path: '$.data', type: 'object' },
+      },
+    });
+    const serialized = JSON.stringify(result.rawDiagnostics);
+    expect(serialized).not.toContain('localhost:1');
+    expect(serialized).not.toContain('SecretTable');
+    expect(serialized).not.toContain('secret should not leak');
+  });
+
+  it('uses content-text as the diagnostic source when structured DAX output is success-only', async () => {
+    process.env[PIN] = 'Data Source=localhost:1;';
+    const envelope = {
+      success: true,
+      data: {
+        columns: [{ name: '[__table]' }, { name: '[rowCount]' }],
+        rows: [],
+        rowCount: 0,
+      },
+    };
+    const client = makeClient({
+      'dax_query_operations/Execute': {
+        structuredContent: { success: true },
+        content: [{ type: 'text', text: JSON.stringify(envelope) }],
+      },
+    });
+    const driver = new ModelDriver(client);
+    const result = (await driver.daxQuery('EVALUATE x', undefined, {
+      includeRawDiagnostics: true,
+    })) as Record<string, unknown>;
+    expect(result.rawDiagnostics).toMatchObject({
+      source: 'content[0].text',
+      payloadType: 'object',
+      topLevelKeys: expect.arrayContaining(['success', 'data']),
+      shape: {
+        node0: { path: '$', type: 'object' },
+        node1: { path: '$.data', type: 'object' },
+      },
+    });
+  });
+
   it('rejects when the engine returns a success:false envelope without isError', async () => {
     process.env[PIN] = 'Data Source=localhost:1;';
     const envelope = { success: false, message: 'Query (1, 1) The syntax is incorrect.' };
@@ -2127,9 +2378,9 @@ describe('ModelDriver write retry safety', () => {
 
     const driver = new ModelDriver(client);
 
-    await expect(driver.createTable({ name: 'Generated', expression: 'ROW("X", 1)' })).rejects.toThrow(
-      /write result unknown/i,
-    );
+    await expect(
+      driver.createTable({ name: 'Generated', expression: 'ROW("X", 1)' }),
+    ).rejects.toThrow(/write result unknown/i);
     expect(createCalls).toBe(1);
   });
 });

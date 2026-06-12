@@ -1,3 +1,4 @@
+import { isNumericType, isTemporalType, normalizeDataType } from './data-types.js';
 import { classifyTable } from './fact-classifier.js';
 import {
   type RelationshipReason,
@@ -170,12 +171,11 @@ const ALLOWED_SHARED_AXIS_DATA_TYPES = new Set([
   'string',
   'date',
   'datetime',
+  'datetimezone',
   'int64',
   'decimal',
   'double',
 ]);
-
-const NUMERIC_SHARED_AXIS_DATA_TYPES = new Set(['int64', 'decimal', 'double']);
 
 export function planStarSchemaSharedDimensions(
   model: TMDLModel,
@@ -415,23 +415,16 @@ function isTemporalSharedAxis(leftColumn: TMDLColumn, rightColumn: TMDLColumn): 
 }
 
 function isTemporalSharedAxisColumn(column: TMDLColumn): boolean {
-  return (
-    ['date', 'datetime'].includes(normalizeDataType(column.dataType)) ||
-    (column.dataCategory ?? '').toLowerCase() === 'time'
-  );
+  return isTemporalType(column.dataType) || (column.dataCategory ?? '').toLowerCase() === 'time';
 }
 
 function isMeasureLikeColumn(column: TMDLColumn): boolean {
   return (
-    NUMERIC_SHARED_AXIS_DATA_TYPES.has(normalizeDataType(column.dataType)) &&
+    isNumericType(column.dataType) &&
     !looksLikeKeyName(column.name) &&
     !column.isKey &&
     column.summarizeBy?.toLowerCase() !== 'none'
   );
-}
-
-function normalizeDataType(dataType: string): string {
-  return dataType.trim().toLowerCase();
 }
 
 // Structural key/identifier signal mirrored from MOD014; dataset-agnostic.

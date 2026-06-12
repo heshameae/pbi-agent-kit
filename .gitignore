@@ -3,6 +3,8 @@ dist/
 coverage/
 *.log
 *.tsbuildinfo
+*.ppt
+*.pptx
 .DS_Store
 .vitest-cache/
 .turbo/

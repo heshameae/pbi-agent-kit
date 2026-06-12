@@ -39,7 +39,7 @@ describe('guard-modeling-beta-scope classification', () => {
   });
 
   // REGRESSION: each of these skill/agent names was previously UNGUARDED. They
-  // correspond to skills physically relocated to skills-report/ (and the
+  // correspond to skills physically relocated to archive/skills/ (and the
   // dev-only lineage-analysis under skills-internal/), but they must still be
   // refused by NAME as defense-in-depth so a stale Skill call cannot reach a
   // report-authoring surface even though those skills are no longer
@@ -49,8 +49,12 @@ describe('guard-modeling-beta-scope classification', () => {
       'pbi-mcp-ts:pbi-bookmarks',
       'pbi-mcp-ts:pbi-status',
       'pbi-mcp-ts:pbi-validate',
+      'pbi-mcp-ts:pbi-scaffold',
+      'pbi-mcp-ts:pbi-scaffold-kpi-grid',
       'pbi-mcp-ts:reviewing-reports',
       'pbi-mcp-ts:lineage-analysis',
+      'pbi-mcp-ts:pbi-designer',
+      'pbi-mcp-ts:pbi-report-validator',
     ]) {
       const result = runScopePayload({
         hook_event_name: 'PreToolUse',

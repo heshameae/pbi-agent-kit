@@ -1,5 +1,6 @@
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
+import { isNumericType } from './data-types.js';
 import { parseTMDLFolder } from './tmdl-parser.js';
 import type { TMDLColumn, TMDLMeasure, TMDLModel, TMDLRelationship } from './types.js';
 
@@ -374,7 +375,7 @@ function parseTreatasPairs(expression: string): TreatasPair[] {
 }
 
 function isNumericDataType(dataType: string): boolean {
-  return ['int64', 'decimal', 'double'].includes(dataType);
+  return isNumericType(dataType);
 }
 
 function unique(values: readonly string[]): string[] {

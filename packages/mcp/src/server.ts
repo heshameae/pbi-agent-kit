@@ -48,11 +48,14 @@ import {
   formatBackgroundMeasure,
   formatClear,
   formatGet,
+  isNumericType,
+  isTemporalType,
   layoutColumn,
   layoutGrid,
   layoutRow,
   modelDoctor,
   modelDoctorFromFolder,
+  normalizeDataType,
   pageAdd,
   pageDelete,
   pageGet,
@@ -368,17 +371,47 @@ const FUTURE_HORIZON_DAYS_FIELD = z
   .describe('Explicit allowed days beyond observed fact max dates. Defaults to 0; maximum 3660.');
 const DATE_PROOF_FORBIDDEN_FALLBACK_TOOLS = [
   'pbi_dax_query',
+  'pbi_model_refresh',
   'pbi_table_create',
+  'pbi_table_update',
   'pbi_table_mark_as_date',
+  'pbi_column_create',
+  'pbi_column_update',
+  'pbi_relationship_create',
+  'pbi_relationship_update',
+  'pbi_relationship_activate',
 ] as const;
 const DATE_PROOF_BLOCKED_NEXT_STEP =
-  'Report this structured Date-proof blocker and stop before any Date write. If the user explicitly approves processing/import refresh, rerun pbi_date_table_create_governed with refreshBeforeProbe:true; do not run manual DAX probes or primitive Date writes as a fallback.';
+  'Report this structured Date-proof blocker and stop before any Date write. If the user explicitly approves processing/import refresh, rerun pbi_date_table_create_governed with refreshBeforeProbe:true; do not call pbi_model_refresh directly, do not retry with probeData:false, do not run manual DAX probes, and do not use primitive Date writes as a fallback. If the blocker is proof-parse-shape-unrecognized or probeStatus.status is parse-shape-unrecognized/evidenceRows:0 from a ROW()-based proof, treat it as a tool/parse defect: report it verbatim and stop; do not claim the model is empty and do not use pbi_dax_query, pbi_model_refresh, manual DAX, probeData:false, or primitive Date/relationship writes.';
+const DATE_PROOF_PARSE_SHAPE_RATIONALE =
+  'A ROW()-based Date proof is constructed to emit at least one tabular row for each expected proof row even when source tables are empty; zero parsed evidence indicates an unrecognized or lost tool/host result shape, not an empty model.';
+const DATE_PROOF_PARSE_SHAPE_MESSAGE =
+  'Date proof returned zero parsed evidence from a generated ROW()-based query. This is a tool/parse defect to report, not evidence that the model is empty; stop before Date writes and do not run alternate diagnostics as a workaround.';
 
 function dateProofBlockedGuidance(): Record<string, unknown> {
   return {
     blockedAction: 'stop-before-date-write',
     nextStep: DATE_PROOF_BLOCKED_NEXT_STEP,
     forbiddenFallbackTools: [...DATE_PROOF_FORBIDDEN_FALLBACK_TOOLS],
+    forbiddenFallbackInputs: ['probeData:false'],
+  };
+}
+
+function dateProofParseShapeGuidance(): Record<string, unknown> {
+  return {
+    blockedAction: 'stop-before-date-write',
+    nextStep:
+      'Report the structured proof-parse-shape-unrecognized blocker verbatim and STOP. This is a Date-proof tool/parse defect, not evidence that the model is empty; do not run pbi_dax_query or pbi_model_refresh, do not retry with probeData:false, do not request model processing or Desktop restart, and do not use manual DAX or primitive Date/relationship writes as a workaround.',
+    forbiddenFallbackTools: [...DATE_PROOF_FORBIDDEN_FALLBACK_TOOLS],
+    forbiddenFallbackModes: [
+      'manual DAX',
+      'probeData:false',
+      'model processing',
+      'Desktop restart',
+      'primitive Date writes',
+      'primitive relationship writes',
+    ],
+    forbiddenFallbackInputs: ['probeData:false'],
   };
 }
 
@@ -1303,7 +1336,12 @@ function planStarSchemaJoin(model: TMDLModel, opts: StarSchemaJoinPlannerOptions
   const plan = planStarSchemaSharedDimensions(model, opts.leftTable, opts.rightTable, {
     axes: opts.axes,
   });
-  return normalizeStarSchemaPlan(plan);
+  const normalized = normalizeStarSchemaPlan(plan);
+  const dateAxisRequirement = sharedTemporalDateAxisRequirement(model, opts);
+  return {
+    ...normalized,
+    ...(dateAxisRequirement ? { dateAxisRequirement } : {}),
+  };
 }
 
 function dedupeStrings(values: ReadonlyArray<string>): string[] {
@@ -1410,7 +1448,7 @@ function dedupeDateRefs(
   return out;
 }
 
-function discoverActualsTargetsDateRefs(
+function discoverDateRefsForTables(
   input: Pick<ActualsTargetsJoinPlannerInput, 'leftTable' | 'rightTable'>,
   temporalAxes: ReadonlyArray<string>,
 ): Array<{ readonly tableName: string; readonly dateColumn: string }> {
@@ -1430,6 +1468,120 @@ function actualsTargetsRemainingBusinessQuestions(): ReadonlyArray<Record<string
         'Date grain and shared axes are observable from metadata/proof; allocation, carry-forward, blank/zero handling, and missing-target behavior are business policy.',
     },
   ];
+}
+
+const GOVERNED_DATE_AXIS_REQUIRED_REASON =
+  'Cross-fact modeling with temporal axes requires one governed Date table shared by every participating fact. Auto LocalDateTable relationships are per-column implementation details and do not provide a conformed report axis.';
+
+function governedDateAxisRequirement(
+  model: TMDLModel,
+  input: {
+    readonly dateRefs: ReadonlyArray<{ readonly tableName: string; readonly dateColumn: string }>;
+    readonly temporalAxes?: ReadonlyArray<string>;
+    readonly effectiveDateEndpoint?: {
+      readonly dateTable: string;
+      readonly dateColumn: string;
+      readonly source: string;
+    };
+  },
+): Record<string, unknown> | undefined {
+  const dateRefs = dedupeDateRefs(input.dateRefs);
+  if (dateRefs.length === 0) return undefined;
+  const temporalAxes = dedupeStrings(input.temporalAxes ?? []);
+  const inferredEndpoint =
+    input.effectiveDateEndpoint === undefined
+      ? inferCommonGovernedDateEndpoint(model, dateRefs)
+      : undefined;
+  const endpoint =
+    input.effectiveDateEndpoint ??
+    (inferredEndpoint
+      ? {
+          ...inferredEndpoint,
+          source: 'existing-governed-relationships',
+        }
+      : undefined);
+
+  if (endpoint) {
+    return {
+      status: 'governed-date-table-present',
+      dateTable: endpoint.dateTable,
+      dateColumn: endpoint.dateColumn,
+      source: endpoint.source,
+      ...(temporalAxes.length > 0 ? { temporalAxes } : {}),
+      dateRefs,
+    };
+  }
+
+  return {
+    status: 'governed-date-table-required',
+    reason: GOVERNED_DATE_AXIS_REQUIRED_REASON,
+    suggestedTool: 'pbi_date_table_create_governed',
+    suggestedPlanTools: ['pbi_model_plan_date_table', 'pbi_model_plan_date_grain'],
+    ...(temporalAxes.length > 0 ? { temporalAxes } : {}),
+    dateRefs,
+  };
+}
+
+function sharedTemporalDateAxisRequirement(
+  model: TMDLModel,
+  input: Pick<StarSchemaJoinPlannerOptions, 'leftTable' | 'rightTable' | 'axes'>,
+): Record<string, unknown> | undefined {
+  const axisRouting = routeActualsTargetsAxes(model, input);
+  const temporalAxes =
+    axisRouting.temporalAxes.length > 0 ? axisRouting.temporalAxes : axisRouting.sharedTemporalAxes;
+  if (temporalAxes.length === 0) return undefined;
+  return governedDateAxisRequirement(model, {
+    temporalAxes,
+    dateRefs: discoverDateRefsForTables(input, temporalAxes),
+  });
+}
+
+function relationshipDateEndpointForFactRef(
+  relationship: TMDLRelationship,
+  ref: { readonly tableName: string; readonly dateColumn: string },
+): { readonly tableName: string; readonly dateColumn: string } | undefined {
+  if (relationship.fromTable === ref.tableName && relationship.fromColumn === ref.dateColumn) {
+    return { tableName: relationship.toTable, dateColumn: relationship.toColumn };
+  }
+  if (relationship.toTable === ref.tableName && relationship.toColumn === ref.dateColumn) {
+    return { tableName: relationship.fromTable, dateColumn: relationship.fromColumn };
+  }
+  return undefined;
+}
+
+function inferCommonGovernedDateEndpoint(
+  model: TMDLModel,
+  dateRefs: ReadonlyArray<{ readonly tableName: string; readonly dateColumn: string }>,
+): { readonly dateTable: string; readonly dateColumn: string } | undefined {
+  let commonEndpoint: { readonly dateTable: string; readonly dateColumn: string } | undefined;
+  for (const ref of dateRefs) {
+    const endpoints = dedupeDateRefs(
+      model.relationships
+        .filter((relationship) => relationship.isActive === true)
+        .map((relationship) => relationshipDateEndpointForFactRef(relationship, ref))
+        .filter((endpoint): endpoint is { tableName: string; dateColumn: string } => {
+          if (!endpoint) return false;
+          return looksLikeGovernedDateEndpoint(model, endpoint.tableName, endpoint.dateColumn);
+        }),
+    );
+    if (endpoints.length !== 1) return undefined;
+    const endpoint = endpoints[0];
+    if (!endpoint) return undefined;
+    if (!commonEndpoint) {
+      commonEndpoint = {
+        dateTable: endpoint.tableName,
+        dateColumn: endpoint.dateColumn,
+      };
+      continue;
+    }
+    if (
+      commonEndpoint.dateTable !== endpoint.tableName ||
+      commonEndpoint.dateColumn !== endpoint.dateColumn
+    ) {
+      return undefined;
+    }
+  }
+  return commonEndpoint;
 }
 
 function sourceBlockers(source: string, blockers: ReadonlyArray<Record<string, unknown>>) {
@@ -1460,12 +1612,35 @@ async function planActualsTargetsJoin(
   const dateRefs =
     input.dateRefs && input.dateRefs.length > 0
       ? dedupeDateRefs(input.dateRefs)
-      : discoverActualsTargetsDateRefs(
+      : discoverDateRefsForTables(
           input,
           axisRouting.temporalAxes.length > 0
             ? axisRouting.temporalAxes
             : axisRouting.sharedTemporalAxes,
         );
+  const explicitDateEndpoint =
+    input.dateTable && input.dateColumn
+      ? {
+          dateTable: input.dateTable,
+          dateColumn: input.dateColumn,
+          source: 'input' as const,
+        }
+      : undefined;
+  const partialDateEndpointSupplied =
+    (input.dateTable !== undefined && input.dateColumn === undefined) ||
+    (input.dateTable === undefined && input.dateColumn !== undefined);
+  const inferredDateEndpoint =
+    explicitDateEndpoint === undefined && dateRefs.length > 0
+      ? inferCommonGovernedDateEndpoint(model, dateRefs)
+      : undefined;
+  const effectiveDateEndpoint =
+    explicitDateEndpoint ??
+    (inferredDateEndpoint
+      ? {
+          ...inferredDateEndpoint,
+          source: 'existing-governed-relationships' as const,
+        }
+      : undefined);
   const starBlockers = records(starSchemaPlan.blockers);
   const requiredInputs: Record<string, unknown>[] = [];
   let dateGrainPlan: Record<string, unknown> = {
@@ -1491,10 +1666,26 @@ async function planActualsTargetsJoin(
         'The model metadata did not expose a same-name temporal column on both tables. This is a date role selection, not a grain question.',
     });
   } else {
+    if (partialDateEndpointSupplied) {
+      requiredInputs.push({
+        topic: 'governed-date-table',
+        reason:
+          'Both dateTable and dateColumn are required to validate a governed shared Date axis for actuals/targets joins.',
+        dateTable: input.dateTable,
+        dateColumn: input.dateColumn,
+      });
+    } else if (!effectiveDateEndpoint) {
+      requiredInputs.push({
+        topic: 'governed-date-table',
+        reason: GOVERNED_DATE_AXIS_REQUIRED_REASON,
+        suggestedTool: 'pbi_date_table_create_governed',
+        dateRefs,
+      });
+    }
     const datePayload = await planDateGrainForRead({
       facts: dateRefs,
-      dateTable: input.dateTable,
-      dateColumn: input.dateColumn,
+      dateTable: effectiveDateEndpoint?.dateTable,
+      dateColumn: effectiveDateEndpoint?.dateColumn,
       futureHorizonDays: input.futureHorizonDays,
       probeData: input.probeData,
       folderPath: input.folderPath,
@@ -1524,9 +1715,27 @@ async function planActualsTargetsJoin(
   }
 
   const dateBlockers = records(dateGrainPlan.blockers);
+  const dateTableCoverage = isRecord(dateGrainPlan.dateTableCoverage)
+    ? dateGrainPlan.dateTableCoverage
+    : undefined;
+  const rawDateTableCoverageBlockers = dateTableCoverage ? records(dateTableCoverage.blockers) : [];
+  const dateTableCoverageBlockers =
+    dateTableCoverage && dateTableCoverage.status !== 'valid'
+      ? rawDateTableCoverageBlockers.length > 0
+        ? rawDateTableCoverageBlockers
+        : [
+            {
+              code: 'date-table-coverage-not-valid',
+              status: dateTableCoverage.status,
+              message:
+                'The governed Date table coverage proof did not return valid coverage for the actuals/targets date refs.',
+            },
+          ]
+      : [];
   const blockers = [
     ...sourceBlockers('star-schema', starBlockers),
     ...sourceBlockers('date-grain', dateBlockers),
+    ...sourceBlockers('date-table', dateTableCoverageBlockers),
   ];
   const probeStatus = isRecord(dateGrainPlan.probeStatus) ? dateGrainPlan.probeStatus : {};
   const status =
@@ -1549,6 +1758,26 @@ async function planActualsTargetsJoin(
         ? axisRouting.temporalAxes
         : axisRouting.sharedTemporalAxes,
     dateRefs,
+    ...(dateRefs.length > 0
+      ? {
+          dateAxisRequirement: effectiveDateEndpoint
+            ? governedDateAxisRequirement(model, {
+                dateRefs,
+                temporalAxes:
+                  axisRouting.temporalAxes.length > 0
+                    ? axisRouting.temporalAxes
+                    : axisRouting.sharedTemporalAxes,
+                effectiveDateEndpoint,
+              })
+            : governedDateAxisRequirement(model, {
+                dateRefs,
+                temporalAxes:
+                  axisRouting.temporalAxes.length > 0
+                    ? axisRouting.temporalAxes
+                    : axisRouting.sharedTemporalAxes,
+              }),
+        }
+      : {}),
     starSchemaPlan,
     dateGrainPlan,
     remainingBusinessQuestions: actualsTargetsRemainingBusinessQuestions(),
@@ -1559,6 +1788,19 @@ async function planActualsTargetsJoin(
 
 function records(value: unknown): Record<string, unknown>[] {
   return Array.isArray(value) ? value.filter(isRecord) : [];
+}
+
+function dateAxisRequirementFromPlan(
+  plan: Record<string, unknown>,
+): Record<string, unknown> | undefined {
+  return isRecord(plan.dateAxisRequirement) ? plan.dateAxisRequirement : undefined;
+}
+
+function unresolvedDateAxisRequirement(
+  plan: Record<string, unknown>,
+): Record<string, unknown> | undefined {
+  const requirement = dateAxisRequirementFromPlan(plan);
+  return requirement?.status === 'governed-date-table-required' ? requirement : undefined;
 }
 
 function stringField(record: Record<string, unknown>, key: string): string | undefined {
@@ -1727,6 +1969,7 @@ function plannedStarSchemaOperations(
       action: 'configure-dimension-key',
       tableName: write.tableName,
       columnName: write.name,
+      ...(write.dataType !== undefined ? { dataType: write.dataType } : {}),
     })),
     ...repairWrites.map((write) => ({
       action: 'repair-relationship',
@@ -1775,20 +2018,15 @@ function commonStarDimensionKeyDataType(
   rightDataType: string | undefined,
 ): string | undefined {
   if (!leftDataType || !rightDataType) return undefined;
-  const left = normalizeModelDataType(leftDataType);
-  const right = normalizeModelDataType(rightDataType);
+  const left = normalizeDataType(leftDataType);
+  const right = normalizeDataType(rightDataType);
   if (left === right) return leftDataType;
-  const numerics = new Set(['int64', 'decimal', 'double']);
-  if (numerics.has(left) && numerics.has(right)) {
+  if (isNumericType(left) && isNumericType(right)) {
     if (left === 'double' || right === 'double') return 'double';
     if (left === 'decimal' || right === 'decimal') return 'decimal';
     return 'int64';
   }
   return undefined;
-}
-
-function normalizeModelDataType(dataType: string): string {
-  return dataType.trim().toLowerCase();
 }
 
 function withDimensionKeyDataTypes(
@@ -1933,7 +2171,7 @@ function validateAppliedStarSchemaPlan(
         summarizeBy: column.summarizeBy,
       });
     }
-    if (!column.dataType || column.dataType === 'unknown') {
+    if (!column.dataType || normalizeDataType(column.dataType) === 'unknown') {
       failures.push({
         code: 'dimension-key-data-type-missing',
         tableName: write.tableName,
@@ -2352,6 +2590,8 @@ async function applyStarSchemaJoin(
     input.refreshAfterCreate !== false,
   );
 
+  const initialDateAxisRequirement = dateAxisRequirementFromPlan(plan);
+  const initialUnresolvedDateAxisRequirement = unresolvedDateAxisRequirement(plan);
   if (input.dryRun === true) {
     return {
       applied: false,
@@ -2359,6 +2599,10 @@ async function applyStarSchemaJoin(
       mode,
       plan,
       plannedOperations,
+      ...(initialDateAxisRequirement ? { dateAxisRequirement: initialDateAxisRequirement } : {}),
+      ...(initialUnresolvedDateAxisRequirement
+        ? { completionStatus: 'shared-dimensions-planned-date-axis-incomplete' }
+        : {}),
       persist: mode === 'live' ? LIVE_MODEL_PERSISTENCE : FOLDER_MODEL_PERSISTENCE,
     };
   }
@@ -2455,6 +2699,12 @@ async function applyStarSchemaJoin(
     rightTable: input.rightTable,
     axes: input.axes,
   })) as Record<string, unknown>;
+  const finalDateAxisRequirement =
+    dateAxisRequirementFromPlan(finalPlan) ?? initialDateAxisRequirement;
+  const finalUnresolvedDateAxisRequirement =
+    finalDateAxisRequirement?.status === 'governed-date-table-required'
+      ? finalDateAxisRequirement
+      : undefined;
   const validationFailures = [
     ...validateAppliedStarSchemaPlan(finalModel, plan),
     ...records(finalPlan.blockers).map((blocker) => ({
@@ -2487,6 +2737,10 @@ async function applyStarSchemaJoin(
       appliedStateFailures: [],
     },
     relationshipWarnings,
+    ...(finalDateAxisRequirement ? { dateAxisRequirement: finalDateAxisRequirement } : {}),
+    ...(finalUnresolvedDateAxisRequirement
+      ? { completionStatus: 'shared-dimensions-applied-date-axis-incomplete' }
+      : {}),
     ...(input.runModelCheck === true
       ? {
           modelCheck: modelDoctor(finalModel, {
@@ -2506,20 +2760,102 @@ async function applyStarSchemaJoin(
 // can always show WHAT came back (row count, columns, a sample row, file-paging)
 // instead of a silent empty. Bounded/structure-only — carries no secrets.
 function daxResultDiagnostics(raw: unknown): Record<string, unknown> {
+  const diagnosticRows = collectDaxDiagnosticRows(raw);
   if (raw !== null && typeof raw === 'object' && !Array.isArray(raw)) {
     const obj = raw as Record<string, unknown>;
-    const rows = Array.isArray(obj.rows) ? obj.rows : undefined;
+    const rowCount =
+      typeof obj.rowCount === 'number'
+        ? Math.max(obj.rowCount, diagnosticRows.length)
+        : diagnosticRows.length;
     return {
-      rowCount: typeof obj.rowCount === 'number' ? obj.rowCount : (rows?.length ?? 0),
+      rowCount,
       ...(Array.isArray(obj.columns) ? { columns: obj.columns } : {}),
-      ...(rows && rows.length > 0 ? { sampleRow: rows[0] } : {}),
+      ...(diagnosticRows.length > 0 ? { sampleRow: diagnosticRows[0] } : {}),
       ...(obj.wasTruncated === true ? { wasTruncated: true, filePath: obj.filePath ?? null } : {}),
+      ...(isRecord(obj.rawDiagnostics) ? { rawDiagnostics: obj.rawDiagnostics } : {}),
     };
   }
   if (Array.isArray(raw)) {
-    return { rowCount: raw.length, ...(raw.length > 0 ? { sampleRow: raw[0] } : {}) };
+    return {
+      rowCount: diagnosticRows.length,
+      ...(diagnosticRows.length > 0 ? { sampleRow: diagnosticRows[0] } : {}),
+    };
   }
   return { rowCount: 0, rawType: raw === null ? 'null' : typeof raw };
+}
+
+function diagnosticRowCount(diagnostics: Record<string, unknown>): number {
+  const rowCount = diagnostics.rowCount;
+  return typeof rowCount === 'number' && Number.isFinite(rowCount) ? rowCount : 0;
+}
+
+function collectDaxDiagnosticRows(payload: unknown, depth = 0): unknown[] {
+  if (depth > 8) return [];
+  if (Array.isArray(payload)) {
+    if (payload.every((item) => isDiagnosticRowRecord(item))) return payload;
+    return payload.flatMap((item) => collectDaxDiagnosticRows(item, depth + 1));
+  }
+  if (payload === null || typeof payload !== 'object') return [];
+
+  const record = payload as Record<string, unknown>;
+  if (Array.isArray(record.rows)) return record.rows;
+
+  for (const key of ['data', 'value', 'values', 'results', 'tables']) {
+    const rows = collectDaxDiagnosticRows(record[key], depth + 1);
+    if (rows.length > 0) return rows;
+  }
+  for (const [key, value] of Object.entries(record)) {
+    if (key === 'columns') continue;
+    const rows = collectDaxDiagnosticRows(value, depth + 1);
+    if (rows.length > 0) return rows;
+  }
+  return [];
+}
+
+function isDiagnosticRowRecord(value: unknown): boolean {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  return !['rows', 'data', 'value', 'values', 'results', 'tables'].some((key) => key in record);
+}
+
+function dateProofParseShapeStatus(
+  diagnostics: Record<string, unknown>,
+  parsedEvidenceRows: number,
+  expectedEvidenceRows = 0,
+): Record<string, unknown> | undefined {
+  if (parsedEvidenceRows > 0) return undefined;
+  if (diagnosticRowCount(diagnostics) === 0 && expectedEvidenceRows <= 0) return undefined;
+  return {
+    status: 'parse-shape-unrecognized',
+    reason: 'proof-parse-shape-unrecognized',
+    message: DATE_PROOF_PARSE_SHAPE_MESSAGE,
+    rationale: DATE_PROOF_PARSE_SHAPE_RATIONALE,
+    diagnostics,
+    ...dateProofParseShapeGuidance(),
+  };
+}
+
+function dateProofParseShapeBlockedPayload(
+  diagnostics: Record<string, unknown>,
+  parsedEvidenceRows: number,
+  expectedEvidenceRows = 0,
+): Record<string, unknown> | undefined {
+  if (parsedEvidenceRows > 0) return undefined;
+  if (diagnosticRowCount(diagnostics) === 0 && expectedEvidenceRows <= 0) return undefined;
+  return {
+    code: 'proof-parse-shape-unrecognized',
+    reason: 'proof-parse-shape-unrecognized',
+    message: DATE_PROOF_PARSE_SHAPE_MESSAGE,
+    rationale: DATE_PROOF_PARSE_SHAPE_RATIONALE,
+    probeDiagnostics: diagnostics,
+    ...dateProofParseShapeGuidance(),
+  };
+}
+
+function dateTableCoverageEvidenceRows(
+  evidence: ReturnType<typeof parseDateTableCoverageProbeResult>,
+): number {
+  return (evidence.dateTable ? 1 : 0) + evidence.facts.length;
 }
 
 async function planDateGrainForRead(
@@ -2562,16 +2898,24 @@ async function planDateGrainForRead(
     };
   } else if (shouldProbe && mode === 'live') {
     try {
-      const raw = await getModelDriver().daxQuery(query, connection);
+      const raw = await getModelDriver().daxQuery(query, connection, {
+        includeRawDiagnostics: true,
+      });
       evidence = parseDateGrainProbeResult(raw);
       if (coverageQuery) {
         coverageEvidence = parseDateTableCoverageProbeResult(raw);
       }
+      const diagnostics = daxResultDiagnostics(raw);
       const expectedEvidenceRows = input.facts.filter((fact) =>
         evidence.some(
           (row) => row.tableName === fact.tableName && row.dateColumn === fact.dateColumn,
         ),
       ).length;
+      const parseShapeStatus = dateProofParseShapeStatus(
+        diagnostics,
+        evidence.length,
+        eligibleFacts.length,
+      );
       probeStatus =
         expectedEvidenceRows === eligibleFacts.length
           ? {
@@ -2580,15 +2924,22 @@ async function planDateGrainForRead(
               expectedEvidenceRows: eligibleFacts.length,
               queriedFacts: eligibleFacts.length,
             }
-          : {
-              status: 'incomplete',
-              evidenceRows: evidence.length,
-              expectedEvidenceRows: eligibleFacts.length,
-              queriedFacts: eligibleFacts.length,
-              reason:
-                'The live DAX probe returned no parseable evidence for at least one requested fact date column.',
-              diagnostics: daxResultDiagnostics(raw),
-            };
+          : parseShapeStatus
+            ? {
+                ...parseShapeStatus,
+                evidenceRows: evidence.length,
+                expectedEvidenceRows: eligibleFacts.length,
+                queriedFacts: eligibleFacts.length,
+              }
+            : {
+                status: 'incomplete',
+                evidenceRows: evidence.length,
+                expectedEvidenceRows: eligibleFacts.length,
+                queriedFacts: eligibleFacts.length,
+                reason:
+                  'The live DAX probe returned no parseable evidence for at least one requested fact date column.',
+                diagnostics,
+              };
     } catch (err) {
       probeStatus = {
         status: 'failed',
@@ -2658,14 +3009,23 @@ async function planDateTableForRead(
     };
   } else if (shouldProbe && mode === 'live') {
     try {
-      const raw = await getModelDriver().daxQuery(query, connection);
+      const raw = await getModelDriver().daxQuery(query, connection, {
+        includeRawDiagnostics: true,
+      });
       evidence = parseDateTableCoverageProbeResult(raw);
+      const diagnostics = daxResultDiagnostics(raw);
       const factEvidenceRows = eligibleFacts.filter((fact) =>
         evidence.facts.some(
           (row) => row.tableName === fact.tableName && row.dateColumn === fact.dateColumn,
         ),
       ).length;
       const hasDateTableEvidence = evidence.dateTable !== undefined;
+      const parsedEvidenceRows = dateTableCoverageEvidenceRows(evidence);
+      const parseShapeStatus = dateProofParseShapeStatus(
+        diagnostics,
+        parsedEvidenceRows,
+        1 + eligibleFacts.length,
+      );
       probeStatus =
         hasDateTableEvidence && factEvidenceRows === eligibleFacts.length
           ? {
@@ -2674,13 +3034,21 @@ async function planDateTableForRead(
               expectedEvidenceRows: 1 + eligibleFacts.length,
               queriedFacts: eligibleFacts.length,
             }
-          : {
-              status: 'incomplete',
-              evidenceRows: (hasDateTableEvidence ? 1 : 0) + evidence.facts.length,
-              expectedEvidenceRows: 1 + eligibleFacts.length,
-              queriedFacts: eligibleFacts.length,
-              reason: 'The live DAX probe returned incomplete date-table coverage evidence.',
-            };
+          : parseShapeStatus
+            ? {
+                ...parseShapeStatus,
+                evidenceRows: parsedEvidenceRows,
+                expectedEvidenceRows: 1 + eligibleFacts.length,
+                queriedFacts: eligibleFacts.length,
+              }
+            : {
+                status: 'incomplete',
+                evidenceRows: parsedEvidenceRows,
+                expectedEvidenceRows: 1 + eligibleFacts.length,
+                queriedFacts: eligibleFacts.length,
+                reason: 'The live DAX probe returned incomplete date-table coverage evidence.',
+                diagnostics,
+              };
     } catch (err) {
       probeStatus = {
         status: 'failed',
@@ -2849,7 +3217,7 @@ async function enforceGovernedDateCreateFactProof(
 
   let raw: unknown;
   try {
-    raw = await drv.daxQuery(query, connection);
+    raw = await drv.daxQuery(query, connection, { includeRawDiagnostics: true });
   } catch (err) {
     throwDateGateError('Governed Date table create refused: pre-create fact-date proof failed.', {
       gate: 'governed-date-table-create',
@@ -2862,6 +3230,7 @@ async function enforceGovernedDateCreateFactProof(
   }
 
   const evidence = parseDateGrainProbeResult(raw);
+  const diagnostics = daxResultDiagnostics(raw);
   const missingFacts = eligibleFacts.filter(
     (fact) =>
       !evidence.some(
@@ -2869,16 +3238,25 @@ async function enforceGovernedDateCreateFactProof(
       ),
   );
   if (missingFacts.length > 0) {
+    const parseShapeBlocker = dateProofParseShapeBlockedPayload(
+      diagnostics,
+      evidence.length,
+      eligibleFacts.length,
+    );
     throwDateGateError(
-      'Governed Date table create refused: pre-create fact-date proof was incomplete.',
+      parseShapeBlocker
+        ? 'Governed Date table create refused: pre-create fact-date proof result shape was not recognized.'
+        : 'Governed Date table create refused: pre-create fact-date proof was incomplete.',
       {
         gate: 'governed-date-table-create',
         status: 'blocked',
-        reason: 'fact-date-proof-missing',
+        reason: parseShapeBlocker ? 'proof-parse-shape-unrecognized' : 'fact-date-proof-missing',
         missingFacts,
         evidenceRows: evidence.length,
-        probeDiagnostics: daxResultDiagnostics(raw),
-        ...dateProofBlockedGuidance(),
+        ...(parseShapeBlocker ?? {
+          probeDiagnostics: diagnostics,
+          ...dateProofBlockedGuidance(),
+        }),
       },
     );
   }
@@ -3158,6 +3536,16 @@ async function createGovernedDateTable(
       input.tableName,
       expression,
     );
+    const activeDateRelationshipTables = new Set(
+      afterMarkWithSource.relationships
+        .filter(
+          (relationship) =>
+            relationship.isActive &&
+            relationship.toTable === input.tableName &&
+            relationship.toColumn === input.dateColumn,
+        )
+        .map((relationship) => relationship.fromTable),
+    );
     for (const fact of governedFacts) {
       const exists = afterMark.relationships.some(
         (relationship) =>
@@ -3167,12 +3555,13 @@ async function createGovernedDateTable(
           relationship.toColumn === input.dateColumn,
       );
       if (exists) continue;
+      const isActive = !activeDateRelationshipTables.has(fact.tableName);
       const candidate = {
         fromTable: fact.tableName,
         fromColumn: fact.dateColumn,
         toTable: input.tableName,
         toColumn: input.dateColumn,
-        isActive: true,
+        isActive,
         crossFilteringBehavior: 'single' as const,
       };
       const check = relationshipCheck(candidate, afterMarkWithSource);
@@ -3210,11 +3599,12 @@ async function createGovernedDateTable(
             toColumn: input.dateColumn,
             cardinality: 'manyToOne',
             crossFilteringBehavior: 'single',
-            isActive: true,
+            isActive,
           },
           connection,
         ),
       );
+      if (isActive) activeDateRelationshipTables.add(fact.tableName);
     }
   }
 
@@ -3244,7 +3634,9 @@ async function createGovernedDateTable(
   let coverageProbeError: string | undefined;
   if (coverageQuery) {
     try {
-      rawCoverage = await drv.daxQuery(coverageQuery, connection);
+      rawCoverage = await drv.daxQuery(coverageQuery, connection, {
+        includeRawDiagnostics: true,
+      });
     } catch (err) {
       coverageProbeError = err instanceof Error ? err.message : String(err);
     }
@@ -3253,6 +3645,19 @@ async function createGovernedDateTable(
     coverageQuery && coverageProbeError === undefined
       ? parseDateTableCoverageProbeResult(rawCoverage)
       : { facts: [] };
+  const coverageEvidenceRows = dateTableCoverageEvidenceRows(coverageEvidence);
+  const coverageDiagnostics =
+    coverageQuery && coverageProbeError === undefined
+      ? daxResultDiagnostics(rawCoverage)
+      : undefined;
+  const coverageParseShapeBlocker =
+    coverageDiagnostics !== undefined
+      ? dateProofParseShapeBlockedPayload(
+          coverageDiagnostics,
+          coverageEvidenceRows,
+          1 + governedFacts.length,
+        )
+      : undefined;
   const coverage = planDateTableCoverage(
     finalSnapshotWithSource,
     {
@@ -3266,7 +3671,7 @@ async function createGovernedDateTable(
   );
 
   return {
-    status: coverage.status === 'valid' ? 'created' : 'blocked',
+    status: coverage.status === 'valid' && !coverageParseShapeBlocker ? 'created' : 'blocked',
     mode,
     tableName: input.tableName,
     dateColumn: input.dateColumn,
@@ -3279,9 +3684,15 @@ async function createGovernedDateTable(
     markResult,
     relationshipResults,
     coverage,
+    ...(coverageParseShapeBlocker
+      ? {
+          evidenceRows: coverageEvidenceRows,
+          ...coverageParseShapeBlocker,
+        }
+      : {}),
     ...(coverageProbeError !== undefined ? { coverageProbeError } : {}),
-    ...(coverage.status !== 'valid' && coverageQuery
-      ? { probeDiagnostics: daxResultDiagnostics(rawCoverage) }
+    ...(coverage.status !== 'valid' && coverageQuery && !coverageParseShapeBlocker
+      ? { probeDiagnostics: coverageDiagnostics ?? daxResultDiagnostics(rawCoverage) }
       : {}),
     persist: LIVE_MODEL_PERSISTENCE,
   };
@@ -3333,7 +3744,7 @@ function eligibleDateFacts(
   return facts.filter((fact) => {
     const table = model.tables.find((candidate) => candidate.name === fact.tableName);
     const column = table?.columns.find((candidate) => candidate.name === fact.dateColumn);
-    return column !== undefined && ['date', 'datetime'].includes(column.dataType.toLowerCase());
+    return column !== undefined && isTemporalType(column.dataType);
   });
 }
 
@@ -3391,20 +3802,6 @@ async function enforceDateRelationshipWriteGate(
   const allowCalendarEndAfterFactMax =
     typeof gateOptions === 'number' ? false : gateOptions.allowCalendarEndAfterFactMax === true;
   if (!looksLikeDateRelationshipCandidate(model, candidate)) return;
-  if (!candidate.isActive) {
-    if (requiredAction === 'create-date-relationship') {
-      throwDateGateError(
-        'Date relationship create refused: inactive temporal relationships must still be planned against a governed Date table before creation.',
-        {
-          gate,
-          status: 'blocked',
-          reason: 'inactive-date-relationship-create-refused',
-          candidate,
-        },
-      );
-    }
-    return;
-  }
   if (!looksLikeGovernedDateEndpoint(model, candidate.toTable, candidate.toColumn)) {
     throwDateGateError(
       'Date relationship write refused: target date endpoint is not a governed marked Date table/key.',
@@ -3417,7 +3814,7 @@ async function enforceDateRelationshipWriteGate(
     );
   }
   if (mode !== 'live') {
-    throwDateGateError('Date relationship writes require a live exact date-grain proof.', {
+    throwDateGateError('Date relationship writes require a live date-grain proof.', {
       gate,
       status: 'blocked',
       reason: 'not-live',
@@ -3463,7 +3860,9 @@ async function enforceDateRelationshipWriteGate(
 
   let raw: unknown;
   try {
-    raw = await getModelDriver().daxQuery(coverageQuery, connection);
+    raw = await getModelDriver().daxQuery(coverageQuery, connection, {
+      includeRawDiagnostics: true,
+    });
   } catch (err) {
     throwDateGateError('Date relationship write refused: date-grain proof failed.', {
       gate,
@@ -3476,6 +3875,24 @@ async function enforceDateRelationshipWriteGate(
 
   const evidence = parseDateGrainProbeResult(raw);
   const coverageEvidence = parseDateTableCoverageProbeResult(raw);
+  const diagnostics = daxResultDiagnostics(raw);
+  const coverageParseShapeBlocker = dateProofParseShapeBlockedPayload(
+    diagnostics,
+    dateTableCoverageEvidenceRows(coverageEvidence),
+    1 + requiredFacts.length,
+  );
+  if (coverageParseShapeBlocker) {
+    throwDateGateError(
+      'Date relationship write refused: Date-table proof result shape was not recognized.',
+      {
+        gate,
+        status: 'blocked',
+        candidate,
+        evidenceRows: dateTableCoverageEvidenceRows(coverageEvidence),
+        ...coverageParseShapeBlocker,
+      },
+    );
+  }
   const coverage = planDateTableCoverage(
     model,
     {
@@ -3494,8 +3911,25 @@ async function enforceDateRelationshipWriteGate(
       reason: 'date-table-coverage-blocked',
       candidate,
       coverage,
-      probeDiagnostics: daxResultDiagnostics(raw),
+      probeDiagnostics: diagnostics,
     });
+  }
+  const grainParseShapeBlocker = dateProofParseShapeBlockedPayload(
+    diagnostics,
+    evidence.length,
+    requiredFacts.length,
+  );
+  if (grainParseShapeBlocker) {
+    throwDateGateError(
+      'Date relationship write refused: date-grain proof result shape was not recognized.',
+      {
+        gate,
+        status: 'blocked',
+        candidate,
+        evidenceRows: evidence.length,
+        ...grainParseShapeBlocker,
+      },
+    );
   }
   const plan = planDateGrain(
     model,
@@ -3527,7 +3961,13 @@ async function enforceDateRelationshipWriteGate(
     );
   });
 
-  if (factPlan?.observedGrain !== 'day' || matchingWrite !== true) {
+  const inactiveCreateSafe =
+    requiredAction === 'create-date-relationship' &&
+    candidate.isActive === false &&
+    factPlan?.observedGrain === 'day' &&
+    factPlan.measureGuidance.safeVisualDateGrain === 'day-or-above';
+
+  if (factPlan?.observedGrain !== 'day' || (matchingWrite !== true && !inactiveCreateSafe)) {
     throwDateGateError(
       `Date relationship write refused: observed grain is "${factPlan?.observedGrain ?? 'unknown'}", not proven daily with a matching planner write.`,
       {
@@ -3539,7 +3979,7 @@ async function enforceDateRelationshipWriteGate(
         observedGrain: factPlan?.observedGrain,
         evidenceRows: evidence.length,
         plan,
-        probeDiagnostics: daxResultDiagnostics(raw),
+        probeDiagnostics: diagnostics,
       },
     );
   }
@@ -3576,7 +4016,7 @@ function looksLikeGovernedDateEndpoint(
   if (!table || !column || table.isAutoDateTable) return false;
   const temporal = isTemporalDataType(column.dataType);
   const marked = isTimeDataCategory(table.dataCategory) || isTimeDataCategory(column.dataCategory);
-  return temporal && column.isKey && marked;
+  return temporal && marked;
 }
 
 function findModelColumn(
@@ -3592,7 +4032,7 @@ function findModelColumn(
 }
 
 function isTemporalDataType(dataType: string | undefined): boolean {
-  return dataType !== undefined && ['date', 'datetime'].includes(dataType.toLowerCase());
+  return dataType !== undefined && isTemporalType(dataType);
 }
 
 function isTimeDataCategory(dataCategory: string | undefined): boolean {
@@ -3913,12 +4353,7 @@ async function enforceMarkAsDateGate(
 ): Promise<void> {
   const table = model.tables.find((candidate) => candidate.name === tableName);
   const column = table?.columns.find((candidate) => candidate.name === dateColumn);
-  if (
-    !table ||
-    !column ||
-    table.isAutoDateTable ||
-    !['date', 'datetime'].includes(column.dataType.toLowerCase())
-  ) {
+  if (!table || !column || table.isAutoDateTable || !isTemporalType(column.dataType)) {
     throwDateGateError(
       'Mark-as-date refused: table/column metadata is not a valid governed date key.',
       {
@@ -3961,7 +4396,7 @@ async function enforceMarkAsDateGate(
   }
   let raw: unknown;
   try {
-    raw = await getModelDriver().daxQuery(query, connection);
+    raw = await getModelDriver().daxQuery(query, connection, { includeRawDiagnostics: true });
   } catch (err) {
     throwDateGateError('Mark-as-date refused: date-table coverage proof failed.', {
       gate: 'mark-as-date-table-gate',
@@ -3973,6 +4408,21 @@ async function enforceMarkAsDateGate(
     });
   }
   const evidence = parseDateTableCoverageProbeResult(raw);
+  const diagnostics = daxResultDiagnostics(raw);
+  const parseShapeBlocker = dateProofParseShapeBlockedPayload(
+    diagnostics,
+    dateTableCoverageEvidenceRows(evidence),
+    1 + requiredFacts.length,
+  );
+  if (parseShapeBlocker) {
+    throwDateGateError('Mark-as-date refused: date-table proof result shape was not recognized.', {
+      gate: 'mark-as-date-table-gate',
+      tableName,
+      dateColumn,
+      evidenceRows: dateTableCoverageEvidenceRows(evidence),
+      ...parseShapeBlocker,
+    });
+  }
   const coverage = planDateTableCoverage(
     model,
     {
@@ -3994,7 +4444,7 @@ async function enforceMarkAsDateGate(
       dateColumn,
       blockers,
       coverage,
-      probeDiagnostics: daxResultDiagnostics(raw),
+      probeDiagnostics: diagnostics,
     });
   }
 }
@@ -4088,7 +4538,7 @@ tool(
 tool(
   'pbi_model_plan_star_schema_join',
   'Plan Star-Schema Join',
-  'Return a deterministic star-schema/shared-dimension plan for a cross-fact join or TREATAS/MOD009/MOD010 remediation. Read-only: this tool does not write anything. It returns the proposed design, blockers, dimensions, key-column writes, relationship create writes, relationship repair writes, hide-FK writes, and whether a direct fact relationship is allowed.',
+  'Return a deterministic star-schema/shared-dimension plan for a cross-fact join or TREATAS/MOD009/MOD010 remediation. Read-only: this tool does not write anything. It returns the proposed design, blockers, dimensions, key-column writes, relationship create writes, relationship repair writes, hide-FK writes, and whether a direct fact relationship is allowed. If the requested tables also expose shared temporal axes, the plan includes dateAxisRequirement: one governed Date table shared by every participating fact is required; LocalDateTable relationships are not a conformed report axis, so use pbi_date_table_create_governed rather than manual Date-table or relationship steps.',
   {
     leftTable: z.string().describe('First table in the requested join.'),
     rightTable: z.string().describe('Second table in the requested join.'),
@@ -4132,7 +4582,7 @@ tool(
 tool(
   'pbi_model_plan_actuals_targets_join',
   'Plan Actuals/Targets Join',
-  'Return a deterministic read-only actuals/targets join readiness plan that combines star-schema shared-dimension planning with batched date-grain proof before asking the user any grain question. It routes temporal axes to date-grain planning, routes non-temporal axes to star-schema planning, and asks only for unobservable business policy such as allocation or missing-target behavior.',
+  'Return a deterministic read-only actuals/targets join readiness plan that combines star-schema shared-dimension planning with batched date-grain proof before asking the user any grain question. It routes temporal axes to date-grain planning, routes non-temporal axes to star-schema planning, and requires one governed Date table shared by every participating fact before reporting ready. Auto LocalDateTable relationships are not a conformed actuals/targets date axis; when dateAxisRequirement says governed-date-table-required, use pbi_date_table_create_governed for the Date table and relationships. Ask only for unobservable business policy such as allocation or missing-target behavior.',
   {
     leftTable: z.string().describe('Actuals/source table in the requested comparison.'),
     rightTable: z.string().describe('Targets/source table in the requested comparison.'),
@@ -4176,7 +4626,7 @@ tool(
 tool(
   'pbi_model_apply_star_schema_join',
   'Apply Star-Schema Join',
-  'Batch-apply or dry-run a deterministic planner-backed shared-dimension star-schema remediation to a live Power BI Desktop model. Requires explicit axes, re-plans from the targeted live model, refuses planner blockers, creates/reuses calculated dimensions, refreshes calculated metadata, hardens dimension key data types, configures keys, repairs/creates single-direction many-to-one relationships, hides fact-side FK fields, and validates the final state.',
+  'Batch-apply or dry-run a deterministic planner-backed shared-dimension star-schema remediation to a live Power BI Desktop model. Requires explicit axes, re-plans from the targeted live model, refuses planner blockers, creates/reuses calculated dimensions, refreshes calculated metadata, hardens dimension key data types, configures keys, repairs/creates single-direction many-to-one relationships, hides fact-side FK fields, and validates the final state. If the model also has shared temporal axes, the response carries dateAxisRequirement and is date-axis incomplete until one governed Date table is shared by every participating fact; LocalDateTable relationships are not sufficient, so use pbi_date_table_create_governed for the Date table and Date relationships.',
   {
     leftTable: z.string().describe('First fact/source table in the requested cross-fact join.'),
     rightTable: z.string().describe('Second fact/source table in the requested cross-fact join.'),
@@ -4210,7 +4660,7 @@ tool(
 tool(
   'pbi_model_plan_date_grain',
   'Plan Date Grain',
-  'Return a deterministic date-grain plan for fact date columns before activating date relationships, simplifying target/actual measures, or before asking the user to choose target grain/day/month/year. In live mode it runs one generated read-only DAX probe for all requested facts; in folder mode it fails closed with metadata-only guidance. Use observedGrain/probeStatus as the evidence for observable date grain. Ask the user only for business semantics the model cannot prove, such as allocation or missing-target behavior. It also reports auto date tables so agents can avoid slow, repetitive LocalDateTable inventories.',
+  'Return a deterministic date-grain plan for fact date columns before activating date relationships, simplifying target/actual measures, or before asking the user to choose target grain/day/month/year. In live mode it runs one generated read-only DAX probe for all requested facts; in folder mode it fails closed with metadata-only guidance. Use observedGrain/probeStatus as the evidence for observable date grain. If proof fails, is incomplete, or returns parse-shape-unrecognized/evidenceRows:0 from the ROW()-based proof, report the structured blocker/status and STOP before Date relationship activation or measure rewrite; do not claim the model is empty, use pbi_dax_query/manual DAX/pbi_model_refresh, retry with probeData:false, or fall back to primitive Date/relationship writes. Ask the user only for business semantics the model cannot prove, such as allocation or missing-target behavior. It also reports auto date tables so agents can avoid slow, repetitive LocalDateTable inventories.',
   {
     facts: z
       .array(
@@ -4236,7 +4686,7 @@ tool(
       .boolean()
       .optional()
       .describe(
-        'Defaults to true. In live mode, run one read-only DAX probe to prove observed date grain. Set false for metadata-only planning.',
+        'Defaults to true. In live mode, run one read-only DAX proof to prove observed date grain. Set false only for an initial metadata-only plan; never use probeData:false as recovery after failed, incomplete, or parse-shape proof.',
       ),
     scanMeasures: z
       .boolean()
@@ -4254,7 +4704,7 @@ tool(
 tool(
   'pbi_model_plan_date_table',
   'Plan Date Table Coverage',
-  'Return a deterministic coverage plan for a governed Date table before editing calendar bounds, marking a date table, disabling auto date/time, or relying on Date-table fields for target/actual analysis. In live mode it runs one read-only DAX proof over the date table and the complete model-derived fact-date coverage set. It blocks volatile TODAY()/NOW()/M current-date anchors, literal hardcoded calendar bounds, blanks, duplicate date keys, gaps, and Date tables that do not cover observed fact min/max dates. Date ranges extending beyond observed fact max dates require explicit futureHorizonDays.',
+  'Return a deterministic coverage plan for a governed Date table before editing calendar bounds, marking a date table, disabling auto date/time, or relying on Date-table fields for target/actual analysis. In live mode it runs one read-only DAX proof over the date table and the complete model-derived fact-date coverage set. It blocks volatile TODAY()/NOW()/M current-date anchors, literal hardcoded calendar bounds, blanks, duplicate date keys, gaps, and Date tables that do not cover observed fact min/max dates. Date ranges extending beyond observed fact max dates require explicit futureHorizonDays. A blocked, non-succeeded, or parse-shape-unrecognized proof is not actionable coverage evidence; report it and STOP with no calendar edit, mark-as-date, pbi_dax_query/manual DAX/pbi_model_refresh fallback, probeData:false retry, or primitive Date write.',
   {
     dateTable: z.string().describe('Governed Date/Calendar table to validate.'),
     dateColumn: z.string().describe('Daily date key column on the governed Date/Calendar table.'),
@@ -4274,7 +4724,7 @@ tool(
       .boolean()
       .optional()
       .describe(
-        'Defaults to true. In live mode, run one exact read-only DAX proof. Set false only for metadata-only planning; writes must not rely on skipped proof.',
+        'Defaults to true. In live mode, run one exact read-only DAX proof. Set false only for an initial metadata-only plan; writes must not rely on skipped proof, and probeData:false is forbidden as recovery after failed, incomplete, or parse-shape proof.',
       ),
     folderPath: MODEL_FOLDER_FIELD,
     model: MODEL_SELECT_FIELD,
@@ -4286,7 +4736,7 @@ tool(
 tool(
   'pbi_date_table_create_governed',
   'Create Governed Date Table',
-  'Create, optionally refresh with explicit refreshBeforeProbe authorization, prove, harden metadata, mark, and optionally relate a governed Date table in the live model. This is the only write path for new Date/Calendar tables. It asks for clarifyingQuestions instead of writing when calendar policy or refreshBeforeProbe policy is ambiguous, generates dynamic fact-anchored DAX from supplied date columns, never uses literal guessed DATE bounds or TODAY()/NOW(), never refreshes before proof unless refreshBeforeProbe is explicitly true, writes explicit generated-column dataType/summarize/sort metadata, marks the table as a Date table, and creates single-direction many-to-one fact date relationships when requested.',
+  'Create, optionally refresh with explicit refreshBeforeProbe authorization, prove, harden metadata, mark, and optionally relate a governed Date table in the live model. This is the only write path for new Date/Calendar tables. It asks for clarifyingQuestions instead of writing when calendar policy or refreshBeforeProbe policy is ambiguous, generates dynamic fact-anchored DAX from supplied date columns, never uses literal guessed DATE bounds or TODAY()/NOW(), never refreshes before proof unless refreshBeforeProbe is explicitly true, writes explicit generated-column dataType/summarize/sort metadata, marks the table as a Date table, and creates single-direction many-to-one fact date relationships when requested. Import models may reject the column isKey write; table dataCategory:Time plus live unique/continuous Date-key proof is accepted. For multiple date roles on one fact table, the first role is active and later roles are inactive. If proof blocks or returns proof-parse-shape-unrecognized/evidenceRows:0 from the ROW()-based proof, report that blocker verbatim and STOP; do not claim the model is empty, use pbi_dax_query/manual DAX/pbi_model_refresh, retry with probeData:false, or reconstruct the Date table through pbi_table_create/pbi_column_update/pbi_relationship_create primitives.',
   {
     tableName: z.string().describe('Name of the Date/Calendar table to create.'),
     dateColumn: z
@@ -4325,7 +4775,7 @@ tool(
       .boolean()
       .optional()
       .describe(
-        'Defaults to true. Create active single-direction many-to-one relationships from each fact date column to the new Date table.',
+        'Defaults to true. Create single-direction many-to-one relationships from each fact date column to the new Date table; for multiple date roles on one fact table, the first role is active and later roles are inactive.',
       ),
     description: z.string().optional().describe('Optional table description.'),
     folderPath: MODEL_FOLDER_FIELD,
@@ -4338,7 +4788,7 @@ tool(
 tool(
   'pbi_model_refresh',
   'Refresh Live Model',
-  'Refresh/process the connected live Power BI Desktop semantic model through the Microsoft Modeling MCP. Use this instead of asking the user to click Refresh when a modeling workflow needs Import data materialized. Folder mode is refused because refresh is a live engine operation.',
+  'Refresh/process the connected live Power BI Desktop semantic model through the Microsoft Modeling MCP only when the user explicitly authorizes processing/import refresh. Use this instead of asking the user to click Refresh when a modeling workflow needs Import data materialized. Never use this as a fallback after proof-parse-shape-unrecognized, parse-shape-unrecognized/evidenceRows:0 from a ROW()-based Date proof, or any Date proof blocker that instructs STOP. Folder mode is refused because refresh is a live engine operation.',
   {
     refreshType: z
       .enum(['Automatic', 'Full', 'Calculate'])
@@ -4415,7 +4865,7 @@ tool(
 tool(
   'pbi_dax_query',
   'Execute DAX Query (read-only)',
-  'Run a read-only DAX query against the connected model and return the normalized result. For ad-hoc inspection/aggregate checks only; not a write path, not a Date-table proof fallback, and does not authorize Date writes. If pbi_date_table_create_governed, pbi_model_plan_date_table, or pbi_model_plan_date_grain blocks or returns incomplete proof, report that blocker and stop or rerun the governed tool with explicit refreshBeforeProbe:true only after user approval.',
+  'Run a read-only DAX query against the connected model and return the normalized result. For ad-hoc inspection/aggregate checks only; not a write path, not a Date-table proof fallback, not a date-grain diagnostic, and does not authorize Date writes. If pbi_date_table_create_governed, pbi_model_plan_date_table, or pbi_model_plan_date_grain blocks, returns incomplete proof, or returns proof-parse-shape-unrecognized/parse-shape-unrecognized/evidenceRows:0 from a ROW()-based proof, report that structured blocker/status and stop. Do not use pbi_dax_query, manual DAX, primitive Date writes, or relationship writes to bypass the governed Date proof.',
   {
     query: z.string().describe('A DAX query (e.g. EVALUATE ...).'),
     folderPath: MODEL_FOLDER_FIELD,
@@ -4965,7 +5415,7 @@ tool(
 tool(
   'pbi_table_mark_as_date',
   'Mark As Date Table',
-  'Mark a table as the model date table so time-intelligence (DATEADD/SAMEPERIODLASTYEAR/TOTALYTD, etc.) works. HARD GATE: the chosen date key must be proven live as a continuous unique daily date/dateTime column with no blanks, duplicates, gaps, or auto-date table target, and the Date table must cover observed min/max dates for the complete model-derived fact-date coverage set, not just the caller-supplied sample. Volatile current-date anchors and literal hardcoded calendar bounds are refused. Folder-mode marking is refused because coverage cannot be proven. Sets the table `dataCategory` to "Time" and sets `isKey` on the given date column. Idempotent — re-marking an already-marked table is a no-op. On success in live mode the change appears in Desktop immediately; press Ctrl+S to persist live semantic-model metadata.',
+  'Mark a table as the model date table so time-intelligence (DATEADD/SAMEPERIODLASTYEAR/TOTALYTD, etc.) works. HARD GATE: the chosen date key must be proven live as a continuous unique daily date/dateTime column with no blanks, duplicates, gaps, or auto-date table target, and the Date table must cover observed min/max dates for the complete model-derived fact-date coverage set, not just the caller-supplied sample. Volatile current-date anchors and literal hardcoded calendar bounds are refused. Folder-mode marking is refused because coverage cannot be proven. If coverage/key proof blocks or returns proof-parse-shape-unrecognized, report the blocker and STOP; do not use primitive table/column updates. Sets the table `dataCategory` to "Time" and attempts `isKey` on the given date column; Import models may reject the `isKey` write, in which case the live proof remains authoritative. Idempotent — re-marking an already-marked table is a no-op. On success in live mode the change appears in Desktop immediately; press Ctrl+S to persist live semantic-model metadata.',
   {
     tableName: z.string().describe('Table to mark as the date table.'),
     dateColumn: z
@@ -5329,7 +5779,7 @@ tool(
 tool(
   'pbi_relationship_create',
   'Create Relationship (validity-gated)',
-  'Create a relationship between two columns. HARD GATES: an in-code relationship check runs first against the live model; temporal Date relationship creates also require a governed marked Date endpoint, live Date-table coverage proof, live exact pbi_model_plan_date_grain proof with a matching create write, and single-direction filtering. If an endpoint is missing, key types mismatch, an active path would become ambiguous, Date coverage/grain is not proven, or the temporal create is inactive/bidirectional, the create is REFUSED and nothing is written. Do not manually replay cross-fact/shared-dimension star-schema relationship writes with this primitive tool; use pbi_model_apply_star_schema_join with explicit axes for cross-fact joins. Cardinality defaults to manyToOne and is sent to the modeling engine as fromCardinality/toCardinality. Bidirectional cross-filtering is allowed for non-date relationships but returned as an advisory warning. On success in live mode the relationship appears in Desktop immediately; press Ctrl+S to persist live semantic-model metadata. In folder mode, call pbi_model_export.',
+  'Create a relationship between two columns. HARD GATES: an in-code relationship check runs first against the live model; temporal Date relationship creates also require a governed marked Date endpoint, live Date-table coverage proof, live date-only day-grain proof, and single-direction filtering. Sparse fact dates are valid; Date-key continuity is proven on the Date table. Active temporal creates require a matching planner write; inactive role-playing Date relationships are allowed after proof. If an endpoint is missing, key types mismatch, an active path would become ambiguous, Date coverage/grain is not proven, proof parsing is unrecognized, or the temporal create is bidirectional, the create is REFUSED and nothing is written. Temporal proof failure means STOP and report the blocker; do not replay manual relationship writes. Do not manually replay cross-fact/shared-dimension star-schema relationship writes with this primitive tool; use pbi_model_apply_star_schema_join with explicit axes for cross-fact joins. Cardinality defaults to manyToOne and is sent to the modeling engine as fromCardinality/toCardinality. Bidirectional cross-filtering is allowed for non-date relationships but returned as an advisory warning. On success in live mode the relationship appears in Desktop immediately; press Ctrl+S to persist live semantic-model metadata. In folder mode, call pbi_model_export.',
   {
     fromTable: z.string().describe('Many-side table (the foreign-key side).'),
     fromColumn: z.string().describe('Foreign-key column on fromTable.'),
@@ -5428,7 +5878,7 @@ tool(
 tool(
   'pbi_relationship_update',
   'Update Relationship (validity-gated)',
-  'Update an existing relationship by id: re-point endpoints, change cardinality, change cross-filtering, or toggle active. The same in-code relationship check as create runs first (the edited row is excluded from the active-path ambiguity check). Activating/re-pointing an active temporal Date relationship, or changing its shape, also requires a governed marked Date endpoint, live Date-table coverage proof, live exact pbi_model_plan_date_grain proof, and single-direction filtering. On a structural/date-coverage/date-grain violation the update is REFUSED. Bidirectional cross-filtering is allowed for non-date relationships but returned as an advisory warning. On success in live mode the change appears in Desktop immediately; press Ctrl+S to persist live semantic-model metadata. In folder mode, call pbi_model_export.',
+  'Update an existing relationship by id: re-point endpoints, change cardinality, change cross-filtering, or toggle active. The same in-code relationship check as create runs first (the edited row is excluded from the active-path ambiguity check). Activating/re-pointing an active temporal Date relationship, or changing its shape, also requires a governed marked Date endpoint, live Date-table coverage proof, live date-only day-grain proof, and single-direction filtering. Sparse fact dates are valid; Date-key continuity is proven on the Date table. On a structural/date-coverage/date-grain/parse-shape violation the update is REFUSED. Temporal proof failure means STOP and report the blocker; do not replay manual relationship writes. Bidirectional cross-filtering is allowed for non-date relationships but returned as an advisory warning. On success in live mode the change appears in Desktop immediately; press Ctrl+S to persist live semantic-model metadata. In folder mode, call pbi_model_export.',
   {
     id: z.string().describe('Relationship id to update.'),
     fromTable: z.string().optional().describe('New many-side table.'),
@@ -5555,7 +6005,7 @@ tool(
 tool(
   'pbi_relationship_activate',
   'Activate Relationship',
-  'Mark a relationship active by id. HARD GATE: temporal Date relationship activation requires a governed marked Date endpoint, live Date-table coverage proof, live exact pbi_model_plan_date_grain proof with observedGrain "day", a matching activate writePlan item, and single-direction filtering. Otherwise activation is REFUSED and nothing is written. On success in live mode the change appears in Desktop immediately; press Ctrl+S to persist live semantic-model metadata. In folder mode, call pbi_model_export.',
+  'Mark a relationship active by id. HARD GATE: temporal Date relationship activation requires a governed marked Date endpoint, live Date-table coverage proof, live date-only day-grain proof with observedGrain "day", a matching activate writePlan item, and single-direction filtering. Sparse fact dates are valid; Date-key continuity is proven on the Date table. If coverage/grain proof blocks or proof parsing is unrecognized, activation is REFUSED and nothing is written. Temporal proof failure means STOP and report the blocker; do not replay manual relationship writes. On success in live mode the change appears in Desktop immediately; press Ctrl+S to persist live semantic-model metadata. In folder mode, call pbi_model_export.',
   {
     id: z.string().describe('Relationship id to activate.'),
     futureHorizonDays: FUTURE_HORIZON_DAYS_FIELD,

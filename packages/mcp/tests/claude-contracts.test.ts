@@ -300,10 +300,10 @@ describe('Claude model-operation contracts', () => {
       'agents/model-builder.md',
       'agents/model-reviewer.md',
       'skills/modeling-semantic-model/SKILL.md',
-      'skills-report/planning-dashboards/SKILL.md',
-      'skills-report/planning-dashboards/references/intake-protocol.md',
+      'archive/skills/planning-dashboards/SKILL.md',
+      'archive/skills/planning-dashboards/references/intake-protocol.md',
       'skills/reviewing-models/SKILL.md',
-      'skills-report/pbi-report/SKILL.md',
+      'archive/skills/pbi-report/SKILL.md',
     ];
 
     for (const file of contractFiles) {
@@ -315,7 +315,7 @@ describe('Claude model-operation contracts', () => {
   });
 
   it('keeps layout skill guidance on wrapper model inventory tools', () => {
-    const text = readRepoFile('skills-report/pbi-layout/SKILL.md');
+    const text = readRepoFile('archive/skills/pbi-layout/SKILL.md');
 
     expect(text).toContain('pbi_model_list_tables');
     expect(text).toContain('pbi_model_list_measures');
@@ -325,11 +325,11 @@ describe('Claude model-operation contracts', () => {
   it('keeps dashboard/model workflows explicit about the semantic clarification gate', () => {
     const contractFiles = [
       'docs/system-improvements.md',
-      'skills-report/planning-dashboards/SKILL.md',
-      'skills-report/planning-dashboards/references/intake-protocol.md',
+      'archive/skills/planning-dashboards/SKILL.md',
+      'archive/skills/planning-dashboards/references/intake-protocol.md',
       'agents/data-analyst.md',
       'agents/model-builder.md',
-      'agents-report/report-builder.md',
+      'archive/agents/report-builder.md',
       'agents/model-reviewer.md',
     ];
 
@@ -346,16 +346,16 @@ describe('Claude model-operation contracts', () => {
     const contractFiles = [
       'skills/authoring-measures/SKILL.md',
       'skills/authoring-measures/references/measure-intent-contract.md',
-      'skills-report/planning-dashboards/SKILL.md',
-      'skills-report/planning-dashboards/references/intake-protocol.md',
-      'skills-report/planning-dashboards/references/metric-contract.md',
-      'skills-report/planning-dashboards/references/model-discovery.md',
+      'archive/skills/planning-dashboards/SKILL.md',
+      'archive/skills/planning-dashboards/references/intake-protocol.md',
+      'archive/skills/planning-dashboards/references/metric-contract.md',
+      'archive/skills/planning-dashboards/references/model-discovery.md',
       'skills/modeling-semantic-model/references/ai-readiness.md',
       'skills/modeling-semantic-model/references/naming.md',
       'agents/data-analyst.md',
       'agents/model-builder.md',
       'agents/model-reviewer.md',
-      'agents-report/report-builder.md',
+      'archive/agents/report-builder.md',
     ];
 
     for (const file of contractFiles) {
@@ -391,7 +391,7 @@ describe('Claude model-operation contracts', () => {
 
   it('keeps banking KPI guidance as a dataset-agnostic question bank', () => {
     const text = readRepoFile(
-      'skills-report/planning-dashboards/references/banking-kpi-guidance.md',
+      'archive/skills/planning-dashboards/references/banking-kpi-guidance.md',
     ).toLowerCase();
 
     expect(text).toContain('question bank');
@@ -422,8 +422,8 @@ describe('Claude model-operation contracts', () => {
     const contractFiles = [
       'docs/system-improvements.md',
       'skills/modeling-semantic-model/SKILL.md',
-      'skills-report/planning-dashboards/SKILL.md',
-      'skills-report/planning-dashboards/references/intake-protocol.md',
+      'archive/skills/planning-dashboards/SKILL.md',
+      'archive/skills/planning-dashboards/references/intake-protocol.md',
       'agents/data-analyst.md',
       'agents/model-builder.md',
       'agents/model-reviewer.md',
@@ -438,8 +438,53 @@ describe('Claude model-operation contracts', () => {
       expect(text, file).toMatch(/futureHorizonDays|future horizon|forecast-horizon/);
       expect(lower, file).toMatch(/today\(\)|now\(\)|today\/now/);
       expect(lower, file).toMatch(/never|do not|refused|rejected/);
-      expect(lower, file).toMatch(/pbi_dax_query[\s\S]{0,180}fallback|fallback[\s\S]{0,180}pbi_dax_query/);
+      expect(lower, file).toMatch(
+        /pbi_dax_query[\s\S]{0,180}fallback|fallback[\s\S]{0,180}pbi_dax_query/,
+      );
       expect(lower, file).toMatch(/manual dax|prompt-generated dax|provide dax/);
+    }
+  });
+
+  it('documents Date proof parse-shape failures as no-fallback stop conditions', () => {
+    const contractFiles = [
+      'docs/system-improvements.md',
+      'skills/modeling-semantic-model/SKILL.md',
+      'skills/modeling-semantic-model/references/grain.md',
+      'skills/authoring-measures/SKILL.md',
+      'agents/data-analyst.md',
+      'agents/model-builder.md',
+      'agents/model-reviewer.md',
+    ];
+
+    for (const file of contractFiles) {
+      const lower = readRepoFile(file).toLowerCase();
+      expect(lower, file).toMatch(/parse-shape-unrecognized|proof-parse-shape-unrecognized/);
+      expect(lower, file).toMatch(/evidencerows:\s*0|row-based|row\(\)-based/);
+      expect(lower, file).toContain('pbi_dax_query');
+      expect(lower, file).toContain('pbi_model_refresh');
+      expect(lower, file).toContain('probedata:false');
+      expect(lower, file).toContain('manual dax');
+      expect(lower, file).toMatch(/primitive[\s\S]{0,80}(date|relationship)/);
+      expect(lower, file).toMatch(/stop|blocked/);
+    }
+  });
+
+  it('requires governed shared Date axes for cross-fact joins', () => {
+    const contractFiles = [
+      'docs/system-improvements.md',
+      'skills/modeling-semantic-model/SKILL.md',
+      'agents/model-builder.md',
+    ];
+
+    for (const file of contractFiles) {
+      const lower = readRepoFile(file).toLowerCase();
+      expect(lower, file).toContain('actuals/targets');
+      expect(lower, file).toContain('pbi_model_plan_star_schema_join');
+      expect(lower, file).toContain('dateaxisrequirement');
+      expect(lower, file).toContain('governed date');
+      expect(lower, file).toContain('localdatetable');
+      expect(lower, file).toContain('pbi_date_table_create_governed');
+      expect(lower, file).toMatch(/not sufficient|not a conformed|not enough|insufficient/);
     }
   });
 
@@ -482,10 +527,11 @@ describe('Claude model-operation contracts', () => {
     expect(scannedAgents).not.toContain('report-reviewer.md');
 
     // Report agents are preserved out of the scanned surface for the dogfood profile.
-    const reportAgents = readdirSync(path.join(root, 'agents-report'))
+    const reportAgents = readdirSync(path.join(root, 'archive/agents'))
       .filter((file) => file.endsWith('.md'))
       .sort();
-    expect(reportAgents).toEqual(['report-builder.md', 'report-reviewer.md']);
+    expect(reportAgents).toContain('report-builder.md');
+    expect(reportAgents).toContain('report-reviewer.md');
   });
 
   it('installs the modeling beta MCP server and auto-scans only modeling skills', () => {
@@ -544,12 +590,24 @@ describe('Claude model-operation contracts', () => {
     expect(readme).toContain('pnpm install');
     expect(readme).toContain('pnpm build');
 
+    const rootPackage = readRepoFile('package.json');
+    expect(rootPackage).toContain('node scripts/write-build-marker.mjs');
+    const mcpPackage = readRepoFile('packages/mcp/package.json');
+    expect(mcpPackage).not.toContain('write-build-marker.mjs');
+
     const launcher = readRepoFile('scripts/start-mcp.mjs');
     expect(launcher).toContain("spawnSync('pnpm', ['build']");
     expect(launcher).toContain("stdio: ['ignore', 'pipe', 'pipe']");
     expect(launcher).toContain('isBuildStale');
-    expect(launcher).toContain('packages/mcp/src');
-    expect(launcher).toContain('packages/core/src');
+    expect(launcher).toContain('build-fingerprint.mjs');
+    expect(launcher).toContain('loaded build');
+
+    const fingerprint = readRepoFile('scripts/build-fingerprint.mjs');
+    expect(fingerprint).toContain('packages/mcp/src');
+    expect(fingerprint).toContain('packages/core/src');
+    expect(fingerprint).toContain('packages/core/scripts');
+    expect(fingerprint).toContain('pbi-mcp-build.json');
+    expect(fingerprint).not.toContain('.pbi-mcp-build.json');
   });
 
   it('teaches the modeling beta to refuse dashboard/report authoring gracefully', () => {
@@ -610,8 +668,8 @@ describe('Claude model-operation contracts', () => {
   it('keeps PBIR report writes separate from Desktop Ctrl+S persistence', () => {
     const contractFiles = [
       'docs/system-improvements.md',
-      'skills-report/pbi-report/SKILL.md',
-      'agents-report/report-builder.md',
+      'archive/skills/pbi-report/SKILL.md',
+      'archive/agents/report-builder.md',
     ];
 
     for (const file of contractFiles) {

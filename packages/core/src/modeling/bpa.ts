@@ -1,3 +1,4 @@
+import { isNumericType, isStringType, isTemporalType, normalizeDataType } from './data-types.js';
 import { findCalendarSourceRisks } from './date-grain-plan.js';
 import { daxReferenceCheck } from './dax-reference-check.js';
 import { classifyTable } from './fact-classifier.js';
@@ -310,7 +311,7 @@ export const BPA_RULES: ReadonlyArray<BPARule> = [
       const findings: BPAViolation[] = [];
       for (const table of model.tables) {
         for (const c of table.columns) {
-          if (c.dataType === 'string' && c.summarizeBy && c.summarizeBy !== 'none') {
+          if (isStringType(c.dataType) && c.summarizeBy && c.summarizeBy !== 'none') {
             findings.push(
               violation('MOD006', 'info', 'Modeling', columnRef(c), {
                 message: `String column has summarizeBy=${c.summarizeBy}; should be "none".`,
@@ -597,7 +598,7 @@ export const BPA_RULES: ReadonlyArray<BPARule> = [
         const fromCol = byTable.get(r.fromTable)?.columns.find((c) => c.name === r.fromColumn);
         const toCol = byTable.get(r.toTable)?.columns.find((c) => c.name === r.toColumn);
         if (!fromCol || !toCol) continue;
-        if (fromCol.dataType === toCol.dataType) continue;
+        if (normalizeDataType(fromCol.dataType) === normalizeDataType(toCol.dataType)) continue;
         const widening = typesCompatible(fromCol, toCol);
         const severity: Severity = widening ? 'warning' : 'error';
         findings.push(
@@ -676,7 +677,7 @@ export const BPA_RULES: ReadonlyArray<BPARule> = [
           [r.fromTable, fromCol] as const,
           [r.toTable, toCol] as const,
         ]) {
-          if (!col || col.dataType === 'int64') continue;
+          if (!col || normalizeDataType(col.dataType) === 'int64') continue;
           const key = `${tableName}[${col.name}]`;
           if (seen.has(key)) continue;
           seen.add(key);
@@ -787,7 +788,7 @@ export const BPA_RULES: ReadonlyArray<BPARule> = [
       const findings: BPAViolation[] = [];
       for (const t of model.tables) {
         for (const c of t.columns) {
-          if (c.dataType === 'double') {
+          if (normalizeDataType(c.dataType) === 'double') {
             findings.push(
               violation('FMT004', 'warning', 'Formatting', columnRef(c), {
                 message: `Column "${c.name}" is a double (floating-point); use Fixed Decimal (decimal/currency) to avoid rounding error and improve compression.`,
@@ -812,12 +813,12 @@ export const BPA_RULES: ReadonlyArray<BPARule> = [
       const hasDateTable = model.tables.some(
         (t) =>
           isMarkedDateTable(t) ||
-          t.columns.some((c) => isTimeDataCategory(c.dataCategory) && isDateType(c.dataType)),
+          t.columns.some((c) => isTimeDataCategory(c.dataCategory) && isTemporalType(c.dataType)),
       );
       if (hasDateTable) return [];
       // Only nudge if there is at least one date/dateTime column to anchor on.
       const hasAnyDateColumn = model.tables.some((t) =>
-        t.columns.some((c) => isDateType(c.dataType)),
+        t.columns.some((c) => isTemporalType(c.dataType)),
       );
       if (!hasAnyDateColumn) return [];
       return [
@@ -844,7 +845,7 @@ export const BPA_RULES: ReadonlyArray<BPARule> = [
         if (!looksLikeDateTableName(t.name)) continue;
         const marked =
           isMarkedDateTable(t) ||
-          t.columns.some((c) => isTimeDataCategory(c.dataCategory) && isDateType(c.dataType));
+          t.columns.some((c) => isTimeDataCategory(c.dataCategory) && isTemporalType(c.dataType));
         if (marked) continue;
         findings.push(
           violation('MODB2', 'warning', 'Modeling', `Table.${t.name}`, {
@@ -1222,7 +1223,7 @@ export const BPA_RULES: ReadonlyArray<BPARule> = [
       const hasMarkedDate = model.tables.some(
         (t) =>
           isMarkedDateTable(t) ||
-          t.columns.some((c) => isTimeDataCategory(c.dataCategory) && isDateType(c.dataType)),
+          t.columns.some((c) => isTimeDataCategory(c.dataCategory) && isTemporalType(c.dataType)),
       );
       if (hasMarkedDate) return [];
       const tiRe = new RegExp(`\\b(${TIME_INTEL_FUNCTIONS.join('|')})\\s*\\(`, 'i');
@@ -1261,7 +1262,7 @@ export const BPA_RULES: ReadonlyArray<BPARule> = [
         if (d.isAutoDateTable) continue;
         const isDateDim =
           isMarkedDateTable(d) ||
-          d.columns.some((c) => isTimeDataCategory(c.dataCategory) && isDateType(c.dataType)) ||
+          d.columns.some((c) => isTimeDataCategory(c.dataCategory) && isTemporalType(c.dataType)) ||
           looksLikeDateTableName(d.name);
         if (!isDateDim) continue;
         // Facts that relate to D via an ACTIVE relationship, tagged with grain.
@@ -1334,7 +1335,7 @@ export const BPA_RULES: ReadonlyArray<BPARule> = [
           (toTable !== undefined &&
             (isMarkedDateTable(toTable) ||
               toTable.columns.some(
-                (c) => isTimeDataCategory(c.dataCategory) && isDateType(c.dataType),
+                (c) => isTimeDataCategory(c.dataCategory) && isTemporalType(c.dataType),
               ))) ||
           looksLikeDateTableName(r.toTable);
         if (isDateDim) continue;
@@ -1714,13 +1715,13 @@ export const BPA_RULES: ReadonlyArray<BPARule> = [
           if (c.dataCategory && c.dataCategory.trim() !== '') continue;
           const lower = c.name.toLowerCase();
           const isGeoString =
-            c.dataType === 'string' &&
+            isStringType(c.dataType) &&
             (lower.includes('country') || lower.includes('continent') || lower.includes('city'));
           // EXACT name match (not prefix) so "latency"/"longshore"/"long term
           // value" don't false-positive — mirrors the mined source (dg4:30676
           // uses `Name.ToLower() == "latitude"/"longitude"`, exact equality).
           const isLatLong =
-            (c.dataType === 'decimal' || c.dataType === 'double') &&
+            ['decimal', 'double'].includes(normalizeDataType(c.dataType)) &&
             /^(lat|long|latitude|longitude)$/i.test(lower);
           if (isGeoString || isLatLong) {
             findings.push(
@@ -1749,7 +1750,7 @@ export const BPA_RULES: ReadonlyArray<BPARule> = [
       for (const t of model.tables) {
         if (t.isAutoDateTable) continue;
         for (const c of t.columns) {
-          if (c.dataType !== 'string') continue;
+          if (!isStringType(c.dataType)) continue;
           if (!/month/i.test(c.name)) continue;
           if (/months/i.test(c.name)) continue;
           if (c.sortByColumn && c.sortByColumn.trim() !== '') continue;
@@ -2048,20 +2049,12 @@ function sharedCategoricalColumnNames(a: TMDLTable, b: TMDLTable): string[] {
   for (const c of b.columns) {
     const peer = aCols.get(c.name);
     if (!peer) continue;
-    if (c.dataType !== 'string' || peer.dataType !== 'string') continue;
+    if (!isStringType(c.dataType) || !isStringType(peer.dataType)) continue;
     if (c.isKey || peer.isKey) continue;
     if (looksLikeKeyName(c.name)) continue;
     out.push(c.name);
   }
   return out;
-}
-
-function isNumericType(dataType: string): boolean {
-  return dataType === 'int64' || dataType === 'decimal' || dataType === 'double';
-}
-
-function isDateType(dataType: string): boolean {
-  return dataType === 'date' || dataType === 'dateTime';
 }
 
 function isTimeDataCategory(dataCategory: string | undefined): boolean {
@@ -2070,13 +2063,13 @@ function isTimeDataCategory(dataCategory: string | undefined): boolean {
 
 function isMarkedDateTable(table: TMDLTable): boolean {
   if (!isTimeDataCategory(table.dataCategory)) return false;
-  return table.columns.some((column) => column.isKey && isDateType(column.dataType));
+  return table.columns.some((column) => column.isKey && isTemporalType(column.dataType));
 }
 
 function isDateTableCandidate(table: TMDLTable): boolean {
   if (isMarkedDateTable(table) || looksLikeDateTableName(table.name)) return true;
   return table.columns.some(
-    (column) => isTimeDataCategory(column.dataCategory) && isDateType(column.dataType),
+    (column) => isTimeDataCategory(column.dataCategory) && isTemporalType(column.dataType),
   );
 }
 
@@ -2189,9 +2182,9 @@ function looksLikePercentageMeasure(name: string): boolean {
 // month/quarter/year/week/period.
 function grainOf(col: TMDLColumn): 'day' | 'coarse' | 'unknown' {
   const name = col.name;
-  if (isDateType(col.dataType) || /(^|[^a-z])(date|day)([^a-z]|$)/i.test(name)) return 'day';
+  if (isTemporalType(col.dataType) || /(^|[^a-z])(date|day)([^a-z]|$)/i.test(name)) return 'day';
   if (
-    (col.dataType === 'int64' || col.dataType === 'string') &&
+    (normalizeDataType(col.dataType) === 'int64' || isStringType(col.dataType)) &&
     /(^|[^a-z])(month|quarter|year|week|period)([^a-z]|$)/i.test(name)
   ) {
     return 'coarse';
