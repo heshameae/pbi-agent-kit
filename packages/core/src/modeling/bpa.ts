@@ -1,4 +1,10 @@
-import { isNumericType, isStringType, isTemporalType, normalizeDataType } from './data-types.js';
+import {
+  isAggregatableNumeric,
+  isNumericType,
+  isStringType,
+  isTemporalType,
+  normalizeDataType,
+} from './data-types.js';
 import { findCalendarSourceRisks } from './date-grain-plan.js';
 import { daxReferenceCheck } from './dax-reference-check.js';
 import { classifyTable } from './fact-classifier.js';
@@ -9,6 +15,7 @@ import {
   hasUndirectedRelationshipPath,
   pathsDifferByIntermediate,
 } from './field-index.js';
+import { compareByName, looksLikeKeyName } from './naming.js';
 import { typesCompatible } from './relationship-check.js';
 import type {
   BPAViolation,
@@ -736,12 +743,17 @@ export const BPA_RULES: ReadonlyArray<BPARule> = [
       for (const t of model.tables) {
         for (const c of t.columns) {
           if (c.isHidden) continue;
-          if (!isNumericType(c.dataType)) continue;
-          if (!c.summarizeBy || c.summarizeBy.toLowerCase() === 'none') continue;
+          // Summing a numeric key is meaningless whether the Sum is EXPLICIT or the
+          // engine default. A numeric column with no `summarizeBy` line auto-sums
+          // (implicit Sum), so the prior `!c.summarizeBy` skip let an int64 Year /
+          // CustomerKey escape the gate while still summing in visuals. isAggregatableNumeric
+          // skips only an explicit `none` (and non-numerics).
+          if (!isAggregatableNumeric(c)) continue;
           if (!looksLikeKeyName(c.name)) continue;
+          const effectiveSummarizeBy = c.summarizeBy ?? 'Sum (engine default)';
           findings.push(
             violation('MOD014', 'error', 'Modeling', columnRef(c), {
-              message: `Numeric key/identifier column "${c.name}" has summarizeBy=${c.summarizeBy}; summing a key produces meaningless totals.`,
+              message: `Numeric key/identifier column "${c.name}" has summarizeBy=${effectiveSummarizeBy}; summing a key produces meaningless totals.`,
               fix: 'Set summarizeBy: none on this column.',
             }),
           );
@@ -1084,7 +1096,9 @@ export const BPA_RULES: ReadonlyArray<BPARule> = [
       const findings: BPAViolation[] = [];
       for (const group of byNormalized.values()) {
         if (group.length < 2) continue;
-        const others = group.map((g) => `'${g.table}'[${g.name}]`);
+        // Sort peer refs so the human-readable message is canonical regardless of
+        // table-parse order (the message text itself must not shuffle run-to-run).
+        const others = group.map((g) => `'${g.table}'[${g.name}]`).sort(compareByName);
         for (const g of group) {
           findings.push(
             violation('DAX008', 'warning', 'DAX', `'${g.table}'[${g.name}]`, {
@@ -1860,6 +1874,16 @@ export function runBPA(model: TMDLModel): ReadonlyArray<BPAViolation> {
   for (const rule of BPA_RULES) {
     out.push(...rule.check(model));
   }
+  // Impose a canonical, machine-independent order so the review output is
+  // byte-identical run-to-run regardless of table-parse (filesystem) order. Sort by
+  // (ruleId, object, message) — all model-derived strings, code-unit comparison.
+  // The determinism guarantee no longer depends on the upstream parser's ordering.
+  out.sort(
+    (a, b) =>
+      compareByName(a.ruleId, b.ruleId) ||
+      compareByName(a.object, b.object) ||
+      compareByName(a.message, b.message),
+  );
   return out;
 }
 
@@ -2093,21 +2117,6 @@ function dateTableSources(
 
 // CANONICAL Tabular-Editor ruleset name patterns (key/ID/year/postal/monthNo) —
 // STRUCTURAL signals identifying identifier-like columns, NOT dataset-specific
-// names. Used by MOD014 / FMT003 / MOD010. Matches both camelCase suffixes
-// ("CustomerKey", "ProductID", "MonthNo") and whitespace/underscore-separated
-// forms ("customer key", "month_no").
-function looksLikeKeyName(name: string): boolean {
-  // camelCase / PascalCase suffix: a lowercase/digit immediately before the token.
-  if (/[a-z0-9](Key|Id|ID|Code|SKU|Guid|GUID|Number|No)\b/.test(name)) return true;
-  // separated or standalone token (case-insensitive), bounded by non-letters.
-  // NOTE: standalone `number`/`no` deliberately EXCLUDED — they false-match
-  // additive counts like "Number of Orders"/"No of Items" (legit summarizeBy:sum).
-  // The camelCase suffix branch above still catches identifier forms (OrderNumber/LineNo).
-  return /(^|[^a-z])(id|key|code|sku|guid|postal|zip|year|monthno|weekno|daynumber)([^a-z]|$)/i.test(
-    name,
-  );
-}
-
 // CANONICAL TE pattern for date-dimension table names — STRUCTURAL, not a
 // dataset identifier. Used by MODB2.
 function looksLikeDateTableName(name: string): boolean {

@@ -1,12 +1,12 @@
 {
-  "name": "pbi-report-mcp",
+  "name": "pbi-modeling-mcp",
   "version": "0.1.0",
   "private": true,
-  "description": "MCP server exposing gated Power BI semantic-model tools by default and PBIR operations for internal dogfood profiles.",
+  "description": "MCP server exposing governed Power BI semantic-model tools.",
   "license": "MIT",
   "type": "module",
   "bin": {
-    "pbi-report-mcp": "./dist/server.js"
+    "pbi-modeling-mcp": "./dist/server.js"
   },
   "files": ["dist", "src"],
   "scripts": {

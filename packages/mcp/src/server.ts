@@ -32,10 +32,13 @@ import {
   compareByName,
   daxReferenceCheck,
   deriveRequiredDateCoverageFacts,
+  detectCalendarMaxAnchorCap,
   expressionUsesTimeIntelligence,
   findCalendarSourceRisks,
   findColumn,
   findMeasure,
+  hasCompleteDateGrainProof,
+  hasCompleteDateTableKeyProof,
   isNumericType,
   isTemporalType,
   isYearEndDateLiteral,
@@ -2795,20 +2798,51 @@ async function planDateGrainForRead(
         evidence.length,
         eligibleFacts.length,
       );
-      probeStatus =
-        expectedEvidenceRows === eligibleFacts.length
+      // A row whose __table/__column parsed but whose numeric/date METRICS did not (e.g. a
+      // non-ISO date serialization the parser can't read) is NOT a successful proof — it is
+      // the exact contradiction (status 'succeeded' + persistent blockers) that drove the
+      // agent thrash loop. Status 'succeeded' now requires COMPLETE proof; an incomplete one
+      // surfaces 'proof-incomplete' (a tool/serialization defect, routed to STOP), never
+      // 'succeeded'. Dataset-agnostic: keys off field presence only.
+      const allRowsPresent = expectedEvidenceRows === eligibleFacts.length;
+      const dateTableComplete =
+        !coverageQuery || hasCompleteDateTableKeyProof(coverageEvidence.dateTable);
+      const incompleteFacts = eligibleFacts
+        .filter(
+          (fact) =>
+            !hasCompleteDateGrainProof(
+              evidence.find(
+                (row) => row.tableName === fact.tableName && row.dateColumn === fact.dateColumn,
+              ),
+            ),
+        )
+        .map((fact) => `${fact.tableName}[${fact.dateColumn}]`);
+      const proofComplete = allRowsPresent && dateTableComplete && incompleteFacts.length === 0;
+      probeStatus = proofComplete
+        ? {
+            status: 'succeeded',
+            evidenceRows: evidence.length,
+            expectedEvidenceRows: eligibleFacts.length,
+            queriedFacts: eligibleFacts.length,
+          }
+        : parseShapeStatus
           ? {
-              status: 'succeeded',
+              ...parseShapeStatus,
               evidenceRows: evidence.length,
               expectedEvidenceRows: eligibleFacts.length,
               queriedFacts: eligibleFacts.length,
             }
-          : parseShapeStatus
+          : allRowsPresent
             ? {
-                ...parseShapeStatus,
+                status: 'proof-incomplete',
                 evidenceRows: evidence.length,
                 expectedEvidenceRows: eligibleFacts.length,
                 queriedFacts: eligibleFacts.length,
+                reason:
+                  'The probe returned a row for each requested column, but one or more numeric/date metrics did not parse (a probe/serialization defect, not an empty model). Report this and STOP; do not retry with probeData:false, run manual DAX, or mutate the model.',
+                ...(dateTableComplete ? {} : { dateTableProofIncomplete: true }),
+                ...(incompleteFacts.length > 0 ? { incompleteFacts } : {}),
+                diagnostics,
               }
             : {
                 status: 'incomplete',
@@ -2905,20 +2939,49 @@ async function planDateTableForRead(
         parsedEvidenceRows,
         1 + eligibleFacts.length,
       );
-      probeStatus =
-        hasDateTableEvidence && factEvidenceRows === eligibleFacts.length
+      // 'succeeded' requires COMPLETE proof, not merely present rows: the date-table key
+      // proof and every eligible fact's grain proof must parse all metrics. A present-but-
+      // unparsed-metric row (e.g. non-ISO date serialization) surfaces 'proof-incomplete'
+      // (routed to STOP), never 'succeeded' — closing the status-lies-to-the-agent gap that
+      // drove the thrash loop. Dataset-agnostic: field presence only.
+      const allRowsPresent = hasDateTableEvidence && factEvidenceRows === eligibleFacts.length;
+      const dateTableComplete = hasCompleteDateTableKeyProof(evidence.dateTable);
+      const incompleteFacts = eligibleFacts
+        .filter(
+          (fact) =>
+            !hasCompleteDateGrainProof(
+              evidence.facts.find(
+                (row) => row.tableName === fact.tableName && row.dateColumn === fact.dateColumn,
+              ),
+            ),
+        )
+        .map((fact) => `${fact.tableName}[${fact.dateColumn}]`);
+      const proofComplete = allRowsPresent && dateTableComplete && incompleteFacts.length === 0;
+      probeStatus = proofComplete
+        ? {
+            status: 'succeeded',
+            evidenceRows: 1 + evidence.facts.length,
+            expectedEvidenceRows: 1 + eligibleFacts.length,
+            queriedFacts: eligibleFacts.length,
+          }
+        : parseShapeStatus
           ? {
-              status: 'succeeded',
-              evidenceRows: 1 + evidence.facts.length,
+              ...parseShapeStatus,
+              evidenceRows: parsedEvidenceRows,
               expectedEvidenceRows: 1 + eligibleFacts.length,
               queriedFacts: eligibleFacts.length,
             }
-          : parseShapeStatus
+          : allRowsPresent
             ? {
-                ...parseShapeStatus,
+                status: 'proof-incomplete',
                 evidenceRows: parsedEvidenceRows,
                 expectedEvidenceRows: 1 + eligibleFacts.length,
                 queriedFacts: eligibleFacts.length,
+                reason:
+                  'The probe returned the date-table row and a row per fact, but one or more numeric/date metrics did not parse (a probe/serialization defect, not an empty model). Report this and STOP; do not retry with probeData:false, run manual DAX, or mutate the model.',
+                ...(dateTableComplete ? {} : { dateTableProofIncomplete: true }),
+                ...(incompleteFacts.length > 0 ? { incompleteFacts } : {}),
+                diagnostics,
               }
             : {
                 status: 'incomplete',
@@ -4195,9 +4258,11 @@ async function enforceTimeIntelligenceNotBlankInDefaultContext(
   intent: MeasureIntent | undefined,
 ): Promise<string | undefined> {
   if (!expressionUsesTimeIntelligence(expression)) return undefined;
-  const bare = parseBarePeriodToDate(expression);
-  if (!bare) return undefined;
   const time = intent?.timeIntelligence;
+  const bare = parseBarePeriodToDate(expression);
+  // BOTH paths — the bare blank-risk rebuild AND the already-capped calendar-max-anchor
+  // refusal — require a declared TI date axis plus a live overshoot probe. Without the
+  // declared axis we can neither rebuild nor safely probe, so we do nothing.
   if (
     time?.dateTable === undefined ||
     time.dateColumn === undefined ||
@@ -4219,10 +4284,11 @@ async function enforceTimeIntelligenceNotBlankInDefaultContext(
   try {
     raw = await getModelDriver().daxQuery(query, connection, { includeRawDiagnostics: true });
   } catch (err) {
-    // The probe could not run. Do NOT fail closed (that would block legitimate authoring
-    // on a transient probe error), but do NOT fail SILENTLY either — return a warning so
-    // the caller can distinguish "proven not-blank" from "could not prove", instead of an
-    // unobservable fail-open that lets a possibly-blank measure through quietly.
+    // The probe could not run. NEVER fail closed (that would block legitimate authoring on
+    // a transient probe error). For a bare measure, surface a warning so the caller can
+    // distinguish "proven not-blank" from "could not prove"; for an already-capped measure
+    // we cannot prove an overshoot, so we leave it untouched rather than refuse blindly.
+    if (!bare) return undefined;
     return `Could not verify default-context blank-risk for "${measureName}": the Date/fact max-date probe failed (${err instanceof Error ? err.message : String(err)}). The measure was written, but if the Date table extends past this measure's fact, a bare ${bare.period} will be BLANK without a date slicer — re-check, or use the per-fact upper-bound cap from buildTimeIntelligenceMeasureExpression.`;
   }
   const evidence = parseDateTableCoverageProbeResult(raw);
@@ -4234,7 +4300,24 @@ async function enforceTimeIntelligenceNotBlankInDefaultContext(
     );
     return calendarOvershootsFactDay(calendarMaxDate, factEvidence?.maxDate);
   });
-  if (overshootFacts.length === 0) return;
+  // No overshoot → a bare period-to-date is safe in default context, AND a calendar-max
+  // anchor is harmless (it resolves to a date that has data), so nothing to refuse here.
+  if (overshootFacts.length === 0) return undefined;
+  if (!bare) {
+    // The measure is already capped (carries an _AsOf / date `<=` upper bound) AND the
+    // calendar genuinely overshoots the facts. If the cap LOOKS anchored at the calendar
+    // END (MAX/LASTDATE of the date axis with date filters cleared) rather than the last
+    // date with DATA — the field regression that blanks the measure in every context —
+    // surface a NON-BLOCKING advisory. This is best-effort detection of a semantic
+    // property (see detectCalendarMaxAnchorCap), so it must NOT hard-refuse: a spurious
+    // match on a legitimate compound measure (a period-to-date co-located with an unrelated
+    // calendar-anchored rolling window) would otherwise break valid authoring. The measure
+    // is written; the warning tells the author to verify and, if blank, re-anchor.
+    if (detectCalendarMaxAnchorCap(expression, time.dateTable, time.dateColumn)) {
+      return `Possible blank-in-every-context cap in "${measureName}": its period-to-date upper bound appears to anchor at the CALENDAR end of '${time.dateTable}'[${time.dateColumn}] (MAX/LASTDATE of the date axis with date filters cleared), and this Date table extends past the facts (a shared calendar covering a later fact such as Ship Date, or a future horizon). If the measure is BLANK in default (no-slicer) context, re-anchor the cap at THIS measure's own last non-blank date: VAR _LastData = CALCULATE(MAXX(FILTER(VALUES('${time.dateTable}'[${time.dateColumn}]), NOT ISBLANK(CALCULATE(<base measure>))), '${time.dateTable}'[${time.dateColumn}]), REMOVEFILTERS('${time.dateTable}')). Never anchor a period-to-date cap at MAX/LASTDATE of the date table. (If this measure is a legitimate compound expression whose calendar anchor feeds an unrelated rolling window, ignore this note.)`;
+    }
+    return undefined;
+  }
   // Pick the overshoot fact deterministically: prefer the one whose table the
   // measure's base expression actually aggregates (so the cap anchors to the right
   // fact in a multi-fact intent), falling back to the first overshooting fact.
@@ -4298,10 +4381,11 @@ async function enforceTimeIntelligenceNotBlankInDefaultContext(
     dateTable: time.dateTable,
     dateKeyColumn: time.dateColumn,
     ...(yearEndDate !== undefined ? { yearEndDate } : {}),
-    lastDataDate: {
-      factTable: overshootFact.tableName,
-      factDateColumn: overshootFact.dateColumn,
-    },
+    // Anchor the cap at THIS measure's own last non-blank date (measure-relative),
+    // not at the overshoot fact's date column — so it stays correct for any role
+    // (Order Date vs Ship Date) and for row-filtered measures, and can never be
+    // "improved" into a calendar-max anchor that blanks (the field regression).
+    capToLastDataPeriod: true,
   });
   throwInputValidationError(
     `Measure write refused: "${measureName}" is a bare ${bare.period} measure, but the Date table "${time.dateTable}" extends past the last date in "${overshootFact.tableName}"[${overshootFact.dateColumn}], so it returns BLANK in default (no-slicer) context. Write the capped expression in correctedExpression instead — it caps the upper bound at this fact's last data date, per measure, at day grain, so default, slicer, and drill-down contexts are all correct.`,
@@ -5732,13 +5816,23 @@ tool(
       // marked" rule.
       const verifiedTable = verified.tables.find((candidate) => candidate.name === input.tableName);
       const dataCategoryNotApplied = isRecord(result) && result.dataCategoryNotApplied === true;
+      // The coverage/key gate ALREADY PASSED above (enforceMarkAsDateGate would have thrown
+      // otherwise), so the date key is proven clean from live data and the mark write was
+      // accepted by the host — only the dataCategory="Time" READ-BACK is unobservable (the
+      // known Import no-op; the user sees the same after marking in Desktop). Report
+      // marked:true with markObservable:false rather than marked:false, so the agent treats
+      // the mark as DONE (it is, for relationships and explicit-column TI) and does NOT loop
+      // re-marking / deleting / recreating the table. markObservable:false + the warning keep
+      // it honest that the dataCategory metadata is not reflected and that built-in/implicit
+      // time intelligence still needs the Desktop mark.
       return {
-        marked: false,
+        marked: true,
+        markObservable: false,
         mode,
         reason: dataCategoryNotApplied
           ? 'date-category-write-not-applied'
           : 'post-write-verification-failed',
-        warning: `The host accepted the mark write but a fresh live read did not show dataCategory="Time". This is a host-side metadata no-op, NOT an "Import tables cannot be marked" rule (marking an Import table as a Date table is supported). The date key is proven from data, so relationships and explicit-column time intelligence (TOTALYTD(<measure>, '${input.tableName}'[${input.dateColumn}])) work regardless. Built-in/implicit time intelligence and the Date-hierarchy UX stay off until the table is marked in Power BI Desktop (Model view → right-click → Mark as date table). Do not block on this and do not ask the user to mark it manually unless implicit time intelligence is specifically required.`,
+        warning: `The mark write was accepted and the date key is proven clean from live data, but a fresh live read did not show dataCategory="Time". This is a host-side metadata no-op, NOT an "Import tables cannot be marked" rule (marking an Import table as a Date table is supported), and you will see the same unobservable read-back even after marking in Power BI Desktop. Relationships and explicit-column time intelligence (TOTALYTD(<measure>, '${input.tableName}'[${input.dateColumn}])) work regardless. Built-in/implicit time intelligence and the Date-hierarchy UX require marking the table in Power BI Desktop (Model view → right-click → Mark as date table). Treat the mark as DONE; do NOT re-mark, delete, or recreate the table over this.`,
         observedTableDataCategory: verifiedTable?.dataCategory ?? null,
         ...(columnKeySkipped ? { columnKeySkipped: true } : {}),
         ...(markGateWarnings.length > 0 ? { warnings: markGateWarnings } : {}),

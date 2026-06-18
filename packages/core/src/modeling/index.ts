@@ -73,6 +73,8 @@ export {
   deriveRequiredDateCoverageFacts,
   findCalendarSourceRisks,
   GOVERNED_DATE_TABLE_ANNOTATIONS,
+  hasCompleteDateGrainProof,
+  hasCompleteDateTableKeyProof,
   isDataProvenDailyKey,
   MAX_FUTURE_HORIZON_DAYS,
   parseDateGrainProbeResult,
@@ -150,6 +152,7 @@ export type {
 export {
   buildTimeIntelligenceMeasureExpression,
   calendarOvershootsFactDay,
+  detectCalendarMaxAnchorCap,
   isYearEndDateLiteral,
   parseBarePeriodToDate,
   parseTimeIntelligencePeriod,

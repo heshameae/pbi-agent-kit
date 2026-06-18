@@ -202,10 +202,14 @@ export function hasUndirectedRelationshipPath(
 }
 
 export function isSummarizableColumn(column: ModelColumnField): boolean {
+  // A numeric column with an EXPLICIT non-none summarizeBy is a measure-like quantity
+  // (excluded from blockedAxes/axis candidates). Kept conservative (explicit only) so an
+  // undefined-summarizeBy numeric stays an axis candidate — matching the fact-classifier
+  // and grain definitions. (Axis-side measure-like detection lives in star-schema-plan.)
   return (
     column.summarizeBy !== undefined &&
     column.summarizeBy.toLowerCase() !== 'none' &&
-    isNumericDataType(column.dataType)
+    isNumericType(column.dataType)
   );
 }
 
@@ -372,10 +376,6 @@ function parseTreatasPairs(expression: string): TreatasPair[] {
   }
 
   return pairs;
-}
-
-function isNumericDataType(dataType: string): boolean {
-  return isNumericType(dataType);
 }
 
 function unique(values: readonly string[]): string[] {

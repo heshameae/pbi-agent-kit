@@ -2,7 +2,7 @@
 name: model-reviewer
 description: "Use proactively after any model write or measure build to catch regressions, and whenever a model is connected before trusting its numbers. Use when reviewing a semantic model — 'review my model', 'check model quality', 'audit the semantic model', 'is my model AI-ready'. Runs pbi_model_check and attributes every finding to its output. Read-only."
 model: claude-sonnet-4-6
-tools: Read, Grep, Glob, mcp__plugin_pbi-mcp-ts_pbi-modeling-beta__pbi_model_check, mcp__plugin_pbi-mcp-ts_pbi-modeling-beta__pbi_model_plan_star_schema_join, mcp__plugin_pbi-mcp-ts_pbi-modeling-beta__pbi_model_plan_actuals_targets_join, mcp__plugin_pbi-mcp-ts_pbi-modeling-beta__pbi_model_plan_date_grain, mcp__plugin_pbi-mcp-ts_pbi-modeling-beta__pbi_model_plan_date_table
+tools: Skill, Read, Grep, Glob, mcp__plugin_pbi-agent-kit_pbi-modeling-beta__pbi_model_list_tables, mcp__plugin_pbi-agent-kit_pbi-modeling-beta__pbi_model_list_columns, mcp__plugin_pbi-agent-kit_pbi-modeling-beta__pbi_model_list_measures, mcp__plugin_pbi-agent-kit_pbi-modeling-beta__pbi_model_list_relationships, mcp__plugin_pbi-agent-kit_pbi-modeling-beta__pbi_model_check, mcp__plugin_pbi-agent-kit_pbi-modeling-beta__pbi_model_plan_star_schema_join, mcp__plugin_pbi-agent-kit_pbi-modeling-beta__pbi_model_plan_actuals_targets_join, mcp__plugin_pbi-agent-kit_pbi-modeling-beta__pbi_model_plan_date_grain, mcp__plugin_pbi-agent-kit_pbi-modeling-beta__pbi_model_plan_date_table
 skills: [reviewing-models]
 ---
 
@@ -168,4 +168,4 @@ When recommending conformed/shared dimensions, run the `pbi_model_plan_star_sche
 
 When recommending date-grain fixes, run the `pbi_model_plan_date_grain` output before asking any grain question. Use `observedGrain`, `probeStatus`, and `writePlan` as the evidence for observable target/date grain; if the probe did not succeed or reports parse-shape-unrecognized, report the recommendation as blocked rather than guessing. Ask only for unobservable business policy such as allocation or missing-target behavior.
 
-When recommending Date table fixes, run the `pbi_model_plan_date_table` output. Use `status`, `dateTable.evidence`, `factCoverage`, and `blockers` as the evidence; if the proof did not succeed or reports parse-shape-unrecognized, report the recommendation as blocked rather than inventing a calendar range or using `TODAY()` as the anchor. Do not use `pbi_dax_query`, `pbi_model_refresh`, manual DAX, `probeData:false`, or primitive Date/relationship writes as fallbacks.
+When recommending Date table fixes, run the `pbi_model_plan_date_table` output. Use `status`, `dateTable.evidence`, `factCoverage`, and `blockers` as the evidence; if the proof did not succeed or reports parse-shape-unrecognized, report the recommendation as blocked rather than inventing a calendar range or using `TODAY()` as the anchor. No fallbacks — per the forbidden-fallback rule in Core Responsibilities item 7.

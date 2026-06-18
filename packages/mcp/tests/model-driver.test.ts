@@ -1525,8 +1525,18 @@ describe('ModelDriver writes', () => {
       columnKeySkipped: true,
       columnKeyWarning: 'Setting IsKey property is only supported for DirectQuery mode tables.',
     });
-    const tableUpdate = client.calls.find((c) => c.name === 'table_operations');
-    const columnUpdate = client.calls.find((c) => c.name === 'column_operations');
+    // updateTable now read-back-verifies, so the call stream interleaves snapshot
+    // List ops; match the Update calls specifically rather than the first op.
+    const tableUpdate = client.calls.find(
+      (c) =>
+        c.name === 'table_operations' &&
+        (c.args as { request?: { operation?: string } }).request?.operation === 'Update',
+    );
+    const columnUpdate = client.calls.find(
+      (c) =>
+        c.name === 'column_operations' &&
+        (c.args as { request?: { operation?: string } }).request?.operation === 'Update',
+    );
     expect(tableUpdate?.args).toEqual({
       request: { operation: 'Update', definitions: [{ name: 'Date', dataCategory: 'Time' }] },
     });
@@ -1758,6 +1768,244 @@ describe('ModelDriver writes', () => {
     expect(opCall(client.calls, 'Delete')?.args).toEqual({
       request: { operation: 'Delete', references: [{ name: 'rel-guid-1' }] },
     });
+  });
+
+  // -- write verification (P1/P6) + auto-date delete guard (P4) --
+  const verifyClient = (extra: Record<string, McpToolResult> = {}) =>
+    makeClient({
+      'connection_operations/ListLocalInstances': json({
+        data: [{ connectionString: 'Data Source=localhost:1;' }],
+      }),
+      ...extra,
+    });
+
+  it('updateColumn succeeds when the live re-read reflects the requested change', async () => {
+    const client = verifyClient({
+      'table_operations/List': json({ data: [{ name: 'D' }] }),
+      'column_operations/List': json({
+        data: [{ tableName: 'D', name: 'C', isHidden: true, dataType: 'dateTime' }],
+      }),
+      'relationship_operations/List': json({ data: [] }),
+      'column_operations/Update': json({ success: true }),
+    });
+    const driver = new ModelDriver(client);
+    await expect(
+      driver.updateColumn({ tableName: 'D', name: 'C', isHidden: true }),
+    ).resolves.toBeDefined();
+  });
+
+  it('updateColumn throws when the live re-read still shows the prior column state', async () => {
+    const client = verifyClient({
+      'table_operations/List': json({ data: [{ name: 'D' }] }),
+      'column_operations/List': json({
+        data: [{ tableName: 'D', name: 'C', summarizeBy: 'none', dataType: 'dateTime' }],
+      }),
+      'relationship_operations/List': json({ data: [] }),
+      'column_operations/Update': json({ success: true }),
+    });
+    const driver = new ModelDriver(client);
+    await expect(
+      driver.updateColumn({ tableName: 'D', name: 'C', summarizeBy: 'sum' }),
+    ).rejects.toThrow(/was not applied/);
+  });
+
+  it('updateColumn tolerates an isHidden read-back that does not reflect the change', async () => {
+    // isHidden is cosmetic and carries the Import-mode read-back false-negative
+    // hazard (an absent List key parses to false), so it is never asserted on
+    // read-back — a hide write whose re-read still shows isHidden:false must NOT
+    // throw, otherwise the agent asks the user to hide fields that are already hidden.
+    const client = verifyClient({
+      'table_operations/List': json({ data: [{ name: 'D' }] }),
+      'column_operations/List': json({
+        data: [{ tableName: 'D', name: 'C', isHidden: false, dataType: 'dateTime' }],
+      }),
+      'relationship_operations/List': json({ data: [] }),
+      'column_operations/Update': json({ success: true }),
+    });
+    const driver = new ModelDriver(client);
+    await expect(
+      driver.updateColumn({ tableName: 'D', name: 'C', isHidden: true }),
+    ).resolves.toBeDefined();
+  });
+
+  it('updateColumn throws on a { success:false } envelope returned without isError', async () => {
+    const client = verifyClient({
+      'column_operations/Update': json({ success: false, message: 'engine rejected the write' }),
+    });
+    const driver = new ModelDriver(client);
+    await expect(
+      driver.updateColumn({ tableName: 'D', name: 'C', isHidden: true }),
+    ).rejects.toThrow(/engine rejected the write/);
+  });
+
+  it('updateColumns throws when a batched result item reports success:false', async () => {
+    const client = verifyClient({
+      'column_operations/Update': json({
+        results: [{ success: true }, { success: false, message: 'second column failed' }],
+      }),
+    });
+    const driver = new ModelDriver(client);
+    await expect(
+      driver.updateColumns([
+        { tableName: 'D', name: 'C', isHidden: true },
+        { tableName: 'D', name: 'C2', isHidden: true },
+      ]),
+    ).rejects.toThrow(/second column failed/);
+  });
+
+  it('updateColumn does not false-fail when the target table is not observable', async () => {
+    // An empty/unobservable snapshot must SKIP verification (cannot confirm)
+    // rather than throw, so legitimately-unobservable shapes are not false
+    // negatives.
+    const client = liveClient();
+    const driver = new ModelDriver(client);
+    await expect(
+      driver.updateColumn({ tableName: 'Missing', name: 'C', isHidden: true }),
+    ).resolves.toBeDefined();
+  });
+
+  it('updateMeasure throws when the live re-read still shows the prior expression', async () => {
+    const client = verifyClient({
+      'table_operations/List': json({ data: [{ name: 'D' }] }),
+      'column_operations/List': json({ data: [] }),
+      'relationship_operations/List': json({ data: [] }),
+      'measure_operations/List': json({ data: [{ tableName: 'D', name: 'M' }] }),
+      'measure_operations/Get': json({
+        results: [{ success: true, data: { tableName: 'D', name: 'M', expression: 'OLD()' } }],
+      }),
+      'measure_operations/Update': json({ success: true }),
+    });
+    const driver = new ModelDriver(client);
+    await expect(
+      driver.updateMeasure({ tableName: 'D', name: 'M', expression: 'NEW()' }),
+    ).rejects.toThrow(/was not applied/);
+  });
+
+  it('updateMeasure tolerates a measure whose expression is not surfaced on read-back', async () => {
+    // The enrich Get can omit the expression (parsed as ''); an empty read-back must
+    // be treated as "not observable" (cannot-disprove), never a false negative.
+    const client = verifyClient({
+      'table_operations/List': json({ data: [{ name: 'D' }] }),
+      'column_operations/List': json({ data: [] }),
+      'relationship_operations/List': json({ data: [] }),
+      'measure_operations/List': json({ data: [{ tableName: 'D', name: 'M' }] }),
+      'measure_operations/Get': json({
+        results: [{ success: true, data: { tableName: 'D', name: 'M' } }],
+      }),
+      'measure_operations/Update': json({ success: true }),
+    });
+    const driver = new ModelDriver(client);
+    await expect(
+      driver.updateMeasure({ tableName: 'D', name: 'M', expression: 'NEW()' }),
+    ).resolves.toBeDefined();
+  });
+
+  it('activateRelationship throws when the relationship reads back inactive', async () => {
+    const client = verifyClient({
+      'table_operations/List': json({ data: [] }),
+      'column_operations/List': json({ data: [] }),
+      'relationship_operations/List': json({
+        data: [
+          {
+            name: 'rel-1',
+            fromTable: 'F',
+            fromColumn: 'K',
+            toTable: 'D',
+            toColumn: 'K',
+            isActive: false,
+          },
+        ],
+      }),
+      'relationship_operations/Activate': json({ success: true }),
+    });
+    const driver = new ModelDriver(client);
+    await expect(driver.activateRelationship({ id: 'rel-1' })).rejects.toThrow(/was not applied/);
+  });
+
+  it('activateRelationship succeeds when the relationship reads back active', async () => {
+    const client = verifyClient({
+      'table_operations/List': json({ data: [] }),
+      'column_operations/List': json({ data: [] }),
+      'relationship_operations/List': json({
+        data: [
+          {
+            name: 'rel-1',
+            fromTable: 'F',
+            fromColumn: 'K',
+            toTable: 'D',
+            toColumn: 'K',
+            isActive: true,
+          },
+        ],
+      }),
+      'relationship_operations/Activate': json({ success: true }),
+    });
+    const driver = new ModelDriver(client);
+    await expect(driver.activateRelationship({ id: 'rel-1' })).resolves.toBeDefined();
+  });
+
+  it('deleteRelationship refuses to orphan an auto date/time Variation', async () => {
+    const client = verifyClient({
+      'table_operations/List': json({
+        data: [{ name: 'Sales' }, { name: 'LocalDateTable_abc', isAutoDateTable: true }],
+      }),
+      'column_operations/List': json({ data: [] }),
+      'relationship_operations/List': json({
+        data: [
+          {
+            id: 'auto-1',
+            fromTable: 'Sales',
+            fromColumn: 'OrderDate',
+            toTable: 'LocalDateTable_abc',
+            toColumn: 'Date',
+          },
+        ],
+      }),
+    });
+    const driver = new ModelDriver(client);
+    await expect(driver.deleteRelationship({ id: 'auto-1' })).rejects.toThrow(/auto date\/time/i);
+    expect(opCall(client.calls, 'Delete')).toBeUndefined();
+  });
+
+  it('deleteRelationship proceeds for a normal relationship and confirms it is gone', async () => {
+    let deleted = false;
+    const calls: RecordedCall[] = [];
+    const client: ModelClient & { calls: RecordedCall[] } = {
+      calls,
+      async callTool(name, args) {
+        calls.push({ name, args });
+        const op = (args as { request?: { operation?: string } }).request?.operation ?? '';
+        if (name === 'connection_operations' && op === 'ListLocalInstances') {
+          return json({ data: [{ connectionString: 'Data Source=localhost:1;' }] });
+        }
+        if (name === 'relationship_operations' && op === 'Delete') {
+          deleted = true;
+          return json({ success: true });
+        }
+        if (name === 'relationship_operations' && op === 'List') {
+          return json({
+            data: deleted
+              ? []
+              : [
+                  {
+                    id: 'rel-1',
+                    fromTable: 'Sales',
+                    fromColumn: 'OrderDate',
+                    toTable: 'DimDate',
+                    toColumn: 'Date',
+                  },
+                ],
+          });
+        }
+        if (name === 'table_operations' && op === 'List') {
+          return json({ data: [{ name: 'Sales' }, { name: 'DimDate' }] });
+        }
+        return json({});
+      },
+    };
+    const driver = new ModelDriver(client);
+    await expect(driver.deleteRelationship({ id: 'rel-1' })).resolves.toBeDefined();
+    expect(opCall(calls, 'Delete')?.name).toBe('relationship_operations');
   });
 
   // -- snapshot invalidation regression --

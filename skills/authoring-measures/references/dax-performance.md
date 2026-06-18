@@ -1,4 +1,6 @@
-# DAX Performance — Pattern Catalog (DAX001–021)
+# DAX Performance — Pattern Catalog (PERF001–021)
+
+> **Namespace + enforcement scope.** These `PERF###` codes are a SEPARATE performance-pattern catalog. They are **NOT** the enforced rule ids emitted by `bpa.ts` / `pbi_model_check` (whose ids have entirely different meanings — its first rule is "use DIVIDE() instead of the `/` operator", unrelated to `PERF001` here). Every `PERF###` code is **ADVISORY ONLY** — a reasoning aid, never machine-checked or flagged by the deterministic checker. Do **not** look up a `pbi_model_check` finding in this catalog; consult the reviewing-models `check-catalog` for the enforced checker rules and their fixes.
 
 Tier 1 DAX optimization patterns. Apply only after resolving the referenced measures/fields and preserving semantic equivalence; modify only measure definitions, never the EVALUATE clause or SUMMARIZECOLUMNS grouping columns.
 
@@ -12,24 +14,24 @@ Tier 1 DAX optimization patterns. Apply only after resolving the referenced meas
 
 | Signal in trace / expression | Start With |
 |---|---|
-| `CallbackDataID` or `EncodeCallback` in xmSQL | DAX002, DAX007, DAX008, DAX018 (highest priority) |
-| `ADDCOLUMNS` or `SUMMARIZE` in measure | DAX002, DAX006 |
-| `SUMMARIZE` with complex/filtered table as first arg | DAX005 |
-| `SUMX(VALUES(col), CALCULATE(...))` in measure | DAX006 |
-| Same measure evaluated multiple times | DAX003 |
-| Duplicate or redundant `CALCULATE` filter predicates | DAX004 |
-| `FILTER(Table, ...)` as `CALCULATE` arg, or `&&` joining predicates | DAX001 |
-| `ALL(table), VALUES(table[col])` in same `CALCULATE` | DAX012 |
-| `TREATAS`/filter passed directly into `SUMMARIZECOLUMNS` | DAX009 |
-| SE rows far exceed final result count | DAX010 |
-| `DISTINCTCOUNT` in measure | DAX011, DAX014 |
-| `IF`/`IIF` or `DIVIDE()` inside row iterator | DAX007, DAX018 |
-| `SWITCH`/`IF` as primary expression body | DAX013 |
-| Multiple SE queries hitting same fact table | DAX019 (vertical fusion), DAX020 (horizontal), DAX017 (boolean multiplier) |
-| Near-identical SE queries differing only by column filter value / per-measure VAND tuple predicates | DAX017 |
-| Bidirectional or M2M relationship + SE join expansion | DAX016 |
-| High-cardinality iterator (low-cardinality attribute) | DAX015 |
-| `TREATAS`/`IN` re-filtering same fact with computed key set | DAX021 |
+| `CallbackDataID` or `EncodeCallback` in xmSQL | PERF002, PERF007, PERF008, PERF018 (highest priority) |
+| `ADDCOLUMNS` or `SUMMARIZE` in measure | PERF002, PERF006 |
+| `SUMMARIZE` with complex/filtered table as first arg | PERF005 |
+| `SUMX(VALUES(col), CALCULATE(...))` in measure | PERF006 |
+| Same measure evaluated multiple times | PERF003 |
+| Duplicate or redundant `CALCULATE` filter predicates | PERF004 |
+| `FILTER(Table, ...)` as `CALCULATE` arg, or `&&` joining predicates | PERF001 |
+| `ALL(table), VALUES(table[col])` in same `CALCULATE` | PERF012 |
+| `TREATAS`/filter passed directly into `SUMMARIZECOLUMNS` | PERF009 |
+| SE rows far exceed final result count | PERF010 |
+| `DISTINCTCOUNT` in measure | PERF011, PERF014 |
+| `IF`/`IIF` or `DIVIDE()` inside row iterator | PERF007, PERF018 |
+| `SWITCH`/`IF` as primary expression body | PERF013 |
+| Multiple SE queries hitting same fact table | PERF019 (vertical fusion), PERF020 (horizontal), PERF017 (boolean multiplier) |
+| Near-identical SE queries differing only by column filter value / per-measure VAND tuple predicates | PERF017 |
+| Bidirectional or M2M relationship + SE join expansion | PERF016 |
+| High-cardinality iterator (low-cardinality attribute) | PERF015 |
+| `TREATAS`/`IN` re-filtering same fact with computed key set | PERF021 |
 
 ---
 
@@ -47,7 +49,7 @@ Tier 1 DAX optimization patterns. Apply only after resolving the referenced meas
 
 ---
 
-## DAX001: Simple Column Filter Predicates in CALCULATE
+## PERF001: Simple Column Filter Predicates in CALCULATE
 
 FILTER with a table expression is an iterator — unnecessary when a simple boolean predicate works.
 
@@ -67,7 +69,7 @@ CALCULATETABLE('Sales', 'Sales'[Region] = "West", 'Sales'[Amount] > 1000)
 
 ---
 
-## DAX002: Replace ADDCOLUMNS/SUMMARIZE with SUMMARIZECOLUMNS
+## PERF002: Replace ADDCOLUMNS/SUMMARIZE with SUMMARIZECOLUMNS
 
 SUMMARIZECOLUMNS enables better SE fusion and is the preferred table expression for groupby + calculation.
 
@@ -83,7 +85,7 @@ SUMMARIZECOLUMNS('Sales'[ProductKey], "Profit", [Profit])
 
 ---
 
-## DAX003: Cache Repeated and Context-Independent Expressions in Variables
+## PERF003: Cache Repeated and Context-Independent Expressions in Variables
 
 Evaluating the same measure multiple times or placing context-independent expressions inside iterators causes redundant SE queries.
 
@@ -107,7 +109,7 @@ RETURN SUMX('Sales', 'Sales'[Quantity] * _AvgPrice * 1.1)
 
 ---
 
-## DAX004: Remove Duplicate and Redundant Filters
+## PERF004: Remove Duplicate and Redundant Filters
 
 Applying the same predicate twice causes redundant SE evaluation.
 
@@ -121,7 +123,7 @@ CALCULATE(SUM('Sales'[Amount]), 'Sales'[Year] = 2023)
 
 ---
 
-## DAX005: SUMMARIZE with Complex Table Expression
+## PERF005: SUMMARIZE with Complex Table Expression
 
 Use CALCULATETABLE to wrap complex table expressions as the first argument instead of putting them directly in SUMMARIZE.
 
@@ -143,7 +145,7 @@ CALCULATETABLE(
 
 ---
 
-## DAX006: Pre-Materialize Context Transitions with SUMMARIZECOLUMNS
+## PERF006: Pre-Materialize Context Transitions with SUMMARIZECOLUMNS
 
 Materializing context-transition results in SUMMARIZECOLUMNS and iterating over pre-calculated values can improve query plan.
 
@@ -160,7 +162,7 @@ SUMX(
 
 ---
 
-## DAX007: Replace IF with INT for Boolean Conversion
+## PERF007: Replace IF with INT for Boolean Conversion
 
 INT with boolean expressions avoids conditional logic callbacks that IF statements trigger inside iterators.
 
@@ -177,7 +179,7 @@ CALCULATE(COUNTROWS('Sales'), 'Sales'[Amount] > 1000)
 
 ---
 
-## DAX008: Context Transition in Iterator
+## PERF008: Context Transition in Iterator
 
 Context transition is expensive. Three remedies in priority order:
 
@@ -197,7 +199,7 @@ Context transition is expensive. Three remedies in priority order:
 
 ---
 
-## DAX009: Wrap SUMMARIZECOLUMNS Filters with CALCULATETABLE
+## PERF009: Wrap SUMMARIZECOLUMNS Filters with CALCULATETABLE
 
 Filters (including TREATAS) passed directly as SUMMARIZECOLUMNS arguments can produce unexpected results. Wrap in CALCULATETABLE.
 
@@ -214,7 +216,7 @@ CALCULATETABLE(
 
 ---
 
-## DAX010: Apply Filters Using CALCULATETABLE Instead of FILTER
+## PERF010: Apply Filters Using CALCULATETABLE Instead of FILTER
 
 CALCULATETABLE modifies filter context directly; FILTER iterates the table first.
 
@@ -228,7 +230,7 @@ CALCULATETABLE('Sales', 'Sales'[Year] = 2023)
 
 ---
 
-## DAX011: Distinct Count Alternatives
+## PERF011: Distinct Count Alternatives
 
 When DISTINCTCOUNT is SE-bound and slow, SUMX(VALUES(...), 1) can force FE evaluation which is sometimes faster.
 
@@ -242,7 +244,7 @@ SUMX(VALUES('Sales'[CustomerKey]), 1)
 
 ---
 
-## DAX012: Use ALLEXCEPT Instead of ALL + VALUES Restoration
+## PERF012: Use ALLEXCEPT Instead of ALL + VALUES Restoration
 
 ```dax
 -- Anti-pattern
@@ -256,7 +258,7 @@ CALCULATE([Total Sales], ALLEXCEPT('Sales', 'Sales'[Region]))
 
 ---
 
-## DAX013: SWITCH/IF Branch Optimization in SUMMARIZECOLUMNS
+## PERF013: SWITCH/IF Branch Optimization in SUMMARIZECOLUMNS
 
 Three things break SWITCH/IF branch optimization (causing full cartesian product materialization):
 
@@ -266,7 +268,7 @@ Three things break SWITCH/IF branch optimization (causing full cartesian product
 
 ---
 
-## DAX014: COUNTROWS Instead of DISTINCTCOUNT on Key Columns
+## PERF014: COUNTROWS Instead of DISTINCTCOUNT on Key Columns
 
 When a column is a primary key (one-side of a relationship), DISTINCTCOUNT is redundant.
 
@@ -280,7 +282,7 @@ COUNTROWS('Product')
 
 ---
 
-## DAX015: Move Calculation to Lower Granularity
+## PERF015: Move Calculation to Lower Granularity
 
 When an iterator scans a high-cardinality table but the calculation depends on a low-cardinality attribute, iterate over the attribute instead.
 
@@ -294,7 +296,7 @@ SUMX(VALUES('Customer'[DiscountRate]), CALCULATE(SUM('Sales'[Amount])) * 'Custom
 
 ---
 
-## DAX016: Experiment with Relationship Overrides via TREATAS and CROSSFILTER
+## PERF016: Experiment with Relationship Overrides via TREATAS and CROSSFILTER
 
 Test relationship direction changes without model modifications:
 
@@ -308,7 +310,7 @@ CALCULATE(
 
 ---
 
-## DAX017: Apply Boolean Multiplier to Unblock Fusion
+## PERF017: Apply Boolean Multiplier to Unblock Fusion
 
 **Signal:** Near-identical SE queries on the same fact table differing only by a column filter value or per-measure `VAND` tuple predicates on the same column.
 
@@ -326,7 +328,7 @@ SUMX(KEEPFILTERS(ALL('Product'[Category])), CALCULATE(SUM('Sales'[Amount])) * ('
 
 ---
 
-## DAX018: Replace DIVIDE with Division Operator in Iterators
+## PERF018: Replace DIVIDE with Division Operator in Iterators
 
 DIVIDE() includes divide-by-zero protection that forces FE callbacks inside iterators. Use `/` only when the denominator is guaranteed non-zero.
 
@@ -342,7 +344,7 @@ Pre-filter to exclude zeros: `CALCULATETABLE('Items', 'Items'[Adj] <> 0)`.
 
 ---
 
-## DAX019: Lift Time Intelligence to Outer CALCULATE for Vertical Fusion
+## PERF019: Lift Time Intelligence to Outer CALCULATE for Vertical Fusion
 
 TI functions (DATESYTD, DATEADD, etc.) break vertical fusion — each TI-modified measure gets its own SE query. Keep base measures TI-free; apply TI once in an outer wrapper.
 
@@ -356,11 +358,11 @@ MEASURE 'Sales'[Margin YTD]  = [Revenue YTD] - [Cost YTD]
 MEASURE 'Sales'[Margin YTD] = CALCULATE([Revenue] - [Cost], DATESYTD('Date'[Date]))
 ```
 
-> For custom TI using `CALCULATE(expr, Column = _var)` instead of built-in TI functions, use DAX017 instead.
+> For custom TI using `CALCULATE(expr, Column = _var)` instead of built-in TI functions, use PERF017 instead.
 
 ---
 
-## DAX020: Unblock Horizontal Fusion by Lifting Filters
+## PERF020: Unblock Horizontal Fusion by Lifting Filters
 
 Keep only simple column-slice filters inside base measures; lift TI and dynamic filters to an outer CALCULATE.
 
@@ -375,7 +377,7 @@ MEASURE 'Sales'[Combined YTD] = CALCULATE([Bikes] + [Accessories], DATESYTD('Dat
 
 ---
 
-## DAX021: Pre-Compute and Join Instead of Filter Round-Trip
+## PERF021: Pre-Compute and Join Instead of Filter Round-Trip
 
 **Signal:** `VertiPaqSEQueryEnd` with `DEFINE TABLE ... ININDEX` or `WHERE ... IN` containing hundreds of compound tuples.
 
@@ -403,7 +405,7 @@ VAR _Result        = SUMX(_Joined, [@Agg2])
 
 | Tier | Scope | Autonomy |
 |---|---|---|
-| **Tier 1 — DAX001–021** | Rewrite measure/UDF definitions only | Auto-apply. Never change EVALUATE/grouping. |
+| **Tier 1 — PERF001–021** | Rewrite measure/UDF definitions only | Auto-apply. Never change EVALUATE/grouping. |
 | **Tier 2 — Query Structure** | Modify EVALUATE, grain, filters | User approval required before applying |
 | **Tier 3 — Model Changes** | Relationships, columns, agg tables | High caution. Suggest model copy. |
 | **Tier 4 — Direct Lake** | OneLake layout, V-ordering | Requires ETL/pipeline changes outside the model. |

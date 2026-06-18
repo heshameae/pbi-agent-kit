@@ -16,14 +16,13 @@ export const BUILD_MARKER_RELATIVE_PATH = path.join(
   'packages',
   'mcp',
   'dist',
-  'pbi-mcp-build.json',
+  'pbi-agent-kit-build.json',
 );
 
 export function buildInputPaths(pluginRoot) {
   return [
     path.join(pluginRoot, 'packages/mcp/src'),
     path.join(pluginRoot, 'packages/core/src'),
-    path.join(pluginRoot, 'packages/core/scripts'),
     path.join(pluginRoot, 'packages/mcp/package.json'),
     path.join(pluginRoot, 'packages/core/package.json'),
     path.join(pluginRoot, 'packages/mcp/tsconfig.json'),

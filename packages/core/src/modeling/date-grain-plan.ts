@@ -228,7 +228,7 @@ export type DateTableCoverageBlocker = {
  * is a different thing and still blocks via DateTableCoverageBlocker.
  */
 export type DateTableCoverageWarning = {
-  readonly code: 'calendar-source-unproven';
+  readonly code: 'calendar-source-unproven' | 'date-table-mark-unobservable';
   readonly message: string;
   readonly table?: string;
   readonly column?: string;
@@ -618,13 +618,34 @@ export function planDateTableCoverage(
     });
   }
   if (table && column && !isMarkedDateTable(table, column)) {
-    blockers.push({
-      code: 'date-table-not-marked',
-      table: table.name,
-      column: column.name,
-      message:
-        'The governed date table must be marked as a Date table before it is used as the time-intelligence axis.',
-    });
+    // The dataCategory="Time" mark is UNOBSERVABLE through the MS Modeling MCP read
+    // layer on a live Import model: the host accepts the mark write but a fresh read
+    // never reflects it (a known host metadata no-op), and a user who marks the table
+    // in Desktop sees the same — Claude "can't see" the mark. Treating that absence as
+    // a hard blocker deadlocked mark-as-date, date relationships, and YTD/QTD/MTD on
+    // every clean Import Date table. When the key is PROVEN from live data
+    // (keyProvenFromData: unique, contiguous, non-blank, midnight daily key), the table
+    // is safe to relate and to use for explicit-column time intelligence regardless of
+    // the read-back mark, so we relay an honest caveat instead of refusing. When the key
+    // is NOT data-proven, the mark blocker stands. Gated strictly on the data proof, so a
+    // dirty key is never demoted.
+    if (keyProvenFromData) {
+      warnings.push({
+        code: 'date-table-mark-unobservable',
+        table: table.name,
+        column: column.name,
+        message:
+          'The date key is proven clean from live data, but the dataCategory="Time" mark is not observable through the modeling read layer (a known Import-mode no-op, even after marking in Desktop). Relationships and explicit-column time intelligence (e.g. TOTALYTD over the date column) work from the proven key. Built-in/implicit time intelligence and the Date hierarchy UX still require marking the table in Power BI Desktop.',
+      });
+    } else {
+      blockers.push({
+        code: 'date-table-not-marked',
+        table: table.name,
+        column: column.name,
+        message:
+          'The governed date table must be marked as a Date table before it is used as the time-intelligence axis.',
+      });
+    }
   }
   if (column && !isTemporalColumn(column)) {
     blockers.push({
@@ -1377,24 +1398,43 @@ function buildProbeRow(
   const nonBlankFilter = `FILTER(${table}, NOT ISBLANK(${ref}))`;
   const distinctDates = `DISTINCT(SELECTCOLUMNS(${nonBlankFilter}, "__date", DATE(YEAR(${ref}), MONTH(${ref}), DAY(${ref})), "__monthStart", DATE(YEAR(${ref}), MONTH(${ref}), 1)))`;
   const datesByMonth = `GROUPBY(${distinctDates}, [__monthStart], "__dateCount", COUNTX(CURRENTGROUP(), [__date]))`;
+  // Every count metric is wrapped in `(... ) + 0`. COUNTROWS/MAXX return BLANK (NOT 0)
+  // over an empty filter — e.g. a perfectly clean key has zero blanks and zero
+  // non-midnight times, so COUNTROWS(FILTER(...)) is BLANK. BLANK serializes to the wire
+  // as an empty string, which numberValue() reads as `undefined`, which collapses the
+  // completeness proof (hasCompleteDateTableKeyProof requires every count !== undefined)
+  // -> keyProvenFromData:false -> every date gate deadlocks + the agent keeps asking to
+  // refresh. Adding 0 turns BLANK into a real 0 on every host. This is the integer
+  // analogue of the FORMAT-at-source fix below for minDate/maxDate. It is purely a
+  // zero-vs-blank serialization correction and is dataset-agnostic: dirty keys still
+  // surface non-zero counts (gapCount/duplicateDateCount/blankDateCount > 0) and stay
+  // blocked by isDataProvenDailyKey. minDate/maxDate are deliberately NOT coalesced so an
+  // all-blank key still reads minDate undefined and stays blocked.
   return [
     'ROW(',
     `  "__kind", "${kind}",`,
     `  "__table", "${escapeDaxString(tableName)}",`,
     `  "__column", "${escapeDaxString(dateColumn)}",`,
-    `  "rowCount", COUNTROWS(${table}),`,
-    `  "nonBlankDateCount", COUNTROWS(${nonBlankFilter}),`,
-    `  "distinctDateCount", COUNTROWS(DISTINCT(SELECTCOLUMNS(${nonBlankFilter}, "__date", DATE(YEAR(${ref}), MONTH(${ref}), DAY(${ref}))))),`,
-    `  "distinctMonthStartCount", COUNTROWS(DISTINCT(SELECTCOLUMNS(${nonBlankFilter}, "__monthStart", DATE(YEAR(${ref}), MONTH(${ref}), 1)))),`,
-    `  "nonMonthStartDateCount", COUNTROWS(FILTER(${table}, NOT ISBLANK(${ref}) && DAY(${ref}) <> 1)),`,
-    `  "monthsWithMultipleDates", COUNTROWS(FILTER(${datesByMonth}, [__dateCount] > 1)),`,
-    `  "maxDistinctDatesPerMonth", MAXX(${datesByMonth}, [__dateCount]),`,
-    `  "blankDateCount", COUNTROWS(FILTER(${table}, ISBLANK(${ref}))),`,
-    `  "duplicateDateCount", COUNTROWS(${nonBlankFilter}) - COUNTROWS(DISTINCT(SELECTCOLUMNS(${nonBlankFilter}, "__date", DATE(YEAR(${ref}), MONTH(${ref}), DAY(${ref}))))),`,
-    `  "nonMidnightTimeCount", COUNTROWS(FILTER(${nonBlankFilter}, ${ref} <> DATE(YEAR(${ref}), MONTH(${ref}), DAY(${ref})))),`,
-    `  "gapCount", VAR __minDate = MINX(${nonBlankFilter}, ${ref}) VAR __maxDate = MAXX(${nonBlankFilter}, ${ref}) RETURN IF(ISBLANK(__minDate) || ISBLANK(__maxDate), BLANK(), DATEDIFF(__minDate, __maxDate, DAY) + 1 - COUNTROWS(DISTINCT(SELECTCOLUMNS(${nonBlankFilter}, "__date", DATE(YEAR(${ref}), MONTH(${ref}), DAY(${ref})))))),`,
-    `  "minDate", MINX(${nonBlankFilter}, ${ref}),`,
-    `  "maxDate", MAXX(${nonBlankFilter}, ${ref})`,
+    `  "rowCount", COUNTROWS(${table}) + 0,`,
+    `  "nonBlankDateCount", COUNTROWS(${nonBlankFilter}) + 0,`,
+    `  "distinctDateCount", COUNTROWS(DISTINCT(SELECTCOLUMNS(${nonBlankFilter}, "__date", DATE(YEAR(${ref}), MONTH(${ref}), DAY(${ref}))))) + 0,`,
+    `  "distinctMonthStartCount", COUNTROWS(DISTINCT(SELECTCOLUMNS(${nonBlankFilter}, "__monthStart", DATE(YEAR(${ref}), MONTH(${ref}), 1)))) + 0,`,
+    `  "nonMonthStartDateCount", COUNTROWS(FILTER(${table}, NOT ISBLANK(${ref}) && DAY(${ref}) <> 1)) + 0,`,
+    `  "monthsWithMultipleDates", COUNTROWS(FILTER(${datesByMonth}, [__dateCount] > 1)) + 0,`,
+    `  "maxDistinctDatesPerMonth", MAXX(${datesByMonth}, [__dateCount]) + 0,`,
+    `  "blankDateCount", COUNTROWS(FILTER(${table}, ISBLANK(${ref}))) + 0,`,
+    `  "duplicateDateCount", (COUNTROWS(${nonBlankFilter}) - COUNTROWS(DISTINCT(SELECTCOLUMNS(${nonBlankFilter}, "__date", DATE(YEAR(${ref}), MONTH(${ref}), DAY(${ref})))))) + 0,`,
+    `  "nonMidnightTimeCount", COUNTROWS(FILTER(${nonBlankFilter}, ${ref} <> DATE(YEAR(${ref}), MONTH(${ref}), DAY(${ref})))) + 0,`,
+    `  "gapCount", VAR __minDate = MINX(${nonBlankFilter}, ${ref}) VAR __maxDate = MAXX(${nonBlankFilter}, ${ref}) RETURN IF(ISBLANK(__minDate) || ISBLANK(__maxDate), BLANK(), DATEDIFF(__minDate, __maxDate, DAY) + 1 - COUNTROWS(DISTINCT(SELECTCOLUMNS(${nonBlankFilter}, "__date", DATE(YEAR(${ref}), MONTH(${ref}), DAY(${ref})))))) + 0,`,
+    // FORMAT with an invariant literal pattern forces YYYY-MM-DD on EVERY host
+    // culture, instead of the host's locale DateTime serialization (e.g. "1/3/2017
+    // 12:00:00 AM" on a US host, "03.01.2017" on a German host), which dateOnlyOrdinal
+    // refuses and which silently nulled minDate/maxDate -> incomplete proof ->
+    // keyProvenFromData:false -> every date gate deadlocked. FORMAT(BLANK(), …) returns
+    // BLANK, so an all-blank key still reads minDate undefined and stays blocked. The
+    // pattern is a literal, not a dataset value, so this stays dataset-agnostic.
+    `  "minDate", FORMAT(MINX(${nonBlankFilter}, ${ref}), "yyyy-MM-dd"),`,
+    `  "maxDate", FORMAT(MAXX(${nonBlankFilter}, ${ref}), "yyyy-MM-dd")`,
     ')',
   ].join('\n');
 }
@@ -1579,19 +1619,50 @@ function toIsoDate(dayOrdinal: number): string {
   return new Date(dayOrdinal * 86_400_000).toISOString().slice(0, 10);
 }
 
-function dateOnlyOrdinal(value: string | undefined): number | undefined {
-  if (!value) return undefined;
-  // ISO date / dateTime ONLY. We deliberately do not fall back to Date.parse: a
-  // non-ISO locale cell like "05/03/2024" is read as MM/DD by Date.parse, silently
-  // swapping day and month and corrupting the date-table coverage min/max
-  // comparisons (which decide start-after-fact-min / end-before-fact-max). Failing
-  // closed (undefined) makes the coverage gate refuse rather than act on a
-  // mis-parsed date — mirrors the ISO-only dayOrdinal in time-intelligence-plan.ts.
-  const dateOnly = /^(\d{4})-(\d{2})-(\d{2})/.exec(value.trim());
-  if (dateOnly?.[1] && dateOnly[2] && dateOnly[3]) {
-    return Date.UTC(Number(dateOnly[1]), Number(dateOnly[2]) - 1, Number(dateOnly[3])) / 86400000;
+// Date serials outside this window are rejected as a mis-parse: real calendar keys
+// never fall here, and a wrong-epoch number can never produce a real-looking
+// coverage window (fail-closed). Dataset-agnostic constants, not data values.
+const MIN_PLAUSIBLE_DATE_YEAR = 1900;
+const MAX_PLAUSIBLE_DATE_YEAR = 2200;
+// OLE Automation / DAX date serial epoch: serial 0 === 1899-12-30.
+const OLE_EPOCH_ORDINAL = Date.UTC(1899, 11, 30) / 86400000;
+
+function dateOnlyOrdinal(value: string | number | undefined): number | undefined {
+  if (value === undefined || value === null) return undefined;
+  // Year-leading ISO (dash OR slash) ONLY for string forms. A YEAR-leading
+  // YYYY-MM-DD / YYYY/MM/DD is unambiguous (no day/month swap risk). We deliberately
+  // do NOT fall back to Date.parse for day-leading locale cells like "05/03/2024":
+  // Date.parse reads them as MM/DD, silently swapping day and month and corrupting the
+  // coverage min/max comparisons (start-after-fact-min / end-before-fact-max). Failing
+  // closed (undefined) makes the coverage gate refuse rather than act on a mis-parsed
+  // date. The probe now FORMATs dates to yyyy-MM-dd at source (buildProbeRow), so this
+  // ISO branch is the normal path; the slash + serial branches are defense-in-depth for
+  // a host that ignores FORMAT.
+  if (typeof value === 'string') {
+    const dateOnly = /^(\d{4})[-/](\d{2})[-/](\d{2})/.exec(value.trim());
+    if (dateOnly?.[1] && dateOnly[2] && dateOnly[3]) {
+      const year = Number(dateOnly[1]);
+      if (year < MIN_PLAUSIBLE_DATE_YEAR || year > MAX_PLAUSIBLE_DATE_YEAR) return undefined;
+      return Date.UTC(year, Number(dateOnly[2]) - 1, Number(dateOnly[3])) / 86400000;
+    }
+    // A bare-integer string is treated as an OLE/DAX date serial (some hosts return
+    // dates as serial numbers). Anything else (locale date strings) fails closed.
+    const trimmed = value.trim();
+    if (/^-?\d+$/.test(trimmed)) return dateSerialOrdinal(Number(trimmed));
+    return undefined;
   }
+  if (typeof value === 'number') return dateSerialOrdinal(value);
   return undefined;
+}
+
+// Convert an OLE/DAX date serial to a day ordinal, fail-closed when the resulting
+// year is implausible (so a count/epoch confusion can never widen a coverage window).
+function dateSerialOrdinal(serial: number): number | undefined {
+  if (!Number.isFinite(serial)) return undefined;
+  const ordinal = Math.floor(serial) + OLE_EPOCH_ORDINAL;
+  const year = new Date(ordinal * 86400000).getUTCFullYear();
+  if (year < MIN_PLAUSIBLE_DATE_YEAR || year > MAX_PLAUSIBLE_DATE_YEAR) return undefined;
+  return ordinal;
 }
 
 function isMarkedDateTable(table: TMDLTable, column: TMDLColumn): boolean {
@@ -1720,7 +1791,7 @@ type CompleteDateGrainProof = DateGrainProbeEvidence &
     >
   >;
 
-function hasCompleteDateTableKeyProof(
+export function hasCompleteDateTableKeyProof(
   evidence: DateTableKeyProbeEvidence | undefined,
 ): evidence is CompleteDateTableKeyProof {
   return (
@@ -1756,7 +1827,7 @@ export function isDataProvenDailyKey(evidence: DateTableKeyProbeEvidence | undef
   );
 }
 
-function hasCompleteDateGrainProof(
+export function hasCompleteDateGrainProof(
   evidence: DateGrainProbeEvidence | undefined,
 ): evidence is CompleteDateGrainProof {
   return (

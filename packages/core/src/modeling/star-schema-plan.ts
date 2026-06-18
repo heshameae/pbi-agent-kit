@@ -1,5 +1,6 @@
-import { isNumericType, isTemporalType, normalizeDataType } from './data-types.js';
+import { isTemporalType, normalizeDataType } from './data-types.js';
 import { classifyTable } from './fact-classifier.js';
+import { isMeasureLikeNumeric } from './naming.js';
 import {
   type RelationshipReason,
   relationshipCheck,
@@ -419,20 +420,11 @@ function isTemporalSharedAxisColumn(column: TMDLColumn): boolean {
 }
 
 function isMeasureLikeColumn(column: TMDLColumn): boolean {
-  return (
-    isNumericType(column.dataType) &&
-    !looksLikeKeyName(column.name) &&
-    !column.isKey &&
-    column.summarizeBy?.toLowerCase() !== 'none'
-  );
-}
-
-// Structural key/identifier signal mirrored from MOD014; dataset-agnostic.
-function looksLikeKeyName(name: string): boolean {
-  if (/[a-z0-9](Key|Id|ID|Code|SKU|Guid|GUID|Number|No)\b/.test(name)) return true;
-  return /(^|[^a-z])(id|key|code|sku|guid|postal|zip|year|monthno|weekno|daynumber)([^a-z]|$)/i.test(
-    name,
-  );
+  // Engine-default Sum (undefined summarizeBy on a numeric column) is measure-like;
+  // explicit `none` and numeric keys/identifiers are not. Shared helper keeps this
+  // aligned with the fact-classifier / grain / field-index definitions (no behavior
+  // change here — star-schema already excluded keys and treated undefined as Sum).
+  return isMeasureLikeNumeric(column);
 }
 
 function looksIntrinsicallyFactLike(table: TMDLTable): boolean {

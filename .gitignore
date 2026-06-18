@@ -1,5 +1,11 @@
 node_modules/
 dist/
+# Ship the compiled MCP server with the plugin: the plugin's .mcp.json runs
+# packages/mcp/dist/server.js, so fresh/offline (Windows) installs must not need a build.
+!packages/core/dist/
+!packages/core/dist/**
+!packages/mcp/dist/
+!packages/mcp/dist/**
 coverage/
 *.log
 *.tsbuildinfo
@@ -10,13 +16,15 @@ coverage/
 .turbo/
 .idea/
 .vscode/
-.claude/
+# Personal, machine-local Claude settings only — team-shared .claude/settings.json IS committed
+.claude/settings.local.json
+.claude/*.local.json
+.claude/*.local.md
+# Local-only maintenance skills (not shipped with the plugin)
+.claude/skills/
 
 # superpowers brainstorm session files
 .superpowers/
 
 # hook sidecar state (project-scoped connection/uncommitted-measures registry)
-.pbi-mcp-ts/
-
-# reference-repo mining dumps (raw repomix output of external repos — not ours to redistribute; some are GPL)
-docs/superpowers/mining/packed/
+.pbi-agent-kit/

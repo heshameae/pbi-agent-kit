@@ -828,6 +828,32 @@ describe('BPA MOD014 — numeric key summarizeBy', () => {
     });
     expect(has(runBPA(model), 'MOD014')).toBeFalsy();
   });
+
+  it('errors on a numeric key with IMPLICIT Sum (no explicit summarizeBy = engine default)', () => {
+    // The engine sums a numeric column with no summarizeBy line; TMDL omits the line
+    // when it equals the default, so a key like int64 "Year" auto-sums in visuals.
+    // MOD014 must fire even though summarizeBy is undefined.
+    const model = makeModel({
+      tables: [tbl('Calendar', { columns: [c('Calendar', 'Year', { dataType: 'int64' })] })],
+    });
+    const f = has(runBPA(model), 'MOD014');
+    expect(f).toBeTruthy();
+    expect(f?.severity).toBe('error');
+    expect(f?.message).toContain('engine default');
+  });
+
+  it('does not flag an explicit summarizeBy:none numeric key', () => {
+    const model = makeModel({
+      tables: [
+        tbl('Dim', {
+          columns: [
+            c('Dim', 'CustomerKey', { dataType: 'int64', summarizeBy: 'none', isKey: true }),
+          ],
+        }),
+      ],
+    });
+    expect(has(runBPA(model), 'MOD014')).toBeFalsy();
+  });
 });
 
 describe('BPA FMT003 / FMT004 — column formatting', () => {

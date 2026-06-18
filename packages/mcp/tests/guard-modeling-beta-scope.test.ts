@@ -39,22 +39,23 @@ describe('guard-modeling-beta-scope classification', () => {
   });
 
   // REGRESSION: each of these skill/agent names was previously UNGUARDED. They
-  // correspond to skills physically relocated to archive/skills/ (and the
-  // dev-only lineage-analysis under skills-internal/), but they must still be
+  // correspond to report/internal skills that are absent from main, but still
+  // blocked in case an old plugin cache, full-surface checkout, or stale prompt
+  // tries to invoke them through the modeling-only release.
   // refused by NAME as defense-in-depth so a stale Skill call cannot reach a
   // report-authoring surface even though those skills are no longer
   // auto-scanned into the modeling-beta plugin.
   it('denies PreToolUse Skill calls for newly-guarded relocated report/dev skill names', () => {
     for (const skill of [
-      'pbi-mcp-ts:pbi-bookmarks',
-      'pbi-mcp-ts:pbi-status',
-      'pbi-mcp-ts:pbi-validate',
-      'pbi-mcp-ts:pbi-scaffold',
-      'pbi-mcp-ts:pbi-scaffold-kpi-grid',
-      'pbi-mcp-ts:reviewing-reports',
-      'pbi-mcp-ts:lineage-analysis',
-      'pbi-mcp-ts:pbi-designer',
-      'pbi-mcp-ts:pbi-report-validator',
+      'pbi-agent-kit:pbi-bookmarks',
+      'pbi-agent-kit:pbi-status',
+      'pbi-agent-kit:pbi-validate',
+      'pbi-agent-kit:pbi-scaffold',
+      'pbi-agent-kit:pbi-scaffold-kpi-grid',
+      'pbi-agent-kit:reviewing-reports',
+      'pbi-agent-kit:lineage-analysis',
+      'pbi-agent-kit:pbi-designer',
+      'pbi-agent-kit:pbi-report-validator',
     ]) {
       const result = runScopePayload({
         hook_event_name: 'PreToolUse',
@@ -73,7 +74,7 @@ describe('guard-modeling-beta-scope classification', () => {
   it('blocks a UserPromptExpansion of a newly-guarded report-review skill by name', () => {
     const result = runScopePayload({
       hook_event_name: 'UserPromptExpansion',
-      prompt: '/pbi-mcp-ts:reviewing-reports Review the report pages',
+      prompt: '/pbi-agent-kit:reviewing-reports Review the report pages',
     });
     expect(result.status).toBe(0);
     const decision = JSON.parse(result.stdout);
@@ -83,9 +84,9 @@ describe('guard-modeling-beta-scope classification', () => {
 
   it('denies report MCP tool calls so wrapper gates cannot be bypassed', () => {
     for (const toolName of [
-      'mcp__plugin_pbi-mcp-ts_pbi-modeling-beta__pbi_visual_add',
-      'mcp__plugin_pbi-mcp-ts_pbi-modeling-beta__pbi_page_add',
-      'mcp__plugin_pbi-mcp-ts_pbi-modeling-beta__pbi_bookmark_create',
+      'mcp__plugin_pbi-agent-kit_pbi-modeling-beta__pbi_visual_add',
+      'mcp__plugin_pbi-agent-kit_pbi-modeling-beta__pbi_page_add',
+      'mcp__plugin_pbi-agent-kit_pbi-modeling-beta__pbi_bookmark_create',
     ]) {
       const result = runScopePayload({
         hook_event_name: 'PreToolUse',

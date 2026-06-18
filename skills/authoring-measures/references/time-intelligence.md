@@ -70,6 +70,35 @@ RETURN DIVIDE(_Current - _Prior, _Prior)
 [ValueMetric R12M] = CALCULATE([ValueMetric], DATESINPERIOD('Date'[Date], MAX('Date'[Date]), -12, MONTH))
 ```
 
+### Default-context BLANK when the calendar outruns the facts (REQUIRED rule)
+
+A shared/conformed Date table correctly spans **every** fact joined to it — including a later one such as Ship Date — so the calendar's last date can be **past the last date your measure actually has data**. A bare `TOTALYTD([m], 'Date'[Date])` then evaluates the whole final period and returns **BLANK in default (no-slicer) context** until the user filters to a date with data. This is not a Date-table bug — do **not** shrink the calendar or build a per-role calendar (that orphans the later fact's rows).
+
+Fix it in the **measure**, by capping the upper bound at the last date **this measure** has data. The anchor MUST be **measure-relative**:
+
+```dax
+VAR _LastData =
+    CALCULATE(
+        MAXX(
+            FILTER(VALUES('Date'[Date]), NOT ISBLANK(CALCULATE([ValueMetric]))),
+            'Date'[Date]
+        ),
+        REMOVEFILTERS('Date')
+    )
+VAR _CtxMax = MAX('Date'[Date])
+VAR _AsOf   = MIN(_CtxMax, _LastData)
+RETURN
+    CALCULATE(TOTALYTD([ValueMetric], 'Date'[Date]), 'Date'[Date] <= _AsOf)
+```
+
+**The cap MUST wrap `TOTAL*TD` on the OUTSIDE.** `TOTALYTD(expr, dates, filter)` ≡ `CALCULATE(expr, DATESYTD(dates), filter)`, and `DATESYTD` picks the *year* from the last date in the **outer** context (the calendar end in default no-slicer context). Threading the cap as `TOTALYTD([m], 'Date'[Date], 'Date'[Date] <= _AsOf)` (inner arg) can only shrink *within* that year — it still resolves to the empty post-data tail and returns **BLANK**. `CALCULATE(TOTALYTD(...), 'Date'[Date] <= _AsOf)` applies the cap first, so the period anchors on the last date with data. (QTD/MTD identical.)
+
+FORBIDDEN anchors (both blank or mis-cap):
+- **NEVER** anchor at `CALCULATE(MAX('Date'[Date]), REMOVEFILTERS('Date'))` (nor the `ALL`/`ALLEXCEPT`/`LASTDATE` equivalents) — that is the *calendar end*, not the data end, so on an overshooting calendar it caps past all data → BLANK everywhere. When the calendar overshoots the facts, `pbi_measure_create/_update` flags this shape with a non-blocking `blankRiskWarning` (best-effort detection) — treat the warning as a STOP signal and re-anchor measure-relative; do not ignore it.
+- **NEVER** hardcode a fact date column like `MAX('Orders'[Order Date])` — that bakes in one role and blanks a row-filtered measure. The `NOT ISBLANK(CALCULATE(<base>))` form resolves to the right date automatically via the active relationship.
+
+Easiest path: submit the **bare** `TOTAL*TD` and let `pbi_measure_create/_update` generate the capped form (reason `time-intelligence-default-context-blank-risk`, field `correctedExpression`). Do not hand-edit the generated `_LastData` anchor.
+
 ---
 
 ## DATESINPERIOD Off-by-One Rule
@@ -186,10 +215,10 @@ Lower precedence values are evaluated first.
 
 ## TI and SE Fusion
 
-Standalone TI measures break vertical fusion because each measure applies a different TI function → each gets its own SE query. See DAX019 and DAX020 in `references/dax-performance.md`:
+Standalone TI measures break vertical fusion because each measure applies a different TI function → each gets its own SE query. See PERF019 and PERF020 in `references/dax-performance.md`:
 
-- **DAX019:** Keep base measures TI-free; apply TI once in an outer CALCULATE wrapper
-- **DAX020:** Keep only column-slice filters inside base measures; lift TI to a consuming measure
+- **PERF019:** Keep base measures TI-free; apply TI once in an outer CALCULATE wrapper
+- **PERF020:** Keep only column-slice filters inside base measures; lift TI to a consuming measure
 
 Using a calculation group is the preferred pattern for widespread TI: the engine applies one calc item expression rather than materializing a separate TI measure per base measure.
 

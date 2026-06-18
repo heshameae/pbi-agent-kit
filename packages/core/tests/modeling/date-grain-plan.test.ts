@@ -1320,6 +1320,150 @@ describe('date grain planner', () => {
     expect(isDataProvenDailyKey({ tableName: 'Calendar', dateColumn: 'Date' })).toBe(false);
   });
 
+  // T1 — date serialization wire-shape matrix (exercises dateOnlyOrdinal via the public
+  // proof predicate). The live host may serialize a DateTime cell in several shapes; the
+  // proof must accept the unambiguous year-leading ones and FAIL CLOSED on ambiguous
+  // day-leading locale forms (which would silently swap day/month and corrupt coverage).
+  it('proves the key across ISO / slash-ISO / in-range serial, and fails closed on locale/out-of-range dates', () => {
+    const base = {
+      tableName: 'Calendar',
+      dateColumn: 'Date',
+      rowCount: 31,
+      nonBlankDateCount: 31,
+      distinctDateCount: 31,
+      blankDateCount: 0,
+      duplicateDateCount: 0,
+      gapCount: 0,
+      nonMidnightTimeCount: 0,
+    };
+    // Accepted, unambiguous (year-leading):
+    expect(isDataProvenDailyKey({ ...base, minDate: '2025-01-01', maxDate: '2025-01-31' })).toBe(
+      true,
+    );
+    expect(
+      isDataProvenDailyKey({ ...base, minDate: '2025-01-01T00:00:00Z', maxDate: '2025-01-31' }),
+    ).toBe(true);
+    expect(isDataProvenDailyKey({ ...base, minDate: '2025/01/01', maxDate: '2025/01/31' })).toBe(
+      true,
+    );
+    // OLE/DAX date serials within the plausible window (45658≈2025-01-01, 45688≈2025-01-31):
+    expect(isDataProvenDailyKey({ ...base, minDate: '45658', maxDate: '45688' })).toBe(true);
+    // Rejected — ambiguous day-leading locale forms (would mis-parse day/month):
+    expect(isDataProvenDailyKey({ ...base, minDate: '01/03/2025', maxDate: '31/01/2025' })).toBe(
+      false,
+    );
+    expect(isDataProvenDailyKey({ ...base, minDate: '1/3/2025', maxDate: '1/31/2025' })).toBe(
+      false,
+    );
+    // Rejected — out-of-range year / serial (fail-closed, never a real-looking window):
+    expect(isDataProvenDailyKey({ ...base, minDate: '1700-01-01', maxDate: '1700-01-31' })).toBe(
+      false,
+    );
+    expect(isDataProvenDailyKey({ ...base, minDate: '45658', maxDate: '9999999' })).toBe(false);
+  });
+
+  // T2 — the probe must FORMAT date outputs to invariant ISO at the DAX source so every
+  // host culture returns yyyy-MM-dd (the root-cause fix for the live deadlock).
+  it('emits invariant FORMAT(...,"yyyy-MM-dd") for minDate/maxDate in the coverage probe', () => {
+    const m = model([
+      tbl('Fact', [col('Fact', 'Date', 'dateTime')]),
+      tbl('Calendar', [col('Calendar', 'Date', 'dateTime', { isKey: true })], [], {
+        dataCategory: 'Time',
+      }),
+    ]);
+    const query =
+      buildDateTableCoverageProbeQuery(m, {
+        dateTable: 'Calendar',
+        dateColumn: 'Date',
+        facts: [{ tableName: 'Fact', dateColumn: 'Date' }],
+      }) ?? '';
+    expect(query).toMatch(/"minDate",\s*FORMAT\(MINX\(.*"yyyy-MM-dd"\)/);
+    expect(query).toMatch(/"maxDate",\s*FORMAT\(MAXX\(.*"yyyy-MM-dd"\)/);
+    // Both the date-table row and the fact row are built by the same function, so both FORMAT.
+    expect((query.match(/FORMAT\(MINX/g) ?? []).length).toBeGreaterThanOrEqual(2);
+  });
+
+  // T3 — regression lock for the live deadlock: a clean key whose min/max came back in a
+  // locale (non-ISO) shape must NOT prove (old bug reproduced) — the FORMAT fix is what
+  // makes the live path supply ISO so this case does not arise in practice.
+  it('does NOT prove a clean key when min/max are non-ISO locale strings (deadlock regression)', () => {
+    const localeEvidence = {
+      tableName: 'Calendar',
+      dateColumn: 'Date',
+      rowCount: 31,
+      nonBlankDateCount: 31,
+      distinctDateCount: 31,
+      blankDateCount: 0,
+      duplicateDateCount: 0,
+      gapCount: 0,
+      nonMidnightTimeCount: 0,
+      minDate: '1/1/2025 12:00:00 AM',
+      maxDate: '1/31/2025 12:00:00 AM',
+    };
+    expect(isDataProvenDailyKey(localeEvidence)).toBe(false);
+  });
+
+  // T5 — bounded-safety regression: a POSITIVELY DIRTY key (blanks / dups / gaps / non-
+  // midnight) is never data-proven and never demoted; F4's mark demotion must not fire.
+  it('never proves or unblocks a positively-dirty date key (bounded-safety lock)', () => {
+    const m = model([
+      tbl('Fact', [col('Fact', 'Date', 'dateTime')]),
+      tbl('Calendar', [col('Calendar', 'Date', 'dateTime')]),
+    ]);
+    const cleanDateTable = {
+      tableName: 'Calendar',
+      dateColumn: 'Date',
+      rowCount: 31,
+      nonBlankDateCount: 31,
+      distinctDateCount: 31,
+      blankDateCount: 0,
+      duplicateDateCount: 0,
+      gapCount: 0,
+      nonMidnightTimeCount: 0,
+      minDate: '2025-01-01',
+      maxDate: '2025-01-31',
+    };
+    const factEvidence = {
+      tableName: 'Fact',
+      dateColumn: 'Date',
+      rowCount: 10,
+      nonBlankDateCount: 10,
+      distinctDateCount: 10,
+      distinctMonthStartCount: 1,
+      nonMonthStartDateCount: 9,
+      monthsWithMultipleDates: 1,
+      maxDistinctDatesPerMonth: 10,
+      blankDateCount: 0,
+      duplicateDateCount: 0,
+      gapCount: 21,
+      nonMidnightTimeCount: 0,
+      minDate: '2025-01-01',
+      maxDate: '2025-01-31',
+    };
+    for (const dirty of [
+      { blankDateCount: 1 },
+      { duplicateDateCount: 1 },
+      { gapCount: 1 },
+      { nonMidnightTimeCount: 1 },
+      { distinctDateCount: 30 },
+    ]) {
+      const result = planDateTableCoverage(
+        m,
+        {
+          dateTable: 'Calendar',
+          dateColumn: 'Date',
+          facts: [{ tableName: 'Fact', dateColumn: 'Date' }],
+        },
+        { dateTable: { ...cleanDateTable, ...dirty }, facts: [factEvidence] },
+      );
+      expect(result.dateTable.keyProvenFromData).toBe(false);
+      expect(result.markReadiness.ready).toBe(false);
+      // The mark blocker stays a BLOCKER (not demoted to a warning) for a non-proven key.
+      expect(result.blockers.map((b) => b.code)).toContain('date-table-not-marked');
+      expect(result.warnings.map((w) => w.code)).not.toContain('date-table-mark-unobservable');
+    }
+  });
+
   it('proves date-key-ness from data on an unmarked table lacking isKey (P2/P3): suppresses date-column-not-key and reports markReadiness', () => {
     const m = model(
       [
@@ -1386,9 +1530,13 @@ describe('date grain planner', () => {
     expect(result.dateTable.keyProvenFromData).toBe(true);
     expect(result.dateTable.isTemporalKey).toBe(true);
     expect(result.blockers.map((b) => b.code)).not.toContain('date-column-not-key');
-    // Unmarked table is still blocked overall, but is ready to MARK purely from data.
-    expect(result.blockers.map((b) => b.code)).toContain('date-table-not-marked');
-    expect(result.status).toBe('blocked');
+    // F4: when the key is PROVEN from data, the unobservable dataCategory="Time" mark is
+    // NOT a blocker — it degrades to a warning, so a clean-but-unmarked Date table reports
+    // status 'valid' (mark-independent) instead of deadlocking. The read-back mark is a
+    // known Import no-op; gating on it blocked every date op on a clean Import Date table.
+    expect(result.blockers.map((b) => b.code)).not.toContain('date-table-not-marked');
+    expect(result.warnings.map((w) => w.code)).toContain('date-table-mark-unobservable');
+    expect(result.status).toBe('valid');
     expect(result.markReadiness.dataProvenKey).toBe(true);
     expect(result.markReadiness.coversAllFacts).toBe(true);
     expect(result.markReadiness.blockingForMark.map((b) => b.code)).not.toContain(
@@ -2306,6 +2454,42 @@ describe('generated probe DAX is syntactically balanced', () => {
     const query = buildDateGrainProbeQuery(m, [{ tableName: 'Actual', dateColumn: 'Event Date' }]);
     expect(query).toBeDefined();
     expect(unbalancedParenDelta(query as string)).toBe(0);
+  });
+
+  it('coalesces every count metric with "+ 0" so a clean key (zero blanks/non-midnight) does not serialize as BLANK', () => {
+    // Regression for the zero-vs-BLANK serialization deadlock: COUNTROWS/MAXX return
+    // BLANK (not 0) over an empty filter, BLANK -> "" on the wire -> numberValue undefined
+    // -> incomplete proof -> keyProvenFromData:false -> every date gate deadlocks and the
+    // agent keeps asking to refresh. Source-coalescing to 0 is the fix.
+    const m = model([tbl('Actual', [col('Actual', 'Event Date', 'dateTime')])]);
+    const query = buildDateGrainProbeQuery(m, [
+      { tableName: 'Actual', dateColumn: 'Event Date' },
+    ]) as string;
+    const lines = query.split('\n');
+    for (const metric of [
+      'rowCount',
+      'nonBlankDateCount',
+      'distinctDateCount',
+      'distinctMonthStartCount',
+      'nonMonthStartDateCount',
+      'monthsWithMultipleDates',
+      'maxDistinctDatesPerMonth',
+      'blankDateCount',
+      'duplicateDateCount',
+      'nonMidnightTimeCount',
+      'gapCount',
+    ]) {
+      // each count metric is emitted on its own line and its value must be coalesced with `+ 0`
+      const line = lines.find((l) => l.includes(`"${metric}",`));
+      expect(line, `missing metric line for ${metric}`).toBeDefined();
+      expect(line as string).toContain('+ 0');
+    }
+    // dates must NOT be coalesced — an all-blank key must keep minDate BLANK to stay blocked
+    expect(query).toContain('FORMAT(MINX(');
+    expect(query).toContain('FORMAT(MAXX(');
+    expect(query).not.toMatch(/"minDate",[^,]*\+ 0/);
+    expect(query).not.toMatch(/"maxDate",[^)]*\+ 0/);
+    expect(unbalancedParenDelta(query)).toBe(0);
   });
 
   it('emits balanced parentheses for a multi-fact UNION coverage probe', () => {

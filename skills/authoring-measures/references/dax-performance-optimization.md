@@ -1,8 +1,10 @@
 # DAX Performance Optimization — Workflow
 
-Complete framework for optimizing DAX query performance: tier model, workflow phases, baseline protocol, semantic equivalence rules, error handling, and requirements.
+> **Modeling-only beta — trace/timing capture is NOT supported by plugin tools.** No plugin tool captures server-timing traces or query durations; `pbi_dax_query` is read-only ad-hoc inspection only. The trace-capture baseline protocol and the "≥10% duration improvement" gate below describe external tooling (DAX Studio, Fabric Workspace Monitoring) and are **out of scope** for this plugin. Treat this catalog as **STATIC, expression-level advisory rewrites**: apply the rewrite patterns by inspection, and use `pbi_dax_query` to validate that the rewritten expression returns the same results (semantic equivalence). Duration-based steps and gates are not enforceable here.
 
-> **Related references:** [`references/dax-performance.md`](./dax-performance.md) — DAX001–021 pattern catalog + QRY001–004 · [`references/engine-internals.md`](./engine-internals.md) — FE/SE architecture, xmSQL, trace diagnostics · [`references/model-optimization.md`](./model-optimization.md) — MDL001–010, DL001–002
+Framework for reasoning about DAX query performance: tier model, semantic equivalence rules, and static rewrite patterns. (Trace-based baseline/timing protocol below is external-tooling reference, not a plugin workflow.)
+
+> **Related references:** [`references/dax-performance.md`](./dax-performance.md) — PERF001–021 pattern catalog + QRY001–004 · [`references/engine-internals.md`](./engine-internals.md) — FE/SE architecture, xmSQL, trace diagnostics · [`references/model-optimization.md`](./model-optimization.md) — MDL001–010, DL001–002
 
 **Identifier guard:** Concrete table, column, and measure names in examples are illustrative only. Production DAX must resolve identifiers from live model metadata, deterministic planner output, the validated user spec, or explicit user confirmation; never copy example names into a user model.
 
@@ -19,7 +21,7 @@ Always read these sections fully before starting any optimization session:
 - **[Phase 2: Optimization Iterations](#phase-2-optimization-iterations)** — apply, test, compare, iterate
 - **FE/SE architecture and xmSQL** — `references/engine-internals.md` (Section 1)
 - **Trace Diagnostics** — `references/engine-internals.md` (Section 2)
-- **Tier 1 DAX Patterns DAX001–021** — `references/dax-performance.md`
+- **Tier 1 DAX Patterns PERF001–021** — `references/dax-performance.md`
 
 ### Consult When Needed
 
@@ -35,30 +37,30 @@ Read these only when directed by the Decision Guide or after Tier 1 is exhausted
 
 Use to prioritize *where to start* within sections, not to skip them. The Tier 1 DAX pattern catalog is always read in full — these signals tell you which patterns to try first. Tier 2–4 signals are escalation triggers; consult those references only when the signal appears.
 
-### Tier 1 — Where to Start (read all DAX001–021)
+### Tier 1 — Where to Start (read all PERF001–021)
 
 | Signal | Start With |
 |--------|------------|
-| `CallbackDataID` or `EncodeCallback` in xmSQL | DAX002, DAX007, DAX008, DAX018 (highest priority) |
-| `ADDCOLUMNS` or `SUMMARIZE` in measure expression | DAX002, DAX006 |
-| `SUMMARIZE` with complex or filtered table as first argument | DAX005 |
-| `SUMX(VALUES(col), CALCULATE(...))` pattern in measure | DAX006 |
-| Same measure evaluated multiple times | DAX003 |
-| Duplicate or redundant `CALCULATE` filter predicates | DAX004 |
-| `FILTER(Table, ...)` as `CALCULATE` argument, or `&&` joining predicates in single filter | DAX001 |
-| `ALL(table), VALUES(table[col])` in same `CALCULATE` | DAX012 |
-| Filter or `TREATAS` passed directly as `SUMMARIZECOLUMNS` argument (not wrapped in `CALCULATETABLE`) | DAX009 |
-| SE rows far exceed final result count | DAX010 |
-| `DISTINCTCOUNT` in measure expression | DAX011, DAX014 |
-| Conditional logic (`IF`, `IIF`) or `DIVIDE()` inside row iterator | DAX007, DAX018 |
-| `SWITCH` or `IF` as primary expression body in measure | DAX013 |
-| Multiple SE queries hitting same fact table | DAX019 (vertical fusion), DAX020 (horizontal), DAX017 (boolean multiplier) |
-| Near-identical SE queries on same fact table differing only by a column filter value or by per-measure `VAND` tuple predicates | DAX017 |
-| Bidirectional or M2M relationship causing unexpected SE join expansion, or existing `TREATAS`/`CROSSFILTER` in measure | DAX016 |
-| High-cardinality iterator (many distinct rows, low-cardinality attribute) | DAX015 |
-| `TREATAS` or `IN` re-filtering same fact with a computed key set; or large compound-tuple semi-join in xmSQL | DAX021 |
+| `CallbackDataID` or `EncodeCallback` in xmSQL | PERF002, PERF007, PERF008, PERF018 (highest priority) |
+| `ADDCOLUMNS` or `SUMMARIZE` in measure expression | PERF002, PERF006 |
+| `SUMMARIZE` with complex or filtered table as first argument | PERF005 |
+| `SUMX(VALUES(col), CALCULATE(...))` pattern in measure | PERF006 |
+| Same measure evaluated multiple times | PERF003 |
+| Duplicate or redundant `CALCULATE` filter predicates | PERF004 |
+| `FILTER(Table, ...)` as `CALCULATE` argument, or `&&` joining predicates in single filter | PERF001 |
+| `ALL(table), VALUES(table[col])` in same `CALCULATE` | PERF012 |
+| Filter or `TREATAS` passed directly as `SUMMARIZECOLUMNS` argument (not wrapped in `CALCULATETABLE`) | PERF009 |
+| SE rows far exceed final result count | PERF010 |
+| `DISTINCTCOUNT` in measure expression | PERF011, PERF014 |
+| Conditional logic (`IF`, `IIF`) or `DIVIDE()` inside row iterator | PERF007, PERF018 |
+| `SWITCH` or `IF` as primary expression body in measure | PERF013 |
+| Multiple SE queries hitting same fact table | PERF019 (vertical fusion), PERF020 (horizontal), PERF017 (boolean multiplier) |
+| Near-identical SE queries on same fact table differing only by a column filter value or by per-measure `VAND` tuple predicates | PERF017 |
+| Bidirectional or M2M relationship causing unexpected SE join expansion, or existing `TREATAS`/`CROSSFILTER` in measure | PERF016 |
+| High-cardinality iterator (many distinct rows, low-cardinality attribute) | PERF015 |
+| `TREATAS` or `IN` re-filtering same fact with a computed key set; or large compound-tuple semi-join in xmSQL | PERF021 |
 
-> No signal matches? Read all DAX001–021 — patterns cover the full range.
+> No signal matches? Read all PERF001–021 — patterns cover the full range.
 
 ### Tiers 2–4 — Escalation Triggers
 
@@ -86,18 +88,20 @@ Only consult these when the corresponding signal is present. All require user ap
 | **Tier 3 — Model Changes** | Relationships, columns, agg tables, data types | High caution. Discuss trade-offs. Suggest model copy. Warn downstream risk. |
 | **Tier 4 — Direct Lake** | OneLake layout, V-ordering, rowgroup sizing | High caution. Requires ETL/pipeline changes outside the model. |
 
-**Success criteria — Tier 1:** ≥10% duration improvement AND semantic equivalence (same row count, column count, data values).
-**Success criteria — Tier 2/3/4:** ≥10% improvement AND explicit user approval of output or structural changes.
+**Success criteria — Tier 1:** semantic equivalence (same row count, column count, data values), verifiable with `pbi_dax_query`. *(The "≥10% duration improvement" gate is NOT supported by plugin tools — it requires external trace/timing capture and is out of scope here.)*
+**Success criteria — Tier 2/3/4:** explicit user approval of output or structural changes. *(Duration-improvement gate is external-tooling only; see banner at top.)*
 
 ### Requirements
 
 - **Semantic model connection** — Connect to the target semantic model before starting using this plugin's model tools or an equivalent XMLA-capable connection.
-- **Trace capture** — Requires the ability to execute DAX queries with server timing trace capture. See [Trace Capture Methods](#trace-capture-methods) below.
+- **Trace capture (external only)** — Server-timing trace capture is NOT available through plugin tools. The trace-based protocol below requires external tooling (DAX Studio / Fabric Workspace Monitoring) and is out of scope for this plugin. Within the plugin, use `pbi_dax_query` only to validate semantic equivalence of static rewrites.
 - **Model metadata** — Requires the ability to read measure definitions, function definitions, calculation group expressions, table metadata, and relationship metadata from the model.
 - **Tier 2:** Present the change and its output impact, wait for user approval.
 - **Tier 3/4:** Explain trade-offs, warn about downstream report risk, suggest working on a model copy, identify upstream changes (Lakehouse, Warehouse, Power Query) that may require changes beyond the semantic model itself.
 
 ### Trace Capture Methods
+
+> **External tooling only — not available through plugin tools.** The methods below are reference for users who have external trace-capable tools; they are not part of the plugin workflow.
 
 All methods use the same Analysis Services Trace API and produce identical trace events.
 
@@ -111,6 +115,8 @@ All methods use the same Analysis Services Trace API and produce identical trace
 ---
 
 ## Phase 1: Establish Baseline
+
+> **Trace-capture baseline protocol — NOT supported by plugin tools.** Steps that clear cache, capture server timings, and take median durations require external tooling (DAX Studio / Fabric Workspace Monitoring) and are out of scope for this plugin. Within the plugin, the actionable parts are resolving measure/model context (Steps 1–2) and using `pbi_dax_query` to capture a baseline *result set* for semantic-equivalence checks — not timings.
 
 ### Step 1: Resolve All Measure and Function Definitions
 
@@ -165,7 +171,7 @@ Apply trace diagnostics from `references/engine-internals.md` to interpret the m
 
 ### Step 1: Select and Apply Optimizations
 
-Using the Tier 1 pattern catalog (`references/dax-performance.md`), identify DAX patterns present in the baseline measures. Apply one or more of DAX001–DAX021.
+Using the Tier 1 pattern catalog (`references/dax-performance.md`), identify DAX patterns present in the baseline measures. Apply one or more of PERF001–PERF021.
 
 **CRITICAL:** Modify only the **measure definitions in the DEFINE block**. Do NOT change the EVALUATE clause or SUMMARIZECOLUMNS grouping columns. Query structure must stay identical to preserve semantic equivalence.
 
@@ -174,7 +180,7 @@ Using the Tier 1 pattern catalog (`references/dax-performance.md`), identify DAX
 DEFINE
 	MEASURE Products[HighValueCount] = SUMX('Products', IF([Sales Amount] > 10000000, 1, 0))
 
--- OPTIMIZED measure (DAX007: IF → INT)
+-- OPTIMIZED measure (PERF007: IF → INT)
 DEFINE
 	MEASURE Products[HighValueCount] = SUMX('Products', INT([Sales Amount] > 10000000))
 ```

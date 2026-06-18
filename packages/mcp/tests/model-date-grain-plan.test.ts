@@ -667,6 +667,79 @@ describe('date grain planner tool', () => {
     expect(blockers.map((blocker) => blocker.code)).toContain('date-table-start-after-fact-min');
   });
 
+  // T6 (F2) — the probe returns a row per requested column, but the date-table row's
+  // min/max came back in a non-ISO locale shape the parser can't read. probeStatus must NOT
+  // claim 'succeeded' (the old lie that drove the agent thrash) — it must be
+  // 'proof-incomplete' so the STOP rule fires instead of a delete/recreate/refresh loop.
+  it('reports proof-incomplete (not succeeded) when probe rows are present but min/max are non-ISO', async () => {
+    process.env.PBI_REPORT_MCP_DISABLE_LIVE_PROBE = '1';
+    const localeDateTableRow = {
+      '[__kind]': 'date-table',
+      '[__table]': 'Calendar',
+      '[__column]': 'Date',
+      '[rowCount]': 366,
+      '[nonBlankDateCount]': 366,
+      '[distinctDateCount]': 366,
+      '[blankDateCount]': 0,
+      '[duplicateDateCount]': 0,
+      '[gapCount]': 0,
+      '[nonMidnightTimeCount]': 0,
+      '[minDate]': '1/1/2020 12:00:00 AM',
+      '[maxDate]': '12/31/2020 12:00:00 AM',
+    };
+    const factRow = (table: string) => ({
+      '[__kind]': 'fact',
+      '[__table]': table,
+      '[__column]': 'Date',
+      '[rowCount]': 100,
+      '[nonBlankDateCount]': 100,
+      '[distinctDateCount]': 100,
+      '[distinctMonthStartCount]': 10,
+      '[nonMonthStartDateCount]': 96,
+      '[monthsWithMultipleDates]': 10,
+      '[maxDistinctDatesPerMonth]': 12,
+      '[blankDateCount]': 0,
+      '[duplicateDateCount]': 0,
+      '[gapCount]': 1361,
+      '[nonMidnightTimeCount]': 0,
+      '[minDate]': '2017-01-03T00:00:00',
+      '[maxDate]': '2020-12-30T00:00:00',
+    });
+    setModelDriverForTests({
+      async ensureConnection() {
+        return { mode: 'live', connectionString: 'Data Source=localhost:61234;' };
+      },
+      async getModelSnapshot() {
+        return liveSnapshot();
+      },
+      async daxQuery() {
+        return {
+          results: [
+            { tables: [{ rows: [localeDateTableRow, factRow('Actual'), factRow('Target')] }] },
+          ],
+        };
+      },
+    } as unknown as Parameters<typeof setModelDriverForTests>[0]);
+
+    const result = await withClient((client) =>
+      client.callTool({
+        name: 'pbi_model_plan_date_table',
+        arguments: {
+          dateTable: 'Calendar',
+          dateColumn: 'Date',
+          facts: [{ tableName: 'Actual', dateColumn: 'Date' }],
+        },
+      }),
+    );
+
+    const payload = jsonPayload(result);
+    const probeStatus = payload.probeStatus as Record<string, unknown>;
+    expect(probeStatus.status).toBe('proof-incomplete');
+    expect(probeStatus.status).not.toBe('succeeded');
+    expect(probeStatus.dateTableProofIncomplete).toBe(true);
+    expect(String(probeStatus.reason)).toMatch(/did not parse/i);
+  });
+
   it('reports a date-table parse-shape defect when raw coverage rows exist but no evidence parses', async () => {
     process.env.PBI_REPORT_MCP_DISABLE_LIVE_PROBE = '1';
     setModelDriverForTests({
@@ -2533,8 +2606,91 @@ describe('date grain planner tool', () => {
     expect(result.isError).toBe(true);
     expect(payload.reason).toBe('time-intelligence-default-context-blank-risk');
     expect(payload.correctedExpression).toEqual(expect.stringContaining('_AsOf'));
-    expect(payload.correctedExpression).toEqual(expect.stringContaining("MAX('Actual'[Date])"));
+    // The cap is now MEASURE-RELATIVE: it anchors at the last date THIS measure is
+    // non-blank (over the declared Calendar axis), not at a named fact date column,
+    // and never at the calendar MAX.
+    expect(payload.correctedExpression).toEqual(
+      expect.stringContaining('NOT ISBLANK(CALCULATE([Total Sales]))'),
+    );
+    expect(payload.correctedExpression).toEqual(
+      expect.stringContaining("VALUES('Calendar'[Date])"),
+    );
+    expect(payload.correctedExpression).not.toEqual(
+      expect.stringContaining("CALCULATE(MAX('Calendar'[Date]), REMOVEFILTERS('Calendar'))"),
+    );
+    // The cap wraps TOTALYTD on the OUTSIDE (CALCULATE(TOTALYTD(...), <= _AsOf)); the inner
+    // filter-arg form blanks in default context, so it must NOT be emitted.
+    expect(payload.correctedExpression).toEqual(
+      expect.stringContaining(
+        "CALCULATE(TOTALYTD([Total Sales], 'Calendar'[Date]), 'Calendar'[Date] <= _AsOf)",
+      ),
+    );
     expect(created).toBe(false);
+  });
+
+  it('WARNS (non-blocking) on an already-capped measure anchored at the CALENDAR MAX under overshoot (the field regression)', async () => {
+    let createdExpression: string | undefined;
+    setModelDriverForTests(
+      overshootDriver((def) => {
+        createdExpression = def.expression;
+      }),
+    );
+    // Exactly the hand-edited form that blanked in the field: the cap anchors _LastData at
+    // MAX('Calendar'[Date]) (the calendar end) instead of the last data date. Detection is
+    // best-effort for a semantic property, so this is a NON-BLOCKING advisory, not a refusal
+    // — the measure is written and the author is told to verify / re-anchor.
+    const handEdited =
+      "VAR _LastData = CALCULATE(MAX('Calendar'[Date]), REMOVEFILTERS('Calendar'))\n" +
+      "VAR _AsOf = MIN(MAX('Calendar'[Date]), _LastData)\n" +
+      "RETURN CALCULATE(TOTALYTD(SUM('Actual'[Date]), 'Calendar'[Date]), 'Calendar'[Date] <= _AsOf)";
+    const result = await withClient((client) =>
+      client.callTool({
+        name: 'pbi_measure_create',
+        arguments: {
+          tableName: 'Actual',
+          name: 'Sales YTD',
+          expression: handEdited,
+          measureIntent: blankRiskIntent,
+        },
+      }),
+    );
+    const payload = jsonPayload(result);
+    expect(result.isError).not.toBe(true);
+    expect(payload.created).toBe(true);
+    expect(createdExpression).toBe(handEdited);
+    expect(String(payload.blankRiskWarning)).toContain('CALENDAR end');
+  });
+
+  it('ALLOWS an already-capped measure with a measure-relative anchor (no false positive)', async () => {
+    setModelDriverForTests(overshootDriver(() => {}));
+    // The correct measure-relative cap must pass the gate untouched.
+    const good =
+      'VAR _LastData =\n' +
+      '    CALCULATE(\n' +
+      '        MAXX(\n' +
+      "            FILTER(VALUES('Calendar'[Date]), NOT ISBLANK(CALCULATE([Total Sales]))),\n" +
+      "            'Calendar'[Date]\n" +
+      '        ),\n' +
+      "        REMOVEFILTERS('Calendar')\n" +
+      '    )\n' +
+      "VAR _CtxMax = MAX('Calendar'[Date])\n" +
+      'VAR _AsOf = MIN(_CtxMax, _LastData)\n' +
+      "RETURN\n    CALCULATE(TOTALYTD([Total Sales], 'Calendar'[Date]), 'Calendar'[Date] <= _AsOf)";
+    const result = await withClient((client) =>
+      client.callTool({
+        name: 'pbi_measure_create',
+        arguments: {
+          tableName: 'Actual',
+          name: 'Sales YTD',
+          expression: good,
+          measureIntent: blankRiskIntent,
+        },
+      }),
+    );
+    // The measure-relative anchor must NOT trip the calendar-max gate. (Other
+    // unrelated fixture validation may still apply; we only assert MY gate stays silent.)
+    const payload = jsonPayload(result);
+    expect(payload.reason).not.toBe('time-intelligence-calendar-max-anchor-cap');
   });
 
   it('allows a bare period-to-date measure when the calendar ends at the fact max', async () => {
@@ -2594,6 +2750,70 @@ describe('date grain planner tool', () => {
     expect(result.isError).not.toBe(true);
     expect(payload.created).toBe(true);
     expect(createdExpression).toBe("TOTALYTD(SUM('Actual'[Date]), 'Calendar'[Date])");
+  });
+
+  it('does NOT refuse a calendar-max-anchored cap when the calendar does NOT overshoot (no fail-closed)', async () => {
+    // Same calendar-end anchor as the field regression, but here the calendar ends at the
+    // fact max (no overshoot) — so the anchor resolves to a date WITH data and the measure
+    // is fine. The gate must probe first and NOT refuse (refusing would block legit authoring).
+    let createdExpression: string | undefined;
+    setModelDriverForTests({
+      async ensureConnection() {
+        return { mode: 'live', connectionString: 'Data Source=localhost:61234;' };
+      },
+      async getModelSnapshot() {
+        return liveSnapshot();
+      },
+      async daxQuery() {
+        return {
+          results: [
+            {
+              tables: [
+                {
+                  rows: [
+                    {
+                      '[__kind]': 'date-table',
+                      '[__table]': 'Calendar',
+                      '[__column]': 'Date',
+                      '[maxDate]': '2020-12-30T00:00:00',
+                    },
+                    {
+                      '[__kind]': 'fact',
+                      '[__table]': 'Actual',
+                      '[__column]': 'Date',
+                      '[maxDate]': '2020-12-30T00:00:00',
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        };
+      },
+      async createMeasure(def: { expression?: string }) {
+        createdExpression = def.expression;
+        return {};
+      },
+    } as unknown as Parameters<typeof setModelDriverForTests>[0]);
+    const calMaxAnchored =
+      "VAR _LastData = CALCULATE(MAX('Calendar'[Date]), REMOVEFILTERS('Calendar'))\n" +
+      "VAR _AsOf = MIN(MAX('Calendar'[Date]), _LastData)\n" +
+      "RETURN CALCULATE(TOTALYTD(SUM('Actual'[Date]), 'Calendar'[Date]), 'Calendar'[Date] <= _AsOf)";
+    const result = await withClient((client) =>
+      client.callTool({
+        name: 'pbi_measure_create',
+        arguments: {
+          tableName: 'Actual',
+          name: 'Sales YTD',
+          expression: calMaxAnchored,
+          measureIntent: blankRiskIntent,
+        },
+      }),
+    );
+    const payload = jsonPayload(result);
+    expect(payload.reason).not.toBe('time-intelligence-calendar-max-anchor-cap');
+    expect(payload.created).toBe(true);
+    expect(createdExpression).toBe(calMaxAnchored);
   });
 
   it('refuses to auto-rewrite a blank-risk bare measure that carries an extra filter arg (would drop it)', async () => {
@@ -4544,13 +4764,18 @@ describe('date grain planner tool', () => {
       }),
     );
 
-    // A data-proven Date table whose dataCategory:Time write no-ops on read-back is
-    // reported as a NON-BLOCKING result (marked:false + actionable warning), NOT a thrown
-    // error: the date key is proven from data, so relationships/explicit-column TI work
-    // regardless and the workflow must not deadlock on the cosmetic mark.
+    // F7: a data-proven Date table whose dataCategory:Time write no-ops on read-back is
+    // reported as SUCCESS with markObservable:false (NOT marked:false, NOT a thrown error):
+    // the gate already proved the key clean from data, so the mark IS done for
+    // relationships/explicit-column TI and the agent must treat it as done, not loop
+    // re-marking/deleting/recreating. The warning keeps the read-back caveat honest.
     const payload = jsonPayload(result);
     expect(result.isError).not.toBe(true);
-    expect(payload).toMatchObject({ marked: false, reason: 'post-write-verification-failed' });
+    expect(payload).toMatchObject({
+      marked: true,
+      markObservable: false,
+      reason: 'post-write-verification-failed',
+    });
     expect(payload.warning).toBeDefined();
     expect(marked).toBe(true);
   });

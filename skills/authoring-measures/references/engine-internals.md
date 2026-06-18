@@ -1,8 +1,10 @@
 # Engine Internals
 
+> **Background theory, not an executable workflow in this beta.** This document describes FE/SE architecture, xmSQL, and trace diagnostics for understanding *why* the static rewrite patterns help. The plugin has no tool to capture traces or timings; treat all trace/diagnostic content here as conceptual background only.
+
 How the DAX engine works: Formula Engine (FE) vs. Storage Engine (SE) architecture, xmSQL query language, compression and segments, SE query fusion, and trace diagnostics.
 
-> **Related references:** [`references/dax-performance.md`](./dax-performance.md) — DAX001–021 pattern catalog + QRY001–004 · [`references/model-optimization.md`](./model-optimization.md) — MDL001–010, DL001–002
+> **Related references:** [`references/dax-performance.md`](./dax-performance.md) — PERF001–021 pattern catalog + QRY001–004 · [`references/model-optimization.md`](./model-optimization.md) — MDL001–010, DL001–002
 
 **Identifier guard:** Concrete table, column, and measure names in examples are illustrative only. Production DAX must resolve identifiers from live model metadata, deterministic planner output, the validated user spec, or explicit user confirmation; never copy example names into a user model.
 
@@ -45,7 +47,7 @@ FROM Sales
 
 **Semi-join projections:** Appear as `DEFINE TABLE $Filter0 ... ININDEX` in xmSQL — an initial dimension scan builds a key index injected into the fact WHERE clause.
 
-**Callbacks:** Occur whenever the SE must compute an expression that exceeds VertiPaq's native capabilities — forcing row-by-row evaluation back in the FE. Example: `IF('Sales'[Amount] > 1000, 1, 0)` inside an iterator requires a callback because the SE cannot evaluate conditional logic. Replace with `INT('Sales'[Amount] > 1000)` to keep the expression SE-native. See DAX002, DAX007, DAX008, DAX018 in `references/dax-performance.md` for callback elimination patterns.
+**Callbacks:** Occur whenever the SE must compute an expression that exceeds VertiPaq's native capabilities — forcing row-by-row evaluation back in the FE. Example: `IF('Sales'[Amount] > 1000, 1, 0)` inside an iterator requires a callback because the SE cannot evaluate conditional logic. Replace with `INT('Sales'[Amount] > 1000)` to keep the expression SE-native. See PERF002, PERF007, PERF008, PERF018 in `references/dax-performance.md` for callback elimination patterns.
 
 ---
 
@@ -72,8 +74,8 @@ Fusion is the engine's ability to combine multiple SE scans into fewer scans. Th
 **Vertical fusion** merges multiple measure aggregations that share the same filter context into a single SE query. Three measures on the same fact table under the same filter = one scan instead of three. Gain scales with fact table size.
 
 **What blocks vertical fusion:**
-- **Time intelligence functions** (DATESYTD, DATEADD, SAMEPERIODLASTYEAR, etc.) — each TI-modified measure needs its own date-filtered SE scan → see DAX019
-- **Per-measure filter predicates** — can cause the FE to materialize separate `VAND` tuple predicates per measure, producing structurally different SE queries even when the underlying logic is identical → see DAX017
+- **Time intelligence functions** (DATESYTD, DATEADD, SAMEPERIODLASTYEAR, etc.) — each TI-modified measure needs its own date-filtered SE scan → see PERF019
+- **Per-measure filter predicates** — can cause the FE to materialize separate `VAND` tuple predicates per measure, producing structurally different SE queries even when the underlying logic is identical → see PERF017
 - **SWITCH/IF selecting between measures** — engine cannot determine at plan time which aggregation to include
 - **Calculation group items** applying different filter modifications — each generates its own SE query
 
@@ -154,14 +156,14 @@ FE processing occurs in the gaps *between* SE events. Use `StartTime`/`EndTime` 
 
 Scan for these signals in priority order when analyzing a slow query:
 
-1. **Callbacks** — `CallbackDataID` or `EncodeCallback` in SE TextData. Fix first (DAX002, DAX007, DAX008, DAX018).
+1. **Callbacks** — `CallbackDataID` or `EncodeCallback` in SE TextData. Fix first (PERF002, PERF007, PERF008, PERF018).
 2. **High FE %** — FE doing too much work; usually paired with many short SE queries.
 3. **High SE query count / repeated fact scans** — multiple SE queries hitting the same fact table with same joins but different WHERE clauses or aggregations → blocked fusion. See SE Query Fusion.
-4. **Large materializations** — SE rows far exceed final result, or SE queries with no WHERE clause → FE filtering post-materialization instead of pushing to SE. See DAX009.
+4. **Large materializations** — SE rows far exceed final result, or SE queries with no WHERE clause → FE filtering post-materialization instead of pushing to SE. See PERF009.
 5. **Low parallelism factor** — near 1.0 on slow scans → data layout problem, not DAX. See Compression, Segments, and Parallelism.
 6. **High KB per SE event** — wide intermediate tables; reduce columns or aggregate earlier.
 7. **Two-step dimension pre-scans** — dimension-only SELECT followed by `where predicate` on the fact. Restructure query to collapse into one scan.
-8. **Large semi-join index tables** — `DEFINE TABLE` + `ININDEX` or `WHERE ... IN` with hundreds of compound tuples (e.g., `(GroupByCol, FilterKey)` pairs). See DAX021.
+8. **Large semi-join index tables** — `DEFINE TABLE` + `ININDEX` or `WHERE ... IN` with hundreds of compound tuples (e.g., `(GroupByCol, FilterKey)` pairs). See PERF021.
 9. **Missing aggregate table hit** — Model has agg tables configured but no `AggregateTableRewriteQuery` event in the trace → query fell through to the detail table. Check agg table mappings and query grain.
 
 **Prioritization:** Callbacks → Large FE processing → SE query count (DAX) → parallelism and data volume (data layout). Target the highest-duration SE scan first — ignore 0ms cache-hit scans.
@@ -172,7 +174,7 @@ Scan for these signals in priority order when analyzing a slow query:
 
 | Pattern | Diagnosis | Fix |
 |---------|-----------|-----|
-| Many SE queries + high FE time + individually short SE scans | DAX problem — fusion blocked, callbacks present, or filters resolving iteratively | Fix the DAX — see DAX001–021 and QRY001–004 |
+| Many SE queries + high FE time + individually short SE scans | DAX problem — fusion blocked, callbacks present, or filters resolving iteratively | Fix the DAX — see PERF001–021 and QRY001–004 |
 | Few SE queries + low FE time + high SE duration + low parallelism | Data layout problem — insufficient segments or poor compression; DAX changes will not help | See General Data Layout Best Practices and DL001–DL002 in `references/model-optimization.md` |
 
 **Example (DAX problem):** 109 SE queries, 30% FE → after DAX restructuring: 4 SE queries, 1% FE.

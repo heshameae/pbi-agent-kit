@@ -2,7 +2,7 @@
   "name": "pbi-core",
   "version": "0.1.0",
   "private": true,
-  "description": "Pure TypeScript engine for gated Power BI semantic-model workflows and PBIR authoring primitives.",
+  "description": "Pure TypeScript engine for gated Power BI semantic-model workflows.",
   "license": "MIT",
   "type": "module",
   "main": "./dist/index.js",
@@ -15,7 +15,7 @@
   },
   "files": ["dist", "src"],
   "scripts": {
-    "build": "tsc -p tsconfig.json && node scripts/copy-templates.mjs",
+    "build": "tsc -p tsconfig.json",
     "test": "vitest run",
     "test:watch": "vitest"
   },

@@ -1,6 +1,3 @@
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import path from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
@@ -38,19 +35,6 @@ function requiredOf(name: string): readonly string[] {
   return byName(name)?.inputSchema?.required ?? [];
 }
 
-async function callTool(name: string, args: Record<string, unknown>) {
-  const server = buildServer();
-  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-  await server.connect(serverTransport);
-  const client = new Client({ name: 'test', version: '1.0.0' });
-  await client.connect(clientTransport);
-  try {
-    return await client.callTool({ name, arguments: args });
-  } finally {
-    await client.close();
-  }
-}
-
 beforeAll(async () => {
   const server = buildServer();
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -68,6 +52,19 @@ beforeAll(async () => {
 afterEach(() => {
   setModelDriverForTests(null);
 });
+
+async function callTool(name: string, args: Record<string, unknown>) {
+  const server = buildServer();
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverTransport);
+  const client = new Client({ name: 'test', version: '1.0.0' });
+  await client.connect(clientTransport);
+  try {
+    return await client.callTool({ name, arguments: args });
+  } finally {
+    await client.close();
+  }
+}
 
 const NEW_TOOLS = [
   'pbi_date_table_create_governed',
@@ -162,6 +159,7 @@ describe('modeling-only server surface', () => {
     'pbi_model_list_columns',
     'pbi_model_list_measures',
     'pbi_model_list_relationships',
+    'pbi_data_dictionary_get',
     'pbi_model_plan_star_schema_join',
     'pbi_model_plan_actuals_targets_join',
     'pbi_model_apply_star_schema_join',
@@ -200,7 +198,6 @@ describe('modeling-only server surface', () => {
       const list = await client.listTools();
       const names = list.tools.map((tool) => tool.name);
       expect([...names].sort()).toEqual([...MODELING_SURFACE_TOOLS].sort());
-      expect(names).not.toContain('pbi_data_dictionary_get');
       expect(
         names.some((name) =>
           /^pbi_(report|page|visual|theme|filter|bookmark|format|layout)_/.test(name),
@@ -211,32 +208,9 @@ describe('modeling-only server surface', () => {
     }
   });
 
-  it('uses the exact modeling surface when PBI_MCP_SURFACE=modeling is set', async () => {
-    const oldSurface = process.env.PBI_MCP_SURFACE;
-    process.env.PBI_MCP_SURFACE = 'modeling';
-    const server = buildServer();
-    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-    await server.connect(serverTransport);
-    const client = new Client({ name: 'test', version: '1.0.0' });
-    await client.connect(clientTransport);
-    try {
-      const list = await client.listTools();
-      const names = list.tools.map((tool) => tool.name);
-      expect([...names].sort()).toEqual([...MODELING_SURFACE_TOOLS].sort());
-    } finally {
-      await client.close();
-      if (oldSurface === undefined) {
-        // biome-ignore lint/performance/noDelete: tests must restore process environment
-        delete process.env.PBI_MCP_SURFACE;
-      } else {
-        process.env.PBI_MCP_SURFACE = oldSurface;
-      }
-    }
-  });
-
-  it('rejects unknown PBI_MCP_SURFACE values instead of exposing the full surface', () => {
+  it('rejects unknown build surface values instead of exposing anything else', () => {
     expect(() => buildServer({ surface: 'not-a-surface' as never })).toThrow(
-      /PBI_MCP_SURFACE must be either "full" or "modeling"/,
+      /only the "modeling" MCP surface/,
     );
   });
 });
@@ -259,53 +233,6 @@ describe('data dictionary tool registry', () => {
     expect(props.includeNested).toBeDefined();
     expect(props.tableNames).toBeDefined();
     expect(props.refs).toBeDefined();
-  });
-});
-
-describe('report write tool registry', () => {
-  it('warns PBIR disk-write tools not to use Desktop Ctrl+S from stale state', () => {
-    const reportWriteTools = [
-      'pbi_page_add',
-      'pbi_visual_add',
-      'pbi_visual_bind',
-      'pbi_visual_set_container',
-      'pbi_visual_bulk_update',
-      'pbi_report_convert',
-    ];
-
-    for (const name of reportWriteTools) {
-      const desc = byName(name)?.description?.toLowerCase() ?? '';
-      expect(desc, name).toContain('pbir');
-      expect(desc, name).toContain('disk');
-      expect(desc, name).toContain('ctrl+s');
-      expect(desc, name).toContain('stale');
-      expect(desc, name).toMatch(/close\/reopen|reload/);
-    }
-  });
-
-  it('returns a PBIR disk persistence warning from report write tool calls', async () => {
-    const root = mkdtempSync(path.join(tmpdir(), 'pbi-report-persist-'));
-    try {
-      const result = await callTool('pbi_report_create', {
-        targetPath: root,
-        name: 'PersistContract',
-      });
-      const structured = result.structuredContent as {
-        reportPersistence?: {
-          mode?: string;
-          userAction?: string;
-          saveRule?: string;
-        };
-      };
-      expect(structured.reportPersistence?.mode).toBe('pbir-disk');
-      expect(structured.reportPersistence?.userAction?.toLowerCase()).toContain(
-        'do not press ctrl+s',
-      );
-      expect(structured.reportPersistence?.userAction?.toLowerCase()).toContain('stale');
-      expect(structured.reportPersistence?.saveRule?.toLowerCase()).toContain('desktop edits');
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
   });
 });
 

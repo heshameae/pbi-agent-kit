@@ -2,7 +2,7 @@
 
 Tier 3 model patterns (MDL001–MDL010) and Tier 4 Direct Lake patterns (DL001–DL002).
 
-> **Related references:** [`references/engine-internals.md`](./engine-internals.md) — FE/SE architecture, xmSQL, trace diagnostics · [`references/dax-performance.md`](./dax-performance.md) — DAX001–021 pattern catalog + QRY001–004
+> **Related references:** [`references/engine-internals.md`](./engine-internals.md) — FE/SE architecture, xmSQL, trace diagnostics · [`references/dax-performance.md`](./dax-performance.md) — PERF001–021 pattern catalog + QRY001–004
 
 ---
 

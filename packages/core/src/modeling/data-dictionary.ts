@@ -1,3 +1,4 @@
+import { compareByName } from './naming.js';
 import type { TMDLColumn, TMDLMeasure, TMDLModel, TMDLTable } from './types.js';
 
 export interface DataDictionaryOptions {
@@ -96,11 +97,17 @@ export function buildDataDictionary(
   const selectedTables =
     options.tableNames && options.tableNames.length > 0 ? new Set(options.tableNames) : null;
   const selectedRefs = options.refs && options.refs.length > 0 ? new Set(options.refs) : null;
-  const visibleTables = model.tables.filter(
-    (table) =>
-      (includeHidden || !table.isHidden) &&
-      (selectedTables === null || selectedTables.has(table.name)),
-  );
+  const visibleTables = model.tables
+    .filter(
+      (table) =>
+        (includeHidden || !table.isHidden) &&
+        (selectedTables === null || selectedTables.has(table.name)),
+    )
+    // Canonical code-unit name order so the dictionary (a primary read surface) is
+    // byte-identical run-to-run. Folder mode is already canonical via the parser sort;
+    // this also normalizes LIVE mode, where model.tables arrives in host-return order.
+    .slice()
+    .sort((a, b) => compareByName(a.name, b.name));
   const tableNames = new Set(visibleTables.map((table) => table.name));
 
   const tables = visibleTables.map((table) =>

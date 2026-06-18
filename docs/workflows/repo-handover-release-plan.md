@@ -117,16 +117,17 @@ Likely exclude from `v0.1.0`:
 - broad/full-report MCP config
 - Microsoft MCP binary unless legal/security explicitly approve bundling it
 
-## Claude Code Layout
+## Claude Code Plugin Layout
 
-Use Claude Code conventions:
+For Claude Code plugin packaging, keep release assets at the repo root:
 
-- Project-shared skills: `.claude/skills/...`
-- Project-shared agents: `.claude/agents/...`
-- Personal/local skills: `~/.claude/skills/...`
-- Local settings: `.claude/settings.local.json`
+- `.claude-plugin/` for the plugin manifest and marketplace metadata
+- `skills/` for shared plugin skills
+- `agents/` for shared plugin agents
+- `hooks/` for plugin guardrails
+- `.mcp.json` for the bundled MCP server registration
 
-Internal development skills, such as system-improvement helpers, should not ship in the bank beta unless they are intentionally part of the AA CoE operating model.
+Use `.claude/*` only for project-local non-plugin settings. Do not move plugin assets under `.claude/` for the bank beta. Internal development skills, such as system-improvement helpers, should not ship in the bank beta unless they are intentionally part of the AA CoE operating model.
 
 ## Versioning
 
@@ -218,19 +219,20 @@ Preferred model:
 - Our wrapper resolves the local approved Microsoft MCP executable.
 - Users register our MCP, not Microsoft's raw MCP.
 
-Resolution order should be:
+Runtime resolution should be explicit in offline Windows installs:
 
-```text
-PBI_MODELING_MCP_EXE
-repo/internal approved binary path if allowed
-clear failure with setup instructions
+```powershell
+$env:PBI_MODELING_MCP_COMMAND = "C:\pbi-agent-kit\vendor\powerbi-modeling-mcp\package\dist\powerbi-modeling-mcp.exe"
+$env:PBI_MODELING_MCP_ARGS = "[\"--start\",\"--skipconfirmation\"]"
 ```
+
+On macOS-to-Parallels development only, the bridge can use `PBI_MS_MCP_EXE` to point at the approved Windows executable inside the VM. If the executable is absent, fail clearly with setup instructions; do not fall back to runtime internet downloads in the bank environment.
 
 ## Practical Next Steps
 
 1. Create and push `future/full-surface` from the current full repo state.
 2. Clean `main` to only the `v0.1.0` release scope.
-3. Move shared Claude Code assets to `.claude/skills` and `.claude/agents` where appropriate.
+3. Keep shared Claude Code plugin assets at repo root: `.claude-plugin/`, `skills/`, `agents/`, `hooks/`, and `.mcp.json`.
 4. Remove or exclude personal/internal/dev-only material from `main`.
 5. Add bank handoff docs and offline Windows setup notes.
 6. Run tests and build.

@@ -60,6 +60,7 @@ export interface TMDLTable {
   }>;
   readonly description?: string;
   readonly storageMode?: StorageMode;
+  readonly annotations?: Readonly<Record<string, string>>;
 }
 
 export interface TMDLRelationship {

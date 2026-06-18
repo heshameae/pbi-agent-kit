@@ -420,6 +420,103 @@ describe('model list tools', () => {
     expect(daxConnection).toEqual(selectedConnection);
   });
 
+  it('pbi_model_refresh refuses a reprocess without explicit confirmReprocess', async () => {
+    let refreshed = false;
+    setModelDriverForTests({
+      async listLiveInstances() {
+        return [{ connectionString: 'Data Source=localhost:1;' }];
+      },
+      async ensureConnection() {
+        return { mode: 'live', connectionString: 'Data Source=localhost:1;' };
+      },
+      async refreshModel() {
+        refreshed = true;
+        return { refreshed: true };
+      },
+    } as unknown as Parameters<typeof setModelDriverForTests>[0]);
+    const result = await callTool('pbi_model_refresh', {});
+    const payload = jsonPayload(result);
+    expect(result.isError).toBe(true);
+    expect(payload.reason).toBe('refresh-not-authorized');
+    expect(refreshed).toBe(false);
+  });
+
+  it('pbi_model_refresh proceeds when confirmReprocess is true', async () => {
+    let refreshed = false;
+    setModelDriverForTests({
+      async listLiveInstances() {
+        return [{ connectionString: 'Data Source=localhost:1;' }];
+      },
+      async ensureConnection() {
+        return { mode: 'live', connectionString: 'Data Source=localhost:1;' };
+      },
+      async refreshModel() {
+        refreshed = true;
+        return { refreshed: true };
+      },
+    } as unknown as Parameters<typeof setModelDriverForTests>[0]);
+    const result = await callTool('pbi_model_refresh', { confirmReprocess: true });
+    const payload = jsonPayload(result);
+    expect(result.isError).not.toBe(true);
+    expect(payload.refreshed).toBe(true);
+    expect(refreshed).toBe(true);
+  });
+
+  it('pbi_column_create surfaces an advisory for a calc expression with an unresolved reference', async () => {
+    const snapshot = {
+      modelPath: '(live)',
+      tables: [
+        {
+          name: 'Sales',
+          columns: [
+            {
+              table: 'Sales',
+              name: 'Amount',
+              dataType: 'decimal',
+              isHidden: false,
+              isKey: false,
+              isCalculated: false,
+            },
+          ],
+          measures: [],
+          isHidden: false,
+          isCalculated: false,
+          isAutoDateTable: false,
+        },
+      ],
+      relationships: [],
+    };
+    setModelDriverForTests({
+      async listLiveInstances() {
+        return [{ connectionString: 'Data Source=localhost:1;' }];
+      },
+      async ensureConnection() {
+        return { mode: 'live', connectionString: 'Data Source=localhost:1;' };
+      },
+      async getModelSnapshot() {
+        return snapshot;
+      },
+      async getCachedSnapshot() {
+        return snapshot;
+      },
+      async createColumn() {
+        return {};
+      },
+    } as unknown as Parameters<typeof setModelDriverForTests>[0]);
+    const result = await callTool('pbi_column_create', {
+      tableName: 'Sales',
+      name: 'Doubled',
+      // [Amount] resolves via the host-table row context; [NonexistentColumn] does not.
+      expression: '[Amount] + [NonexistentColumn]',
+    });
+    const payload = jsonPayload(result);
+    expect(result.isError).not.toBe(true);
+    expect(payload.created).toBe(true);
+    const advisory = payload.referenceAdvisory as Record<string, unknown> | undefined;
+    expect(advisory?.advisory).toBe('calc-expression-reference-check');
+    expect(advisory?.missing).toContain('[NonexistentColumn]');
+  });
+
   it('returns pbi_dax_query rows through the server boundary without dropping structured rows', async () => {
     // biome-ignore lint/performance/noDelete: this test exercises live-first behavior
     delete process.env.PBI_REPORT_MCP_DISABLE_LIVE_PROBE;

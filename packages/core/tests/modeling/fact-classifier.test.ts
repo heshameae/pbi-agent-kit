@@ -95,6 +95,36 @@ describe('classifyTable', () => {
     expect(classifyTable(m, 'FactPrimary').kind).toBe('fact');
   });
 
+  it('does NOT classify a conformed dimension as a fact via oneToMany fan-out', () => {
+    // A shared dimension authored as the ONE side of >= 2 oneToMany edges is on the
+    // from-side of those relationships, but the from-side is the ONE side — counting
+    // it as fan-out would misclassify it as a fact (and propose a duplicate dim).
+    const oneToMany = (
+      id: string,
+      fromTable: string,
+      fromColumn: string,
+      toTable: string,
+      toColumn: string,
+    ): TMDLRelationship => ({
+      ...rel(id, fromTable, fromColumn, toTable, toColumn),
+      cardinality: 'oneToMany',
+    });
+    const m = model(
+      [
+        table('SharedDim', {
+          columns: [col('SharedDim', 'DimKey', { dataType: 'int64', isKey: true })],
+        }),
+        table('FactA', { columns: [col('FactA', 'DimKey', { dataType: 'int64' })] }),
+        table('FactB', { columns: [col('FactB', 'DimKey', { dataType: 'int64' })] }),
+      ],
+      [
+        oneToMany('r1', 'SharedDim', 'DimKey', 'FactA', 'DimKey'),
+        oneToMany('r2', 'SharedDim', 'DimKey', 'FactB', 'DimKey'),
+      ],
+    );
+    expect(classifyTable(m, 'SharedDim').kind).not.toBe('fact');
+  });
+
   it('classifies a dimension (only a to-side, no measures)', () => {
     const m = model(
       [

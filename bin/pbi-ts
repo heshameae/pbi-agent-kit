@@ -1,3 +1,0 @@
-#!/usr/bin/env bash
-# Wrapper that invokes the compiled pbi-cli main.
-exec node "$(dirname "$0")/../packages/cli/dist/main.js" "$@"

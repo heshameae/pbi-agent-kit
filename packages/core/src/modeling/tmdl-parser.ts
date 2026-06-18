@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { deriveCardinality } from './cardinality.js';
+import { compareByName } from './naming.js';
 import type {
   CrossFilteringBehavior,
   StorageMode,
@@ -60,6 +61,7 @@ export function parseTMDLFolder(definitionPath: string): TMDLModel {
   const relationshipsFile = path.join(definitionPath, 'relationships.tmdl');
 
   const tables: TMDLTable[] = [];
+  // (compareByName: code-unit order — see import.)
   if (existsSync(tablesDir) && statSync(tablesDir).isDirectory()) {
     for (const entry of readdirSync(tablesDir)) {
       if (!entry.endsWith('.tmdl')) continue;
@@ -83,6 +85,15 @@ export function parseTMDLFolder(definitionPath: string): TMDLModel {
       if (parsed) roles.push(parsed);
     }
   }
+
+  // Sort tables and roles by code-point name order so the parsed model is
+  // byte-identical across machines/clones regardless of readdirSync (filesystem)
+  // order. Every downstream consumer (BPA findings, data dictionary, list-tables)
+  // iterates these arrays and emits in this order; without a canonical sort the same
+  // model produces differently-ordered output run-to-run. Lookups are by name, so
+  // reordering is safe. compareByName is code-unit (not locale) order — deterministic.
+  tables.sort((a, b) => compareByName(a.name, b.name));
+  roles.sort((a, b) => compareByName(a.name, b.name));
 
   // Omit `roles` entirely when the model has no RLS, but mark enumeration as
   // captured for folder reads so zero roles is an evidenced count.
@@ -108,6 +119,7 @@ export function parseTableFile(content: string): TMDLTable | null {
   let currentPartitionSourceKind: string | undefined;
   const columns: TMDLColumn[] = [];
   const measures: TMDLMeasure[] = [];
+  const tableAnnotations: Record<string, string> = {};
 
   let i = 0;
   while (i < lines.length) {
@@ -147,6 +159,17 @@ export function parseTableFile(content: string): TMDLTable | null {
       const dataCategoryMatch = /^dataCategory:\s*(.+)$/i.exec(line);
       if (dataCategoryMatch?.[1] !== undefined) {
         tableDataCategory = unquoteIdent(dataCategoryMatch[1].trim());
+      }
+      // Table-scope annotations (e.g. the governed Date-table policy stamp). Column /
+      // measure annotations live inside their own blocks and are consumed by collectBlock,
+      // so an annotation seen here is table-scoped.
+      const tableAnnotationMatch = /^annotation\s+([^\s=]+)\s*=\s*(.*)$/.exec(line);
+      if (tableAnnotationMatch) {
+        const annotationName = tableAnnotationMatch[1];
+        const annotationValue = tableAnnotationMatch[2];
+        if (annotationName && annotationValue !== undefined) {
+          tableAnnotations[annotationName] = unquoteAnnotationValue(annotationValue);
+        }
       }
       const sourceMatch = /^source\s*=\s*(.*)$/i.exec(line);
       if (sourceMatch) {
@@ -221,6 +244,7 @@ export function parseTableFile(content: string): TMDLTable | null {
     ...(partitionSources.length > 0 ? { partitionSources } : {}),
     ...(tableDescription !== undefined ? { description: tableDescription } : {}),
     ...(storageMode !== undefined ? { storageMode } : {}),
+    ...(Object.keys(tableAnnotations).length > 0 ? { annotations: tableAnnotations } : {}),
   };
 }
 

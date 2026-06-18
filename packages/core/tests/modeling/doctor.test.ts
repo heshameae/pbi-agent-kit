@@ -193,16 +193,44 @@ describe('modelDoctorFromFolder', () => {
       },
     );
 
+    // Only role-metadata capture is a HARD gate (it is the one class the assemblers
+    // actually enumerate). dataSources/sensitivity/lineage/governance are attested via
+    // policy evidence, not via capture flags the beta never sets — so they must NOT
+    // appear as missing capture metadata.
     expect(r.regulatedEnterprise?.status).toBe('blocked');
-    expect(r.regulatedEnterprise?.missingEvidence).toEqual(
-      expect.arrayContaining([
-        'capturedRoles',
-        'capturedDataSources',
-        'capturedSensitivity',
-        'capturedLineage',
-        'capturedGovernance',
-      ]),
+    expect(r.regulatedEnterprise?.missingEvidence).toContain('capturedRoles');
+    expect(r.regulatedEnterprise?.missingEvidence).not.toContain('capturedDataSources');
+    expect(r.regulatedEnterprise?.missingEvidence).not.toContain('capturedSensitivity');
+    expect(r.regulatedEnterprise?.missingEvidence).not.toContain('capturedLineage');
+    expect(r.regulatedEnterprise?.missingEvidence).not.toContain('capturedGovernance');
+  });
+
+  it('passes on a realistic model (roles captured + policy evidence) WITHOUT un-enumerable capture flags', () => {
+    // Regression for H-E: previously `passed` was unreachable because dataSources/
+    // sensitivity/lineage/governance capture flags were required but never set by any
+    // production assembler. A real model only carries rolesCaptured.
+    const r = modelDoctor(
+      {
+        modelPath: '(live)',
+        tables: [],
+        relationships: [],
+        rolesCaptured: true,
+      },
+      {
+        regulatedEnterprise: true,
+        policyEvidence: {
+          rlsTestResults: 'tested',
+          sensitivityClassification: 'classified',
+          lineage: 'reviewed',
+          refreshEvidence: 'refresh logged',
+          metricOwnerSignoff: 'owner signed',
+          openExceptions: [],
+          serviceGovernance: 'workspace governed',
+        },
+      },
     );
+    expect(r.regulatedEnterprise?.status).toBe('passed');
+    expect(r.regulatedEnterprise?.missingEvidence).toEqual([]);
   });
 
   it('requires AI evidence only when Copilot or data-agent exposure is in scope', () => {

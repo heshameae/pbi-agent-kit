@@ -82,10 +82,19 @@ function notCaptured(message: string): ModelMetadataCapture {
   return { status: 'not-captured', message };
 }
 
-function booleanCapture(capturedFlag: boolean | undefined, label: string): ModelMetadataCapture {
+// Honest capture for a metadata class that the modeling-only beta does NOT enumerate
+// from the model: report `captured` only if an assembler actually set the flag
+// (future-proof), otherwise state plainly that it is not enumerable on this beta and
+// must be attested via regulated policy evidence — rather than the old
+// "not captured by the wrapper" message that read like a fixable model gap. These
+// classes are deliberately NOT part of the hard metadata requirement below (see
+// REQUIRED_REGULATED_METADATA); the governance bar for them comes from policyEvidence.
+function enumerableCapture(capturedFlag: boolean | undefined, label: string): ModelMetadataCapture {
   return capturedFlag === true
-    ? captured(undefined, `${label} metadata was captured by the wrapper.`)
-    : notCaptured(`${label} metadata was not captured by the wrapper.`);
+    ? captured(undefined, `${label} metadata was captured.`)
+    : notCaptured(
+        `${label} metadata is not enumerable on the modeling-only beta; attest it via regulated policy evidence rather than treating it as a captured model gate.`,
+      );
 }
 
 function buildMetadataCoverage(model: TMDLModel): ModelMetadataCoverage {
@@ -95,13 +104,13 @@ function buildMetadataCoverage(model: TMDLModel): ModelMetadataCoverage {
       roleCount !== undefined
         ? captured(roleCount, 'RLS role metadata was captured.')
         : notCaptured('RLS role metadata was not captured; do not treat security review as clean.'),
-    ols: booleanCapture(model.objectLevelSecurityCaptured, 'Object-level security'),
-    calculationGroups: booleanCapture(model.calculationGroupsCaptured, 'Calculation group'),
-    perspectives: booleanCapture(model.perspectivesCaptured, 'Perspective'),
-    dataSources: booleanCapture(model.dataSourcesCaptured, 'Data source'),
-    sensitivity: booleanCapture(model.sensitivityCaptured, 'Sensitivity/PII classification'),
-    lineage: booleanCapture(model.lineageCaptured, 'Lineage'),
-    governance: booleanCapture(model.governanceCaptured, 'Service governance'),
+    ols: enumerableCapture(model.objectLevelSecurityCaptured, 'Object-level security'),
+    calculationGroups: enumerableCapture(model.calculationGroupsCaptured, 'Calculation group'),
+    perspectives: enumerableCapture(model.perspectivesCaptured, 'Perspective'),
+    dataSources: enumerableCapture(model.dataSourcesCaptured, 'Data source'),
+    sensitivity: enumerableCapture(model.sensitivityCaptured, 'Sensitivity/PII classification'),
+    lineage: enumerableCapture(model.lineageCaptured, 'Lineage'),
+    governance: enumerableCapture(model.governanceCaptured, 'Service governance'),
   };
 }
 
@@ -126,13 +135,17 @@ const EMPTY_ARRAY_ALLOWED_EVIDENCE = new Set<keyof RegulatedEnterprisePolicyEvid
   'openExceptions',
 ]);
 
-const REQUIRED_REGULATED_METADATA = [
-  ['roles', 'capturedRoles'],
-  ['dataSources', 'capturedDataSources'],
-  ['sensitivity', 'capturedSensitivity'],
-  ['lineage', 'capturedLineage'],
-  ['governance', 'capturedGovernance'],
-] as const satisfies ReadonlyArray<readonly [keyof ModelMetadataCoverage, string]>;
+// The HARD metadata-capture gate requires only what the model assemblers actually
+// produce today: RLS role enumeration (tmdl-parser sets rolesCaptured; the live driver
+// sets it when the roles List succeeds). dataSources/sensitivity/lineage/governance are
+// NOT enumerable on the modeling-only beta, so requiring their capture flags here made
+// `passed` permanently UNREACHABLE for any real model (the flags were read but never
+// set). Their governance bar is enforced via REQUIRED_REGULATED_EVIDENCE
+// (sensitivityClassification / lineage / serviceGovernance attestations) instead, so the
+// regulated check now conveys a real, satisfiable signal rather than a fake permanent block.
+const REQUIRED_REGULATED_METADATA = [['roles', 'capturedRoles']] as const satisfies ReadonlyArray<
+  readonly [keyof ModelMetadataCoverage, string]
+>;
 
 function hasEvidence(
   value: unknown,

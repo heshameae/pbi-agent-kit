@@ -8,5 +8,5 @@ const pluginRoot = path.resolve(scriptDir, '..');
 const marker = writeBuildMarker(pluginRoot);
 
 process.stderr.write(
-  `pbi-mcp-ts: wrote build marker ${marker.sha256.slice(0, 12)} (${marker.inputCount} inputs).\n`,
+  `pbi-agent-kit: wrote build marker ${marker.sha256.slice(0, 12)} (${marker.inputCount} inputs).\n`,
 );

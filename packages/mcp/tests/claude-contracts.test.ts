@@ -64,7 +64,7 @@ describe('Claude model-operation contracts', () => {
     expect(JSON.stringify(msMcpHooks)).toContain('guard-no-python-powerbi-ops.mjs');
   });
 
-  it('registers modeling-beta scope hooks before prompts, slash expansions, and report tools', () => {
+  it('registers modeling-beta scope hooks on prompt submit and before report tools', () => {
     const hooks = JSON.parse(readRepoFile('hooks/hooks.json')) as {
       hooks?: {
         UserPromptSubmit?: Array<{ hooks?: Array<{ command?: string }> }>;
@@ -75,9 +75,9 @@ describe('Claude model-operation contracts', () => {
     expect(JSON.stringify(hooks.hooks?.UserPromptSubmit ?? [])).toContain(
       'guard-modeling-beta-scope.mjs',
     );
-    expect(JSON.stringify(hooks.hooks?.UserPromptExpansion ?? [])).toContain(
-      'guard-modeling-beta-scope.mjs',
-    );
+    // UserPromptExpansion is NOT a supported Claude Code hook event, so the guard must not rely
+    // on it; UserPromptSubmit + PreToolUse coverage is authoritative.
+    expect(hooks.hooks?.UserPromptExpansion).toBeUndefined();
     const toolScopeHooks =
       hooks.hooks?.PreToolUse?.filter((entry) => /Skill|Task|mcp__/.test(entry.matcher ?? '')) ??
       [];
@@ -145,13 +145,13 @@ describe('Claude model-operation contracts', () => {
   it('blocks direct report skill expansion and stale report/PBIR tool calls', () => {
     const expansion = runScopePayload({
       hook_event_name: 'UserPromptExpansion',
-      prompt: '/pbi-mcp-ts:planning-dashboards Build an executive dashboard',
+      prompt: '/pbi-agent-kit:planning-dashboards Build an executive dashboard',
     });
     expect(JSON.parse(expansion.stdout).decision).toBe('block');
 
     const reportTool = runScopePayload({
       hook_event_name: 'PreToolUse',
-      tool_name: 'mcp__plugin_pbi-mcp-ts_pbi-report__pbi_visual_add',
+      tool_name: 'mcp__plugin_pbi-agent-kit_pbi-modeling-beta__pbi_visual_add',
       tool_input: { pageName: 'Executive' },
     });
     const reportToolDecision = JSON.parse(reportTool.stdout);
@@ -163,7 +163,7 @@ describe('Claude model-operation contracts', () => {
     const skillTool = runScopePayload({
       hook_event_name: 'PreToolUse',
       tool_name: 'Skill',
-      tool_input: { skill: 'pbi-mcp-ts:planning-dashboards' },
+      tool_input: { skill: 'pbi-agent-kit:planning-dashboards' },
     });
     const skillDecision = JSON.parse(skillTool.stdout);
     expect(skillDecision.hookSpecificOutput.permissionDecision).toBe('deny');
@@ -201,7 +201,7 @@ describe('Claude model-operation contracts', () => {
   });
 
   it('allows ordinary non-Python development commands', () => {
-    const result = runGuard('pnpm --filter pbi-report-mcp test');
+    const result = runGuard('pnpm --filter pbi-modeling-mcp test');
     expect(result.status).toBe(0);
     expect(result.stderr).toBe('');
   });
@@ -233,7 +233,10 @@ describe('Claude model-operation contracts', () => {
         hook_event_name: 'PreToolUse',
         tool_name: toolName,
         tool_input: {
-          file_path: path.join(root, 'dashboard/Truth.SemanticModel/definition/model.tmdl'),
+          file_path: path.join(
+            root,
+            'packages/mcp/tests/nonrelease/Minimal.SemanticModel/definition/model.tmdl',
+          ),
         },
       });
       expect(result.status, toolName).toBe(2);
@@ -258,17 +261,17 @@ describe('Claude model-operation contracts', () => {
 
   it('blocks Bash file-surgery commands against Power BI artifacts', () => {
     for (const command of [
-      "node -e \"require('fs').writeFileSync('dashboard/Truth.SemanticModel/definition/model.tmdl', '')\"",
-      "node -e \"const { writeFileSync } = require('fs'); writeFileSync('dashboard/Truth.SemanticModel/definition/model.tmdl', '')\"",
-      "node -e \"require('fs/promises').writeFile('dashboard/Truth.SemanticModel/definition/model.tmdl', '')\"",
-      "node -e \"require('fs').createWriteStream('dashboard/Truth.SemanticModel/definition/model.tmdl').end('x')\"",
-      "node -e \"const fs = require('fs'); const fd = fs.openSync('dashboard/Truth.SemanticModel/definition/model.tmdl', 'w'); fs.writeSync(fd, 'x')\"",
-      "node -e \"require('fs').cpSync('package.json', 'dashboard/Truth.SemanticModel/definition/model.tmdl')\"",
-      "sed -i '' 's/a/b/g' dashboard/Truth.SemanticModel/definition/model.tmdl",
-      "jq '.x=1' dashboard/Truth.Report/definition/report.json > dashboard/Truth.Report/definition/report.json",
-      "perl -pi -e 's/a/b/g' dashboard/Truth.pbip",
-      "printf 'x' > dashboard/Truth.SemanticModel/definition/model.tmdl",
-      'cat package.json > dashboard/Truth.SemanticModel/definition/model.tmdl',
+      "node -e \"require('fs').writeFileSync('packages/mcp/tests/fixtures/Minimal.SemanticModel/definition/model.tmdl', '')\"",
+      "node -e \"const { writeFileSync } = require('fs'); writeFileSync('packages/mcp/tests/fixtures/Minimal.SemanticModel/definition/model.tmdl', '')\"",
+      "node -e \"require('fs/promises').writeFile('packages/mcp/tests/fixtures/Minimal.SemanticModel/definition/model.tmdl', '')\"",
+      "node -e \"require('fs').createWriteStream('packages/mcp/tests/fixtures/Minimal.SemanticModel/definition/model.tmdl').end('x')\"",
+      "node -e \"const fs = require('fs'); const fd = fs.openSync('packages/mcp/tests/fixtures/Minimal.SemanticModel/definition/model.tmdl', 'w'); fs.writeSync(fd, 'x')\"",
+      "node -e \"require('fs').cpSync('package.json', 'packages/mcp/tests/fixtures/Minimal.SemanticModel/definition/model.tmdl')\"",
+      "sed -i '' 's/a/b/g' packages/mcp/tests/fixtures/Minimal.SemanticModel/definition/model.tmdl",
+      "jq '.x=1' packages/mcp/tests/fixtures/Minimal.Report/definition/report.json > packages/mcp/tests/fixtures/Minimal.Report/definition/report.json",
+      "perl -pi -e 's/a/b/g' packages/mcp/tests/fixtures/Minimal.pbip",
+      "printf 'x' > packages/mcp/tests/fixtures/Minimal.SemanticModel/definition/model.tmdl",
+      'cat package.json > packages/mcp/tests/fixtures/Minimal.SemanticModel/definition/model.tmdl',
     ]) {
       const result = runGuard(command);
       expect(result.status, command).toBe(2);
@@ -300,10 +303,7 @@ describe('Claude model-operation contracts', () => {
       'agents/model-builder.md',
       'agents/model-reviewer.md',
       'skills/modeling-semantic-model/SKILL.md',
-      'archive/skills/planning-dashboards/SKILL.md',
-      'archive/skills/planning-dashboards/references/intake-protocol.md',
       'skills/reviewing-models/SKILL.md',
-      'archive/skills/pbi-report/SKILL.md',
     ];
 
     for (const file of contractFiles) {
@@ -314,22 +314,11 @@ describe('Claude model-operation contracts', () => {
     }
   });
 
-  it('keeps layout skill guidance on wrapper model inventory tools', () => {
-    const text = readRepoFile('archive/skills/pbi-layout/SKILL.md');
-
-    expect(text).toContain('pbi_model_list_tables');
-    expect(text).toContain('pbi_model_list_measures');
-    expect(text).not.toContain('@microsoft/powerbi-modeling-mcp');
-  });
-
   it('keeps dashboard/model workflows explicit about the semantic clarification gate', () => {
     const contractFiles = [
       'docs/system-improvements.md',
-      'archive/skills/planning-dashboards/SKILL.md',
-      'archive/skills/planning-dashboards/references/intake-protocol.md',
       'agents/data-analyst.md',
       'agents/model-builder.md',
-      'archive/agents/report-builder.md',
       'agents/model-reviewer.md',
     ];
 
@@ -346,16 +335,11 @@ describe('Claude model-operation contracts', () => {
     const contractFiles = [
       'skills/authoring-measures/SKILL.md',
       'skills/authoring-measures/references/measure-intent-contract.md',
-      'archive/skills/planning-dashboards/SKILL.md',
-      'archive/skills/planning-dashboards/references/intake-protocol.md',
-      'archive/skills/planning-dashboards/references/metric-contract.md',
-      'archive/skills/planning-dashboards/references/model-discovery.md',
       'skills/modeling-semantic-model/references/ai-readiness.md',
       'skills/modeling-semantic-model/references/naming.md',
       'agents/data-analyst.md',
       'agents/model-builder.md',
       'agents/model-reviewer.md',
-      'archive/agents/report-builder.md',
     ];
 
     for (const file of contractFiles) {
@@ -389,41 +373,10 @@ describe('Claude model-operation contracts', () => {
     expect(modelBuilder).toContain('proves refs exist, not business meaning');
   });
 
-  it('keeps banking KPI guidance as a dataset-agnostic question bank', () => {
-    const text = readRepoFile(
-      'archive/skills/planning-dashboards/references/banking-kpi-guidance.md',
-    ).toLowerCase();
-
-    expect(text).toContain('question bank');
-    expect(text).toContain('not a formula library');
-    for (const term of [
-      'casa',
-      'nim',
-      'nims',
-      'customer advances',
-      'customer deposits',
-      'net impairment',
-      'net cor',
-      'ftp',
-      'stp',
-      'payments',
-      'collections',
-      'transactions',
-      'headcount',
-      'regulated reporting',
-    ]) {
-      expect(text).toContain(term);
-    }
-    expect(text).toMatch(/ask|confirm|clarif/);
-    expect(text).toMatch(/no-assumption|do not infer|never infer|never invent|do not guess/);
-  });
-
   it('keeps Date table workflows on the governed create path', () => {
     const contractFiles = [
       'docs/system-improvements.md',
       'skills/modeling-semantic-model/SKILL.md',
-      'archive/skills/planning-dashboards/SKILL.md',
-      'archive/skills/planning-dashboards/references/intake-protocol.md',
       'agents/data-analyst.md',
       'agents/model-builder.md',
       'agents/model-reviewer.md',
@@ -509,7 +462,7 @@ describe('Claude model-operation contracts', () => {
     }
   });
 
-  it('auto-scans only modeling agents (report agents live outside the scanned agents/ dir)', () => {
+  it('auto-scans only modeling agents', () => {
     // Scope is enforced by directory isolation, not a manifest allowlist. An
     // explicit `agents` file-path array suppressed default discovery and loaded
     // ZERO agents in this Claude Code version, so the manifest carries no agents
@@ -525,13 +478,6 @@ describe('Claude model-operation contracts', () => {
     expect(scannedAgents).toEqual(['data-analyst.md', 'model-builder.md', 'model-reviewer.md']);
     expect(scannedAgents).not.toContain('report-builder.md');
     expect(scannedAgents).not.toContain('report-reviewer.md');
-
-    // Report agents are preserved out of the scanned surface for the dogfood profile.
-    const reportAgents = readdirSync(path.join(root, 'archive/agents'))
-      .filter((file) => file.endsWith('.md'))
-      .sort();
-    expect(reportAgents).toContain('report-builder.md');
-    expect(reportAgents).toContain('report-reviewer.md');
   });
 
   it('installs the modeling beta MCP server and auto-scans only modeling skills', () => {
@@ -553,7 +499,6 @@ describe('Claude model-operation contracts', () => {
     expect(scannedSkills).toEqual([
       'authoring-measures',
       'modeling-semantic-model',
-      'pbi-init-config',
       'power-query',
       'reviewing-models',
     ]);
@@ -583,7 +528,7 @@ describe('Claude model-operation contracts', () => {
     const betaServer = mcp.mcpServers?.['pbi-modeling-beta'];
     expect(betaServer?.command).toBe('node');
     expect(betaServer?.args).toEqual(['${CLAUDE_PLUGIN_ROOT}/scripts/start-mcp.mjs']);
-    expect(betaServer?.env?.PBI_MCP_SURFACE).toBe('modeling');
+    expect(betaServer?.env).toBeUndefined();
     expect(mcp.mcpServers?.['pbi-report']).toBeUndefined();
 
     const readme = readRepoFile('README.md');
@@ -605,9 +550,8 @@ describe('Claude model-operation contracts', () => {
     const fingerprint = readRepoFile('scripts/build-fingerprint.mjs');
     expect(fingerprint).toContain('packages/mcp/src');
     expect(fingerprint).toContain('packages/core/src');
-    expect(fingerprint).toContain('packages/core/scripts');
-    expect(fingerprint).toContain('pbi-mcp-build.json');
-    expect(fingerprint).not.toContain('.pbi-mcp-build.json');
+    expect(fingerprint).toContain('pbi-agent-kit-build.json');
+    expect(fingerprint).not.toContain('.pbi-agent-kit-build.json');
   });
 
   it('teaches the modeling beta to refuse dashboard/report authoring gracefully', () => {
@@ -662,24 +606,6 @@ describe('Claude model-operation contracts', () => {
       expect(text, file).toContain('ctrl+s');
       expect(text, file).toMatch(/persist|persistence/);
       expect(text, file).toMatch(/refresh|materialization|materialize/);
-    }
-  });
-
-  it('keeps PBIR report writes separate from Desktop Ctrl+S persistence', () => {
-    const contractFiles = [
-      'docs/system-improvements.md',
-      'archive/skills/pbi-report/SKILL.md',
-      'archive/agents/report-builder.md',
-    ];
-
-    for (const file of contractFiles) {
-      const text = readRepoFile(file).toLowerCase();
-      expect(text, file).toContain('pbir');
-      expect(text, file).toMatch(/disk|files/);
-      expect(text, file).toContain('ctrl+s');
-      expect(text, file).toMatch(/do not|never/);
-      expect(text, file).toMatch(/stale|overwrite/);
-      expect(text, file).toMatch(/close\/reopen|reload|reopen/);
     }
   });
 });

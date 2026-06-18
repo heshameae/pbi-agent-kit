@@ -46,12 +46,12 @@ function ensureBuilt() {
   const initial = isBuildStale();
   if (!initial.stale) {
     stderr(
-      `pbi-mcp-ts: loaded build ${initial.marker.sha256.slice(0, 12)} from ${buildMarkerPath(pluginRoot)} generated ${initial.marker.generatedAt ?? 'unknown time'}.`,
+      `pbi-agent-kit: loaded build ${initial.marker.sha256.slice(0, 12)} from ${buildMarkerPath(pluginRoot)} generated ${initial.marker.generatedAt ?? 'unknown time'}.`,
     );
     return;
   }
 
-  stderr(`pbi-mcp-ts: compiled MCP server stale (${initial.reason}); running \`pnpm build\`.`);
+  stderr(`pbi-agent-kit: compiled MCP server stale (${initial.reason}); running \`pnpm build\`.`);
   // shell:true on Windows so the `pnpm` shim (pnpm.cmd) resolves — bare
   // spawnSync('pnpm', …) throws ENOENT on Windows because Node won't run a
   // .cmd without a shell. Harmless on macOS/Linux.
@@ -65,12 +65,12 @@ function ensureBuilt() {
   if (build.status === 0 && existsSync(serverPath)) {
     const marker = writeBuildMarker(pluginRoot);
     stderr(
-      `pbi-mcp-ts: loaded build ${marker.sha256.slice(0, 12)} from ${buildMarkerPath(pluginRoot)} generated ${marker.generatedAt}.`,
+      `pbi-agent-kit: loaded build ${marker.sha256.slice(0, 12)} from ${buildMarkerPath(pluginRoot)} generated ${marker.generatedAt}.`,
     );
     return;
   }
 
-  stderr('pbi-mcp-ts: could not build the MCP server.');
+  stderr('pbi-agent-kit: could not build the MCP server.');
   stderr('Run `pnpm install` and `pnpm build` in the plugin repository, then restart Claude Code.');
   if (build.error) stderr(String(build.error.message));
   if (String(build.stdout ?? '').trim()) stderr(String(build.stdout).trim());
@@ -101,6 +101,6 @@ child.on('exit', (code, signal) => {
 });
 
 child.on('error', (error) => {
-  stderr(`pbi-mcp-ts: failed to start MCP server: ${error.message}`);
+  stderr(`pbi-agent-kit: failed to start MCP server: ${error.message}`);
   process.exit(1);
 });

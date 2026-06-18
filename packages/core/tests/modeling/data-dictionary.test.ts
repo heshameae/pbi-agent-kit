@@ -117,10 +117,12 @@ describe('buildDataDictionary', () => {
       measures: 1,
       relationships: 1,
     });
+    // Tables are emitted in canonical code-unit name order ("Other Table" < "Visible
+    // Table"), so fields flatten in that order; within a table, column order is preserved.
     expect(dictionary.fields.map((field) => field.name)).toEqual([
+      'Other Key',
       'Visible Column',
       'Calculated Column',
-      'Other Key',
     ]);
     expect(dictionary.measures.map((measure) => measure.name)).toEqual(['Visible Measure']);
     expect(dictionary.fields.some((field) => field.name === 'Hidden Column')).toBe(false);
@@ -154,13 +156,13 @@ describe('buildDataDictionary', () => {
   it('can include nested table fields and measures when requested', () => {
     const dictionary = buildDataDictionary(modelFixture(), { includeNested: true });
 
-    expect(dictionary.tables[0]?.fields.map((field) => field.name)).toEqual([
+    // Tables are sorted by name; find the Visible Table rather than assuming index 0.
+    const visible = dictionary.tables.find((table) => table.name === 'Visible Table');
+    expect(visible?.fields.map((field) => field.name)).toEqual([
       'Visible Column',
       'Calculated Column',
     ]);
-    expect(dictionary.tables[0]?.measures.map((measure) => measure.name)).toEqual([
-      'Visible Measure',
-    ]);
+    expect(visible?.measures.map((measure) => measure.name)).toEqual(['Visible Measure']);
   });
 
   it('can filter the payload to selected tables', () => {
@@ -187,7 +189,7 @@ describe('buildDataDictionary', () => {
       measures: 1,
       relationships: 0,
     });
-    expect(dictionary.tables.map((table) => table.name)).toEqual(['Visible Table', 'Other Table']);
+    expect(dictionary.tables.map((table) => table.name)).toEqual(['Other Table', 'Visible Table']);
     expect(dictionary.fields.map((field) => field.ref)).toEqual(['Other Table[Other Key]']);
     expect(dictionary.measures.map((measure) => measure.ref)).toEqual([
       'Visible Table[Visible Measure]',
@@ -209,9 +211,9 @@ describe('buildDataDictionary', () => {
     const dictionary = buildDataDictionary(modelFixture());
 
     expect(dictionary.fields.map((field) => field.ref)).toEqual([
+      'Other Table[Other Key]',
       'Visible Table[Visible Column]',
       'Visible Table[Calculated Column]',
-      'Other Table[Other Key]',
     ]);
     expect(dictionary.measures[0]?.ref).toBe('Visible Table[Visible Measure]');
     expect(dictionary.relationships[0]).toMatchObject({

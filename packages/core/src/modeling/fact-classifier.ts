@@ -1,5 +1,5 @@
 import { isNumericType } from './data-types.js';
-import type { TMDLColumn, TMDLModel, TMDLTable } from './types.js';
+import type { Cardinality, TMDLColumn, TMDLModel, TMDLTable } from './types.js';
 
 export type TableKind = 'fact' | 'dimension' | 'unknown';
 
@@ -38,8 +38,18 @@ export function classifyTable(model: TMDLModel, tableName: string): TableClassif
   let isToSide = false;
   for (const r of model.relationships) {
     if (r.fromTable === tableName) {
-      s3IsFromSide = true;
-      s4FanOut += 1;
+      // Only count an edge as fan-out / many-side when this table is actually on the
+      // MANY side. A relationship can be authored oneToMany (from = the ONE/dimension
+      // side); counting those as fan-out would misclassify a conformed dimension that
+      // sits on the from-side of >= 2 oneToMany edges as a fact. manyToOne, manyToMany,
+      // and the absent default (PBI default manyToOne) all put the from side on many.
+      if (isManySideFrom(r.cardinality)) {
+        s3IsFromSide = true;
+        s4FanOut += 1;
+      } else {
+        // oneToMany / oneToOne from-side is the ONE side — a dimension-like signal.
+        isToSide = true;
+      }
     }
     if (r.toTable === tableName) isToSide = true;
   }
@@ -66,15 +76,27 @@ export function classifyTable(model: TMDLModel, tableName: string): TableClassif
   return { kind: 'unknown', confidence: 0 };
 }
 
-// Numeric column whose summarizeBy makes it an aggregatable quantity (mirrors
-// field-index.ts isSummarizableColumn, but operates on a raw TMDLColumn so the
-// classifier needs no field-index build).
+// Fact-detection signal S2: a numeric column with an EXPLICIT non-none summarizeBy.
+// This is deliberately STRICTER than the "engine-default Sum" notion used for axis
+// detection: requiring an explicit summarizeBy keeps the fact classifier conservative
+// so a dimension that merely carries a numeric ATTRIBUTE with no summarizeBy line
+// (Weight, Latitude, Age, FiscalYear) is NOT misclassified as a fact — which would
+// make star-schema propose a duplicate dimension and fire false MOD010 conformance
+// warnings. (Adversarial-verify regression: unifying this with the axis-side
+// isMeasureLikeNumeric over-classified such dimensions as facts.)
 function isSummarizableNumericColumn(column: TMDLColumn): boolean {
   return (
     column.summarizeBy !== undefined &&
     column.summarizeBy.toLowerCase() !== 'none' &&
     isNumericType(column.dataType)
   );
+}
+
+// True when the from-side of a relationship with this cardinality is on the MANY
+// side (so the from-table is fact-like w.r.t. that edge). undefined == PBI default
+// manyToOne.
+function isManySideFrom(cardinality: Cardinality | undefined): boolean {
+  return cardinality === undefined || cardinality === 'manyToOne' || cardinality === 'manyToMany';
 }
 
 function clamp(n: number): number {

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # One-time setup: download Microsoft's Power BI modeling MCP binary into the
-# Parallels Windows VM, where pbi-mcp-bridge.sh expects it.
+# Parallels Windows VM, where the bridge expects it.
 #
 # This installs the platform-specific package (the actual .exe), NOT the generic
 # `@microsoft/powerbi-modeling-mcp` npx launcher — the win32-x64 exe is what the
@@ -27,14 +27,14 @@ PKG_URL="https://registry.npmjs.org/@microsoft/powerbi-modeling-mcp-win32-x64/-/
 echo "Installing Power BI modeling MCP v${VERSION} into VM '${PBI_VM_NAME}'..."
 
 prlctl exec "$PBI_VM_NAME" powershell -Command "
-  New-Item -ItemType Directory -Force -Path 'C:\pbi-mcp' | Out-Null;
+  New-Item -ItemType Directory -Force -Path 'C:\pbi-agent-kit\vendor\powerbi-modeling-mcp' | Out-Null;
   \$url = '${PKG_URL}';
   Write-Output 'Downloading from npm...';
-  Invoke-WebRequest -Uri \$url -OutFile 'C:\pbi-mcp\pbi-mcp.tgz';
+  Invoke-WebRequest -Uri \$url -OutFile 'C:\pbi-agent-kit\vendor\powerbi-modeling-mcp\pbi-mcp.tgz';
   Write-Output 'Extracting...';
-  tar -xzf 'C:\pbi-mcp\pbi-mcp.tgz' -C 'C:\pbi-mcp';
-  Remove-Item 'C:\pbi-mcp\pbi-mcp.tgz';
-  Write-Output 'Done. Binary at C:\pbi-mcp\package\dist\powerbi-modeling-mcp.exe';
+  tar -xzf 'C:\pbi-agent-kit\vendor\powerbi-modeling-mcp\pbi-mcp.tgz' -C 'C:\pbi-agent-kit\vendor\powerbi-modeling-mcp';
+  Remove-Item 'C:\pbi-agent-kit\vendor\powerbi-modeling-mcp\pbi-mcp.tgz';
+  Write-Output 'Done. Binary at C:\pbi-agent-kit\vendor\powerbi-modeling-mcp\package\dist\powerbi-modeling-mcp.exe';
 "
 
 echo "Setup complete. Make sure Power BI Desktop is running with a .pbip open before using the bridge."

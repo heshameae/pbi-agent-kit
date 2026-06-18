@@ -2,20 +2,26 @@
 name: power-query
 description: "Use when authoring or validating Power Query M expressions — query folding, fold-breaking operations, partition syntax, safe write order (filter→select→type→sort→non-foldable last), type mapping, incremental refresh RangeStart/RangeEnd, validation errors"
 user-invocable: false
+allowed-tools: Read
 ---
 
 # Power Query for Semantic Models
 
-Author, validate, and test Power Query M expressions in semantic model import partitions. Covers writing correct M code, preserving query folding, validating expressions, and testing them by executing against real data sources.
+Conceptual reference for Power Query M in semantic model import partitions: what good M looks like, query-folding concepts, partition syntax, and type mapping.
+
+> **Modeling-only beta — M authoring/validation/execution is NOT available through plugin tools.** `pbi_table_create` accepts an `mExpression` partition for a new table's source, but there is no tool to execute, validate, or iteratively edit M. For M development use Power BI Desktop's Power Query Editor directly. The guidance below is reference material, not a callable tool workflow.
 
 ## When to Use
 
-- Writing or editing partition M expressions for import tables
-- Diagnosing query folding issues or refresh timeouts
-- Validating that an M expression is syntactically and semantically correct
-- Setting up incremental refresh with `RangeStart`/`RangeEnd` parameters
-- Connecting to Lakehouse, SQL, or native query sources
-- Debugging unexpected nulls, wrong column names, or type mismatches after refresh
+As conceptual reference when:
+
+- Drafting a partition M expression for a new import table's source (supplied to `pbi_table_create` as `mExpression`)
+- Understanding query folding issues or refresh timeouts
+- Understanding what correct, foldable M looks like
+- Understanding incremental refresh with `RangeStart`/`RangeEnd` parameters
+- Understanding Lakehouse, SQL, or native query sources
+
+Actual M authoring, validation, execution, and debugging happen in Power BI Desktop's Power Query Editor — not through plugin tools.
 
 ## When NOT to Use
 
@@ -28,7 +34,7 @@ Author, validate, and test Power Query M expressions in semantic model import pa
 | Topic | Reference |
 |-------|-----------|
 | Query folding guide, fold-breaking catalog, type mappings, anti-patterns | `references/folding-guide.md` |
-| Validation approaches, step-by-step debugging, common errors, checklist | `references/validation-workflow.md` |
+| Folding/validation concepts and common errors (reference, not a plugin workflow) | `references/validation-workflow.md` |
 
 ## Critical Rules
 

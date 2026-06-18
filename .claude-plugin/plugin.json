@@ -1,7 +1,7 @@
 {
-  "name": "pbi-mcp-ts",
+  "name": "pbi-agent-kit",
   "version": "0.1.0",
-  "description": "Power BI semantic-model beta for Claude Code — modeling-only MCP surface with deterministic Date, relationship, DAX, star-schema, refresh, regulated-readiness, measure-intent, and optional data-dictionary gates. Dashboard/report/page/visual/PBIR authoring is unavailable in this beta.",
+  "description": "Power BI semantic-model beta for Claude Code — modeling-only MCP surface with deterministic modeling gates. Report, page, and visual authoring is unavailable in this beta.",
   "author": { "name": "Hesham Eissa" },
   "license": "MIT",
   "mcpServers": "./.mcp.json"

@@ -2,6 +2,7 @@
 name: reviewing-models
 description: "Use when reviewing, auditing, or checking the quality of a Power BI semantic model. Triggers on: review my model, check model quality, audit semantic model, AI-ready check, is my model Copilot-ready, post-write regression check, BPA violations, relationship errors, grain mismatches, validate model design, optimize my model, check for performance issues, run a best practice audit, pre-production audit."
 user-invocable: false
+allowed-tools: Read, mcp__plugin_pbi-agent-kit_pbi-modeling-beta__pbi_model_check, mcp__plugin_pbi-agent-kit_pbi-modeling-beta__pbi_model_list_tables, mcp__plugin_pbi-agent-kit_pbi-modeling-beta__pbi_model_list_columns, mcp__plugin_pbi-agent-kit_pbi-modeling-beta__pbi_model_list_measures, mcp__plugin_pbi-agent-kit_pbi-modeling-beta__pbi_model_list_relationships, mcp__plugin_pbi-agent-kit_pbi-modeling-beta__pbi_model_plan_star_schema_join, mcp__plugin_pbi-agent-kit_pbi-modeling-beta__pbi_model_plan_date_table, mcp__plugin_pbi-agent-kit_pbi-modeling-beta__pbi_model_plan_date_grain, mcp__plugin_pbi-agent-kit_pbi-modeling-beta__pbi_model_regulated_check
 ---
 
 # Reviewing Semantic Models
@@ -23,13 +24,13 @@ Structured evaluation of Power BI semantic models against quality, performance, 
 - Writing new measures or TMDL → load `modeling-semantic-model`
 - DAX performance optimization of individual queries → load `authoring-measures`
 - Report PBIR file authoring → no model review needed
-- Planning dashboards or report scaffolding → load `planning-dashboards`
+- Dashboard/report planning → in the modeling-only beta, report/PBIR authoring is unavailable; offer modeling-only KPI/measure preparation.
 
 ## Quick Reference
 
 | Topic | Reference |
 |---|---|
-| Full 9-category audit checklist with 26+ checks and severity levels | `references/check-catalog.md` |
+| Full 9-category audit checklist (the full checklist in references/check-catalog.md) and severity levels | `references/check-catalog.md` |
 | Output format: Issue→Fix→Explain→Test, summary table, grouping rules | `references/output-format.md` |
 | AI/Copilot readiness checklist (7 sections) | `../modeling-semantic-model/references/ai-readiness.md` |
 | Performance tools matrix, cache states, testing methodology | `../modeling-semantic-model/references/performance.md` |
@@ -66,7 +67,7 @@ Use the available MCP tools to gather:
 
 ### Step 2: Audit Against Check Catalog
 
-Evaluate findings across all applicable categories from `references/check-catalog.md`, ordered by severity. See that file for the complete 26-point checklist.
+Evaluate findings across all applicable categories from `references/check-catalog.md`, ordered by severity. See that file for the full checklist in references/check-catalog.md.
 
 Quick category summary:
 1. **Critical** — bidirectional rels, circular deps, missing data types, orphaned tables

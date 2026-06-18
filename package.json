@@ -1,8 +1,8 @@
 {
-  "name": "pbi-mcp-ts",
+  "name": "pbi-agent-kit",
   "version": "0.1.0",
   "private": true,
-  "description": "Power BI semantic-model beta for Claude Code — modeling MCP server, skills, subagents, and internal PBIR dogfood support.",
+  "description": "Power BI semantic-model beta for Claude Code — modeling MCP server, skills, subagents, and guardrails.",
   "license": "MIT",
   "type": "module",
   "engines": {

@@ -1,102 +1,31 @@
 # Validating Power Query Expressions
 
-Two complementary approaches: execute against real data (comprehensive validation) or save to the model (quick syntax check).
+> **Modeling-only beta — Power Query M authoring/validation/execution is NOT available through plugin tools.** `pbi_table_create` accepts an `mExpression` partition for a new table's source, but there is no tool to execute, validate, or iteratively edit M. For M development, validation, and debugging use Power BI Desktop's Power Query Editor directly. The material below is conceptual reference for what M validation involves and the kinds of errors to expect — it is not a callable plugin workflow.
 
-## The Two Approaches
+## What M Validation Involves (Conceptual)
 
-| Need | Use |
-|------|-----|
-| Full data validation (correct columns, types, values) | Execute via API |
-| Quick syntax check | Save to model via XMLA/TOM |
-| Step-by-step debugging | Execute with truncated `in` clause |
-| Performance testing (check folding) | Execute with full data, observe timing |
+Validating an M expression generally means checking it on two levels:
 
----
+| Level | What it confirms |
+|-------|------------------|
+| Syntax / structure | `let`/`in` blocks balanced, defined step references, valid M function names, valid type names |
+| Data | Correct columns and types, no unexpected nulls, correct row counts, sensible sample values |
 
-## Approach 1: Execute via Power Query API (Recommended)
+Syntax checks catch malformed `let`/`in`, undefined step references (e.g. referencing `#"Step3"` that doesn't exist), invalid M function names, missing commas or unbalanced brackets, and invalid type names in `TransformColumnTypes`. They do **not** catch wrong column names that happen to be syntactically valid, data source connectivity issues, runtime errors (type conversion failures on actual data), or broken query folding. Those only surface when the expression actually runs against the source.
 
-Full validation that runs the expression and returns actual data. Catches syntax errors, missing columns, data source issues, and type problems in one step.
+In Power BI Desktop's Power Query Editor, malformed expressions surface errors such as `Token Eof expected.` or `Expression.SyntaxError: Token Literal expected.`.
 
-### What It Catches
+## Partition Expression Structure (Conceptual)
 
-- Syntax errors (malformed `let`/`in`, bad function calls)
-- Missing or mismatched column names
-- Data source connectivity issues
-- Runtime errors (type conversion failures on actual data)
-- Performance issues (broken query folding, via timing)
-
-### What It Misses
-
-Nothing significant — this is the comprehensive path. Add `Table.FirstN` to limit rows for large tables during development.
-
-### How It Works (Summary)
-
-1. Extract the partition expression and shared M parameters from the model
-2. Wrap the expression in a section document, inlining parameter values as `shared` declarations
-3. Execute via the Fabric `executeQuery` API endpoint
-4. Parse the Arrow response to verify data, types, and nulls
-
-**Building the Mashup Document:**
-
-Wrap the expression in a section document, inlining parameter values:
+A partition expression typically wraps source navigation and transforms in a `let...in` chain, optionally referencing shared M parameters. When inspecting behavior step by step in the Power Query Editor, point the `in` clause at an earlier step to preview intermediate results:
 
 ```
-section Section1;
-shared SqlEndpoint = "myserver.database.windows.net";
-shared Database = "MyDatabase";
-shared Result = let
-    Source = Sql.Database(SqlEndpoint, Database),
-    Data = Source{[Schema="dbo",Item="Orders"]}[Data],
-    #"Select Columns" = Table.SelectColumns(Data, {"OrderId", "Amount"}),
-    Limited = Table.FirstN(#"Select Columns", 100)
-in Limited;
-```
-
-Key points:
-- Replace `#"SqlEndpoint"` references with `SqlEndpoint` (the shared declaration removes the need for quoted identifiers)
-- The `shared Result = ...` name must match the `queryName` in the API call
-- Add `Table.FirstN` to limit rows for large tables during testing
-- For incremental refresh, inline `RangeStart` and `RangeEnd` with concrete date values
-
----
-
-## Approach 2: Save to Model via XMLA/TOM
-
-Analysis Services validates M syntax when a partition expression is saved. Faster than executing but only catches structural errors — does not detect wrong column names or data source issues.
-
-### What XMLA Validation Catches
-
-- Missing or mismatched `let`/`in` blocks
-- Undefined step references (e.g., referencing `#"Step3"` that doesn't exist)
-- Invalid M function names
-- Syntax errors (missing commas, unbalanced brackets)
-- Invalid type names in `TransformColumnTypes`
-
-### What XMLA Validation Misses
-
-- Wrong column names (expression is syntactically valid but the column doesn't exist at the source)
-- Data source connectivity issues
-- Runtime errors (division by zero, type conversion failures on actual data)
-- Performance issues (broken query folding)
-
-In this project, use the supported partition, named-expression, or model update tool for the artifact being changed. TMDL export is read-only evidence; do not hand-edit exported TMDL. Analysis Services returns errors like `Token Eof expected.` or `Expression.SyntaxError: Token Literal expected.` if the expression is malformed.
-
----
-
-## Step-by-Step Debugging (Partition Stepping Technique)
-
-When an expression fails or produces unexpected results, preview intermediate steps by changing the `in` clause to point at an earlier step:
-
-```
-section Section1;
-shared SqlEndpoint = "myserver.database.windows.net";
-shared Database = "MyDB";
-shared Result = let
+let
     Source = Sql.Database(SqlEndpoint, Database),
     Data = Source{[Schema="dbo",Item="Orders"]}[Data],
     #"Filtered" = Table.SelectRows(Data, each [Status] <> "Cancelled"),
     #"Selected" = Table.SelectColumns(#"Filtered", {"OrderId", "Amount"})
-in Data;  -- Change this to inspect different steps
+in #"Selected"  -- point at an earlier step to inspect it
 ```
 
 | `in` target | What it shows |
@@ -106,36 +35,15 @@ in Data;  -- Change this to inspect different steps
 | `in #"Filtered"` | After row filtering |
 | `in #"Selected"` | After column selection (final) |
 
-For each step, check:
-- Column names and count (did a rename/select work?)
-- Row count (did a filter apply correctly?)
-- Data types
-- Null counts (unexpected nulls from type casting?)
-- Sample values (do they look right?)
+For each step, conceptually check: column names and count, row count, data types, null counts, and sample values. For incremental refresh, inline `RangeStart` and `RangeEnd` with concrete date values when testing in Desktop.
 
-Add `Table.FirstN(stepName, 100)` before the `in` clause to limit rows when inspecting large tables.
+## Common Errors and Likely Causes (Reference)
 
----
+| Error message | Likely cause |
+|---------------|--------------|
+| `Expression.Error: The column '...' was not found` | Column name mismatch between the M expression and the actual source table schema |
+| `DataSource.Error: ... could not be reached` | Server unreachable or wrong endpoint |
+| `Credentials are required to connect to the SQL source` | Connection/credentials not configured for the source |
+| Refresh timeout | Query too expensive — often broken query folding pulling all rows; review `folding-guide.md` |
 
-## Common Error Resolution
-
-| Error message | Cause | Fix |
-|---------------|-------|-----|
-| `Credentials are required to connect to the SQL source` | Connection not bound to the runner dataflow | Bind the connection via `updateDefinition` |
-| `Query name not found` | `queryName` in API call doesn't match `shared` name in mashup document | Ensure both are `Result` (or the same name) |
-| `Expression.Error: The column '...' was not found` | Column name mismatch between M expression and actual source table schema | Check source table schema; step through to `in Data` to see actual column names |
-| `DataSource.Error: ... could not be reached` | Server unreachable or wrong endpoint | Verify connection details (`SqlEndpoint`, `Database`) |
-| Timeout (90 seconds) | Query too expensive — likely broken query folding pulling all rows | Add `Table.FirstN` to limit rows; check fold-breaking operations in `folding-guide.md` |
-
----
-
-## Validation Checklist
-
-Before deploying a new or modified partition expression:
-
-1. **Syntax** — Save to model (XMLA/TOM) to catch structural errors (`let`/`in` mismatches, undefined steps, invalid function names)
-2. **Data** — Execute with `Table.FirstN(_, 100)` to verify correct columns and sample values
-3. **Types** — Verify column types match expected semantic model column types; check for unexpected type coercions
-4. **Nulls** — Check for unexpected nulls introduced by type casting or column selection
-5. **Row count** — Execute without `Table.FirstN` (or with a large limit) to verify filter logic is correct
-6. **Folding** — For large tables, verify the query completes within 90 seconds; if slow or timing out, suspect broken folding — review `folding-guide.md`
+For folding concepts and the fold-breaking catalog, see `folding-guide.md`.

@@ -3,7 +3,7 @@
 Use a data dictionary when the agent needs business meaning that is not reliably encoded in the semantic model. The recommended project-local path is:
 
 ```text
-.pbi-mcp/data-dictionary.yaml
+.pbi-agent-kit/data-dictionary.yaml
 ```
 
 The file is optional. Do not block model discovery, analysis, or reporting work just because it is absent. When it is present, treat it as business context only: it can explain what a term means, who owns it, and whether an intended measure definition is draft or confirmed. It does not prove that a table, column, or measure exists. Live MCP model tools must still verify field existence and canonical refs before any write.

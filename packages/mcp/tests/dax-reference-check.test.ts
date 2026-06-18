@@ -3,7 +3,7 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { describe, expect, it } from 'vitest';
 import { buildServer } from '../src/server.js';
 
-describe('pbi-report-mcp tool registry', () => {
+describe('pbi-modeling-mcp tool registry', () => {
   it('registers pbi_dax_reference_check as a read-only tool', async () => {
     const server = buildServer();
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();

@@ -126,6 +126,9 @@ export interface TableUpdate {
   // UNVERIFIED: confirm against live MS MCP — `dataCategory` Update key inferred.
   // Used to mark a table as a date table (dataCategory:'Time').
   readonly dataCategory?: string;
+  // UNVERIFIED: the MS MCP table Update `annotations` key/shape is inferred. Best-effort —
+  // used to stamp the governed Date-table range/horizon policy. No-ops on hosts that ignore it.
+  readonly annotations?: Readonly<Record<string, string>>;
 }
 
 export interface TableRef {
@@ -944,7 +947,9 @@ function definedOnly<T extends Record<string, unknown>>(value: T): Record<string
 }
 
 function hasTableUpdateFields(def: Record<string, unknown>): boolean {
-  return ['description', 'isHidden', 'dataCategory'].some((key) => def[key] !== undefined);
+  return ['description', 'isHidden', 'dataCategory', 'annotations'].some(
+    (key) => def[key] !== undefined,
+  );
 }
 
 function hasColumnUpdateFields(def: Record<string, unknown>): boolean {
@@ -1011,7 +1016,17 @@ export class ModelDriver {
         result.content?.find((c) => c.type === 'text')?.text ?? `${tool}/${operation} errored`;
       throw new Error(redactConnectionSecrets(text));
     }
-    return parseResult(result);
+    const parsed = parseResult(result);
+    // P1/P6: some MS-MCP builds report a failure WITHOUT setting `isError` — they
+    // return a `{ success: false }` envelope (the same shape the DAX path already
+    // guards at normalizeDaxResult). Surface it as a thrown error so a write that
+    // the engine rejected can never read back to the caller as success.
+    if (isRecord(parsed) && parsed.success === false) {
+      const message =
+        str(parsed, 'message', 'error', 'detail') ?? `${tool}/${operation} reported failure`;
+      throw new Error(redactConnectionSecrets(`${tool}/${operation} failed: ${message}`));
+    }
+    return parsed;
   }
 
   // Compat shim: returns just the connection strings (existing callers/tests
@@ -1516,6 +1531,7 @@ export class ModelDriver {
         const storageMode = normalizeStorageMode(str(t, 'mode', 'storageMode', 'modeType'));
         const dataCategory = str(t, 'dataCategory');
         const expression = str(t, 'expression', 'daxExpression', 'source', 'query');
+        const annotations = extractAnnotations(t);
         return {
           name,
           columns: columnsByTable.get(name) ?? [],
@@ -1528,6 +1544,8 @@ export class ModelDriver {
           ...(dataCategory !== undefined ? { dataCategory } : {}),
           ...(expression !== undefined ? { expression } : {}),
           ...(storageMode !== undefined ? { storageMode } : {}),
+          // Surfaces the governed Date-table policy stamp so the gates can read it back.
+          ...(Object.keys(annotations).length > 0 ? { annotations } : {}),
         };
       })
       .filter((t): t is TMDLTable => t !== null);
@@ -1711,6 +1729,41 @@ export class ModelDriver {
     return this.#withOperationLock(async () => {
       const result = await this.#liveUnlocked(fn, expectedConnection, options);
       this.#invalidateSnapshot();
+      // P6: a batched Create/Update returns { results: [{ success, ... }] }; a
+      // partial failure must surface, not pass as overall success.
+      assertNoBatchFailure(result, options.operationLabel);
+      return result;
+    });
+  }
+
+  // Like #write, but after the write re-reads the live model on the SAME
+  // connection and throws if `verify` does not observe the requested state —
+  // closing the false-success gap (P1/P6). `verify` returns true for the
+  // "cannot confirm" case (e.g. the target table is not present in the
+  // snapshot), so a legitimately-unobservable read never yields a false
+  // negative; it returns false only when the live state clearly contradicts the
+  // requested write.
+  async #writeVerified<T>(
+    fn: () => Promise<T>,
+    verify: (model: TMDLModel) => boolean,
+    failure: string,
+    expectedConnection?: ConnectionInfo,
+    options: {
+      readonly retryOnConnectionDrop?: boolean;
+      readonly operationLabel?: string;
+      readonly snapshotOptions?: ModelSnapshotOptions;
+    } = {},
+  ): Promise<T> {
+    const { snapshotOptions, ...writeOpts } = options;
+    return this.#withOperationLock(async () => {
+      const result = await this.#liveUnlocked(fn, expectedConnection, writeOpts);
+      this.#invalidateSnapshot();
+      assertNoBatchFailure(result, writeOpts.operationLabel);
+      const model = await this.#getCachedSnapshotUnlocked(
+        expectedConnection,
+        snapshotOptions ?? {},
+      );
+      if (!verify(model)) throw new Error(redactConnectionSecrets(failure));
       return result;
     });
   }
@@ -1725,9 +1778,15 @@ export class ModelDriver {
     );
   }
   async updateMeasure(def: MeasureWrite, expectedConnection?: ConnectionInfo): Promise<unknown> {
-    return this.#write(
+    // A measure update mutates expression/formatString/description — properties that
+    // can silently no-op on Import. Re-read and confirm so a no-opped DAX edit cannot
+    // report updated:true while the live model still holds the old expression.
+    return this.#writeVerified(
       () => this.call(MS_TOOLS.measures, 'Update', { definitions: [def] }),
+      (model) => measureUpdateApplied(model, def),
+      `measure update was not applied: live re-read of ${def.tableName}[${def.name}] does not reflect the requested change`,
       expectedConnection,
+      { operationLabel: 'measure update' },
     );
   }
   async deleteMeasure(ref: MeasureRef, expectedConnection?: ConnectionInfo): Promise<unknown> {
@@ -1747,24 +1806,35 @@ export class ModelDriver {
     );
   }
   async updateTable(def: TableUpdate, expectedConnection?: ConnectionInfo): Promise<unknown> {
-    return this.#write(async () => {
-      const { newName, ...updateDef } = def;
-      let result: unknown;
-      if (newName !== undefined && newName !== def.name) {
-        result = await this.call(MS_TOOLS.tables, 'Rename', {
-          renameDefinitions: [{ currentName: def.name, newName }],
+    return this.#writeVerified(
+      async () => {
+        const { newName, ...updateDef } = def;
+        let result: unknown;
+        if (newName !== undefined && newName !== def.name) {
+          result = await this.call(MS_TOOLS.tables, 'Rename', {
+            renameDefinitions: [{ currentName: def.name, newName }],
+          });
+        }
+        const updateName = newName ?? def.name;
+        const remaining = definedOnly({
+          ...updateDef,
+          name: updateName,
         });
-      }
-      const updateName = newName ?? def.name;
-      const remaining = definedOnly({
-        ...updateDef,
-        name: updateName,
-      });
-      if (hasTableUpdateFields(remaining)) {
-        result = await this.call(MS_TOOLS.tables, 'Update', { definitions: [remaining] });
-      }
-      return result ?? {};
-    }, expectedConnection);
+        if (hasTableUpdateFields(remaining)) {
+          result = await this.call(MS_TOOLS.tables, 'Update', { definitions: [remaining] });
+        }
+        return result ?? {};
+      },
+      // P1 parity with updateColumn: the MS MCP can accept a table Update and
+      // report success while the live model is unchanged (observed on Import-mode
+      // dataCategory:'Time' / isHidden writes). Trust a fresh re-read, not the
+      // server's success flag, so a silent no-op surfaces as an honest error
+      // instead of a fake `marked:true` that deadlocks the mark-as-date gate.
+      (model) => tableUpdateApplied(model, def),
+      `table update was not applied: live re-read of ${def.newName ?? def.name} does not reflect the requested change`,
+      expectedConnection,
+      { operationLabel: 'table update' },
+    );
   }
   async deleteTable(ref: TableRef, expectedConnection?: ConnectionInfo): Promise<unknown> {
     // UNVERIFIED: confirm against live MS MCP tool list — Delete not in the capability table.
@@ -1797,37 +1867,46 @@ export class ModelDriver {
     );
   }
   async updateColumn(def: ColumnUpdate, expectedConnection?: ConnectionInfo): Promise<unknown> {
-    return this.#write(async () => {
-      const { newName, ...updateDef } = def;
-      let result: unknown;
-      if (newName !== undefined && newName !== def.name) {
-        result = await this.call(MS_TOOLS.columns, 'Rename', {
-          renameDefinitions: [{ tableName: def.tableName, currentName: def.name, newName }],
+    return this.#writeVerified(
+      async () => {
+        const { newName, ...updateDef } = def;
+        let result: unknown;
+        if (newName !== undefined && newName !== def.name) {
+          result = await this.call(MS_TOOLS.columns, 'Rename', {
+            renameDefinitions: [{ tableName: def.tableName, currentName: def.name, newName }],
+          });
+        }
+        const updateName = newName ?? def.name;
+        const remaining = definedOnly({
+          ...updateDef,
+          name: updateName,
         });
-      }
-      const updateName = newName ?? def.name;
-      const remaining = definedOnly({
-        ...updateDef,
-        name: updateName,
-      });
-      if (hasColumnUpdateFields(remaining)) {
-        result = await this.call(MS_TOOLS.columns, 'Update', {
-          definitions: [toDaxSource(remaining as unknown as ColumnUpdate)],
-        });
-      }
-      return result ?? {};
-    }, expectedConnection);
+        if (hasColumnUpdateFields(remaining)) {
+          result = await this.call(MS_TOOLS.columns, 'Update', {
+            definitions: [toDaxSource(remaining as unknown as ColumnUpdate)],
+          });
+        }
+        return result ?? {};
+      },
+      (model) => columnUpdateApplied(model, def),
+      `column update was not applied: live re-read of ${def.tableName}[${def.newName ?? def.name}] does not reflect the requested change`,
+      expectedConnection,
+      { operationLabel: 'column update' },
+    );
   }
   async updateColumns(
     defs: ReadonlyArray<ColumnUpdate>,
     expectedConnection?: ConnectionInfo,
   ): Promise<unknown> {
-    return this.#write(
+    return this.#writeVerified(
       () =>
         this.call(MS_TOOLS.columns, 'Update', {
           definitions: defs.map((def) => toDaxSource(def)),
         }),
+      (model) => defs.every((def) => columnUpdateApplied(model, def)),
+      'column update was not applied: live re-read does not reflect one or more requested column changes',
       expectedConnection,
+      { operationLabel: 'columns update' },
     );
   }
   async deleteColumn(ref: ColumnRef, expectedConnection?: ConnectionInfo): Promise<unknown> {
@@ -1849,10 +1928,22 @@ export class ModelDriver {
     dateColumn: string,
     expectedConnection?: ConnectionInfo,
   ): Promise<unknown> {
-    const tableResult = await this.updateTable(
-      { name: tableName, dataCategory: 'Time' },
-      expectedConnection,
-    );
+    let tableResult: unknown;
+    try {
+      tableResult = await this.updateTable(
+        { name: tableName, dataCategory: 'Time' },
+        expectedConnection,
+      );
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      // The host accepted the dataCategory:'Time' write but a fresh re-read did
+      // not reflect it (observed on Import-mode tables). Do NOT claim success and
+      // do NOT treat marking as impossible — return a structured non-marked signal
+      // so the caller's mark gate surfaces an actionable blocker. The date key may
+      // still be proven from data, which is what relationships/time intelligence rely on.
+      if (!isTableUpdateNotApplied(message)) throw err;
+      return { marked: false, dataCategoryNotApplied: true, dataCategoryWarning: message };
+    }
     try {
       const columnResult = await this.updateColumn(
         { tableName, name: dateColumn, isKey: true },
@@ -1926,10 +2017,16 @@ export class ModelDriver {
     // UNVERIFIED: confirm against live MS MCP tool list — Update identity shape (name=id) unconfirmed.
     const { id, ...changes } = def;
     const translated = this.#translateRel(changes);
-    return this.#write(
+    // Re-pointing endpoints / flipping cardinality|crossFilter|isActive are property
+    // updates with the same Import-mode silent-no-op hazard as column/table writes.
+    // Verify the live relationship reflects the change instead of trusting the ack.
+    return this.#writeVerified(
       () =>
         this.call(MS_TOOLS.relationships, 'Update', { definitions: [{ name: id, ...translated }] }),
+      (model) => relationshipUpdateApplied(model, def),
+      `relationship update was not applied: live re-read of relationship ${id} does not reflect the requested change`,
       expectedConnection,
+      { operationLabel: 'relationship update' },
     );
   }
   async updateRelationships(
@@ -1954,9 +2051,14 @@ export class ModelDriver {
     // Activate IS a confirmed op (relationship_operations: …, Activate, Deactivate).
     // UNVERIFIED: the references:[{name}] envelope is inferred from Deactivate's
     // confirmed shape (Activate's own envelope is not separately documented).
-    return this.#write(
+    // Verify the relationship reads back active so a no-opped activate cannot report
+    // updated:true while the live relationship is still inactive.
+    return this.#writeVerified(
       () => this.call(MS_TOOLS.relationships, 'Activate', { references: [{ name: ref.id }] }),
+      (model) => relationshipActivated(model, ref.id),
+      `relationship activate was not applied: live re-read of relationship ${ref.id} does not show it active`,
       expectedConnection,
+      { operationLabel: 'relationship activate' },
     );
   }
   async deactivateRelationship(
@@ -1974,10 +2076,39 @@ export class ModelDriver {
   ): Promise<unknown> {
     // UNVERIFIED: confirm against live MS MCP tool list — Delete not in the op list.
     // Attempt + surface a clean error if unsupported; NEVER fall back to disk edits.
-    return this.#write(
-      () => this.call(MS_TOOLS.relationships, 'Delete', { references: [{ name: ref.id }] }),
-      expectedConnection,
-    );
+    return this.#withOperationLock(async () => {
+      // P4: deleting a fact[date] -> auto LocalDateTable relationship orphans the
+      // source column's date Variation/DefaultHierarchy (which still points at the
+      // deleted relationship), leaving the model inconsistent. The bridge cannot
+      // model or repoint a Variation, so refuse rather than orphan it.
+      const before = await this.#getCachedSnapshotUnlocked(expectedConnection, {});
+      const target = before.relationships.find((r) => r.id === ref.id);
+      if (target) {
+        const toTable = before.tables.find((t) => t.name === target.toTable);
+        if (toTable?.isAutoDateTable) {
+          throw new Error(
+            redactConnectionSecrets(
+              `Refusing to delete relationship '${ref.id}': its target '${target.toTable}' is an auto date/time table, so deleting it would orphan the source column's date Variation/DefaultHierarchy and leave the model inconsistent. Disable Auto date/time (File > Options and settings > Options > Data Load > Time intelligence) or remove the column's date variation first, then retry.`,
+            ),
+          );
+        }
+      }
+      const result = await this.#liveUnlocked(
+        () => this.call(MS_TOOLS.relationships, 'Delete', { references: [{ name: ref.id }] }),
+        expectedConnection,
+      );
+      this.#invalidateSnapshot();
+      // P6: confirm the delete actually applied via a fresh live re-read.
+      const after = await this.#getCachedSnapshotUnlocked(expectedConnection, {});
+      if (after.relationships.some((r) => r.id === ref.id)) {
+        throw new Error(
+          redactConnectionSecrets(
+            `relationship delete was not applied: live re-read still shows relationship '${ref.id}'`,
+          ),
+        );
+      }
+      return result;
+    });
   }
 
   // Folder-mode persistence. Live mode persists via the user's Ctrl+S in Desktop.
@@ -1997,6 +2128,154 @@ export class ModelDriver {
 function isImportModeDateKeyWriteRejection(message: string): boolean {
   if (!/\bisKey\b/i.test(message)) return false;
   return /\b(?:DirectQuery|Import)\b|only supported|not supported|not valid/i.test(message);
+}
+
+// The stable prefix updateTable's read-back verifier throws on a silent no-op
+// (host accepted the write, fresh re-read does not reflect it). Callers that own
+// a richer, actionable verification path (e.g. the mark-as-date gate) match on
+// this to convert the raw driver miss into their structured blocker.
+const TABLE_UPDATE_NOT_APPLIED_PREFIX = 'table update was not applied';
+function isTableUpdateNotApplied(message: string): boolean {
+  return message.toLowerCase().includes(TABLE_UPDATE_NOT_APPLIED_PREFIX);
+}
+
+// P6: a batched Create/Update returns `{ results: [{ success, ... }] }`. Throw if
+// any item failed so a partial batch never reads back as overall success.
+function assertNoBatchFailure(payload: unknown, label?: string): void {
+  if (!isRecord(payload) || !Array.isArray(payload.results)) return;
+  for (const item of payload.results) {
+    if (isRecord(item) && item.success === false) {
+      const message = str(item, 'message', 'error', 'detail') ?? 'a batched operation item failed';
+      throw new Error(redactConnectionSecrets(`${label ?? 'write'} failed: ${message}`));
+    }
+  }
+}
+
+// P1: confirm a column update actually landed by comparing the post-write live
+// column against ONLY the fields that were requested. Returns true ("cannot
+// disprove") when the target table is not observable in the snapshot, so an
+// empty/partial read never produces a false negative; returns false only when
+// the live column clearly contradicts the request. `isKey` is best-effort
+// (Import models legitimately reject it — see isImportModeDateKeyWriteRejection)
+// and is intentionally never asserted here.
+function columnUpdateApplied(model: TMDLModel, def: ColumnUpdate): boolean {
+  const table = model.tables.find((t) => t.name === def.tableName);
+  if (!table) return true; // target table not observable — do not assert
+  const targetName = def.newName ?? def.name;
+  const col = table.columns.find((c) => c.name === targetName);
+  if (!col) return false; // rename/update target must exist after the write
+  // Case-insensitive for enumerations whose casing the engine may echo back
+  // differently; skip a field entirely when the read does not surface it.
+  const eqCI = (a: string | undefined, b: string) =>
+    a === undefined || a.toLowerCase() === b.toLowerCase();
+  const eq = (a: string | undefined, b: string) => a === undefined || a === b;
+  // `isHidden` is a cosmetic report-view flag with the SAME Import-mode read-back
+  // hazard as `isKey`: the live column List may omit the key, which the parser
+  // coerces to `false`, so a hide write that actually landed reads back as `false`
+  // and would produce a FALSE NEGATIVE that hard-throws — pushing the agent to ask
+  // the user to hide fields that are already hidden. Like isKey, treat it as
+  // best-effort and never assert it on read-back.
+  if (def.dataType !== undefined && !eqCI(col.dataType, def.dataType)) return false;
+  if (def.summarizeBy !== undefined && !eqCI(col.summarizeBy, def.summarizeBy)) return false;
+  if (def.dataCategory !== undefined && !eqCI(col.dataCategory, def.dataCategory)) return false;
+  if (def.formatString !== undefined && !eq(col.formatString, def.formatString)) return false;
+  if (def.sortByColumn !== undefined && !eq(col.sortByColumn, def.sortByColumn)) return false;
+  if (def.description !== undefined && !eq(col.description, def.description)) return false;
+  if (def.expression !== undefined && !eq(col.expression, def.expression)) return false;
+  return true;
+}
+
+// P1 (table parity): confirm a table-level update actually landed, mirroring
+// columnUpdateApplied. Compares ONLY the requested scalar fields against the
+// fresh snapshot; returns true ("cannot disprove") when the table is not
+// observable, and false only on a clear contradiction. `annotations` are a
+// best-effort/UNVERIFIED host-side write (used for the governed-policy stamp)
+// and are intentionally NOT asserted, so an annotation-only update never throws.
+function tableUpdateApplied(model: TMDLModel, def: TableUpdate): boolean {
+  const targetName = def.newName ?? def.name;
+  const table = model.tables.find((t) => t.name === targetName);
+  if (!table) {
+    // Target not observable — cannot disprove (mirrors columnUpdateApplied), so a
+    // partial/empty read never yields a false negative. The one exception: a rename
+    // whose OLD name is still present clearly did not land.
+    if (def.newName !== undefined && model.tables.some((t) => t.name === def.name)) return false;
+    return true;
+  }
+  const eqCI = (a: string | undefined, b: string) =>
+    a === undefined || a.toLowerCase() === b.toLowerCase();
+  const eq = (a: string | undefined, b: string) => a === undefined || a === b;
+  // `isHidden` is cosmetic and carries the Import-mode read-back false-negative
+  // hazard (absent List key parses to `false`); like the column case it is
+  // best-effort and never asserted on read-back. See columnUpdateApplied.
+  if (def.dataCategory !== undefined && !eqCI(table.dataCategory, def.dataCategory)) return false;
+  if (def.description !== undefined && !eq(table.description, def.description)) return false;
+  return true;
+}
+
+// Confirm a measure update landed: compare ONLY the requested scalar fields against
+// the post-write live measure. Cannot-disprove (returns true) when the measure/table
+// is not observable, so a partial read never false-negatives; false only on a clear
+// contradiction. Mirrors columnUpdateApplied. A measure update is the exact category
+// the project's known design warns can silently no-op on Import, but unlike
+// updateColumn it previously had NO read-back.
+function measureUpdateApplied(model: TMDLModel, def: MeasureWrite): boolean {
+  const table = model.tables.find((t) => t.name === def.tableName);
+  if (!table) return true; // target table not observable — do not assert
+  const measure = table.measures.find((m) => m.name === def.name);
+  if (!measure) return true; // not observable — cannot disprove
+  const collapse = (s: string) => s.replace(/\s+/g, ' ').trim();
+  const eq = (a: string | undefined, b: string) => a === undefined || a === b;
+  // Whitespace-tolerant: the engine may echo the expression with different spacing.
+  // Treat an empty read-back expression as "not surfaced" (the enrich Get can omit
+  // it), so we cannot-disprove rather than false-negative on an unobservable body.
+  if (
+    def.expression !== undefined &&
+    measure.expression !== '' &&
+    collapse(measure.expression) !== collapse(def.expression)
+  ) {
+    return false;
+  }
+  if (def.formatString !== undefined && !eq(measure.formatString, def.formatString)) return false;
+  if (def.description !== undefined && !eq(measure.description, def.description)) return false;
+  return true;
+}
+
+// Confirm a relationship update landed: compare ONLY the requested fields against the
+// post-write live relationship (found by id). Cannot-disprove when the relationship
+// is not observable; false only on a clear contradiction. Re-pointing endpoints,
+// flipping cardinality/crossFilter, or toggling isActive are property updates with the
+// same Import-mode silent-no-op hazard as column/table updates.
+function relationshipUpdateApplied(model: TMDLModel, def: RelationshipUpdate): boolean {
+  const rel = model.relationships.find((r) => r.id === def.id);
+  if (!rel) return true; // not observable — cannot disprove
+  if (def.fromTable !== undefined && rel.fromTable !== def.fromTable) return false;
+  if (def.fromColumn !== undefined && rel.fromColumn !== def.fromColumn) return false;
+  if (def.toTable !== undefined && rel.toTable !== def.toTable) return false;
+  if (def.toColumn !== undefined && rel.toColumn !== def.toColumn) return false;
+  if (def.isActive !== undefined && rel.isActive !== def.isActive) return false;
+  if (
+    def.crossFilteringBehavior !== undefined &&
+    rel.crossFilteringBehavior !== def.crossFilteringBehavior
+  ) {
+    return false;
+  }
+  // Only assert cardinality when the read surfaces one (undefined == PBI default).
+  if (
+    def.cardinality !== undefined &&
+    rel.cardinality !== undefined &&
+    rel.cardinality !== def.cardinality
+  ) {
+    return false;
+  }
+  return true;
+}
+
+// Confirm an activate landed: the relationship reads back active. Cannot-disprove
+// when the relationship id is not observable.
+function relationshipActivated(model: TMDLModel, id: string): boolean {
+  const rel = model.relationships.find((r) => r.id === id);
+  if (!rel) return true; // not observable — cannot disprove
+  return rel.isActive === true;
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {

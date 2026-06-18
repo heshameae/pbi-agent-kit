@@ -156,7 +156,7 @@ function directMicrosoftModelingWrite(toolName, toolInput) {
 if (directMicrosoftModelingWrite(toolName, toolInput)) {
   console.error(
     [
-      'Blocked: Direct Microsoft Power BI modeling MCP writes bypass pbi-mcp-ts wrapper gates.',
+      'Blocked: Direct Microsoft Power BI modeling MCP writes bypass pbi-agent-kit wrapper gates.',
       'Use the supported pbi_* tools so deterministic relationship, Date, DAX, and governance checks run before any model mutation.',
     ].join('\n'),
   );
@@ -202,7 +202,7 @@ const invokesPython =
 if (invokesPython) {
   console.error(
     [
-      'Blocked: Python must not be used for pbi-mcp-ts operations.',
+      'Blocked: Python must not be used for pbi-agent-kit operations.',
       'Use the TypeScript pbi_* MCP tools, deterministic planners, or repo-native Node/TypeScript tooling instead. If the MCP tool surface cannot perform a Power BI operation, stop and report it as unsupported; do not inspect or patch data/model/report files with Python.',
     ].join('\n'),
   );

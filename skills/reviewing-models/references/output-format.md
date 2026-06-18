@@ -142,7 +142,7 @@ Omit rows with 0 findings. Add a one-line note after the table if any category w
 The following issues are outside the scope of a structural model audit. Acknowledge these limitations when relevant:
 
 - **Semantic errors** — A measure may be syntactically correct DAX but compute the wrong business value. Only a domain expert reviewing actual data can catch this.
-- **Cross-report binding issues** — Report visuals referencing model fields by name will break if fields are renamed. The model audit does not inspect PBIR files; use the `pbi_report_validate` tool separately.
+- **Cross-report binding issues** — Report visuals referencing model fields by name will break if fields are renamed. The modeling-only release does not inspect PBIR files or validate report bindings.
 - **Data freshness and completeness** — Whether source data is up to date, complete, or correctly loaded is outside model structure analysis.
 - **Visual calc logic** — Calculations defined inside report visuals (visual calculations) are not part of the semantic model and are not audited here.
 - **Runtime query performance without tooling** — Performance findings from this audit are structural heuristics only. Actual query timing requires DAX Studio or Performance Analyzer with the live model. See `../modeling-semantic-model/references/performance.md`.

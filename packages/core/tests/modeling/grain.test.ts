@@ -112,6 +112,32 @@ describe('dimColumnsOf', () => {
 
     expect(dims.map((column) => column.name)).toEqual(['Business Axis']);
   });
+
+  it('keeps an explicit capitalized summarizeBy:None numeric (e.g. FiscalYear) as a dimension column', () => {
+    // Power BI Desktop / TMDL serialize the enum capitalized ("None"); a case-sensitive
+    // check would treat this as an aggregated measure and wrongly drop the surrogate key
+    // from the grain/axis set. Must stay a dimension column, consistent with the
+    // fact-classifier / field-index case-insensitive handling.
+    const dims = dimColumnsOf({
+      name: 'Dim',
+      columns: [
+        {
+          table: 'Dim',
+          name: 'FiscalYear',
+          dataType: 'Int64',
+          summarizeBy: 'None',
+          isHidden: false,
+          isKey: false,
+          isCalculated: false,
+        },
+      ],
+      measures: [],
+      isHidden: false,
+      isCalculated: false,
+      isAutoDateTable: false,
+    });
+    expect(dims.map((column) => column.name)).toEqual(['FiscalYear']);
+  });
 });
 
 describe('inferGrain', () => {
@@ -120,6 +146,30 @@ describe('inferGrain', () => {
     const product = model.tables.find((t) => t.name === 'Product');
     if (!product) throw new Error('Expected Product table in fixture');
     expect(inferGrain(product)).toContain('Product Name');
+  });
+});
+
+describe('isKeyLikeColumn (grain heuristic)', () => {
+  const col = (name: string, isKey = false) => ({
+    table: 'T',
+    name,
+    dataType: 'int64',
+    isHidden: false,
+    isKey,
+    isCalculated: false,
+  });
+
+  // grain uses a deliberately simple suffix heuristic for its display-only grain report
+  // (NOT the canonical key matcher used by the gates — see naming.ts; routing grain
+  // through the stricter measure-like notion regressed surrogate-key axis detection).
+  it('matches the id/key/code/sku/number name suffixes', () => {
+    expect(isKeyLikeColumn(col('CustomerKey'))).toBe(true);
+    expect(isKeyLikeColumn(col('PostalCode'))).toBe(true);
+    expect(isKeyLikeColumn(col('ProductSku'))).toBe(true);
+  });
+
+  it('still honors the explicit isKey flag regardless of name', () => {
+    expect(isKeyLikeColumn(col('Whatever', true))).toBe(true);
   });
 });
 

@@ -263,6 +263,6 @@ Data = Source{[Schema="dbo", Item="Orders"]}[Data],
 
 **In Power Query Online or Desktop:** Right-click a step and choose "View Native Query". If the option is greyed out, the step does not fold.
 
-**Programmatically via MCP tools:** Execute the partition expression using the `pbi_dax_query` or equivalent tool. If a query against a large table completes well within the timeout, folding is likely working. If it times out or runs slowly, folding may be broken.
+> In the modeling-only beta there is no plugin tool to execute or validate M, so folding cannot be verified programmatically here. `pbi_dax_query` runs read-only DAX, not M. Use Power BI Desktop's Power Query Editor to check folding.
 
 The most reliable signal is the presence of a native query — if the step produces one, folding is active. If not, all data is being pulled to the mashup engine.

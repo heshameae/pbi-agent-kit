@@ -10,16 +10,6 @@
         ]
       }
     ],
-    "UserPromptExpansion": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/guard-modeling-beta-scope.mjs\""
-          }
-        ]
-      }
-    ],
     "PreToolUse": [
       {
         "matcher": "mcp__.*|Skill|Task",

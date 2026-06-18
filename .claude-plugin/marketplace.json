@@ -1,15 +1,15 @@
 {
-  "name": "pbi-mcp-marketplace",
+  "name": "pbi-agent-kit-marketplace",
   "owner": {
     "name": "Hesham Eissa"
   },
-  "description": "Local marketplace hosting the pbi-mcp-ts plugin during development.",
+  "description": "Local marketplace hosting the pbi-agent-kit plugin during development.",
   "plugins": [
     {
-      "name": "pbi-mcp-ts",
+      "name": "pbi-agent-kit",
       "source": "./",
       "version": "0.1.0",
-      "description": "Power BI semantic-model beta for Claude Code — modeling-only wrapper MCP server, skills, subagents, deterministic Date/relationship/DAX/model gates, live Desktop editing, confirmed measure-intent enforcement, and optional user-owned data dictionary context. Dashboard/report/page/visual/PBIR authoring is unavailable in this beta."
+      "description": "Modeling-only Power BI beta for Claude Code: wrapper MCP server, skills, subagents, deterministic modeling gates, and live Desktop editing. Report/page/visual authoring is unavailable in this beta."
     }
   ]
 }

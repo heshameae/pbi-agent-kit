@@ -3,7 +3,7 @@
 // The Microsoft MCP is NOT registered as a peer that Claude routes to — our
 // server spawns it and acts as its MCP client (stdio). This is what lets us
 // run validation in code before delegating a write, instead of relying on
-// PreToolUse hooks. See docs/superpowers/specs/2026-05-20-phase-b1-model-agents-plan.md.
+// PreToolUse hooks.
 //
 // Connection is a lazy singleton: spawn + connect on first use, reuse across
 // calls, and re-spawn if the transport drops (Desktop closed, pipe broken).
@@ -76,9 +76,11 @@ function envStringRecord(env: NodeJS.ProcessEnv): Record<string, string> {
 // Absolute path to the Parallels bridge script. Prefer CLAUDE_PLUGIN_ROOT (set by
 // Claude Code when running as a plugin); fall back to a path relative to this
 // module (packages/mcp/dist/model-bridge/ms-mcp-client.js → plugin root).
-function defaultBridgePath(env: NodeJS.ProcessEnv): string {
+function defaultBridgePath(env: NodeJS.ProcessEnv, platform: NodeJS.Platform): string {
   if (env.CLAUDE_PLUGIN_ROOT?.trim()) {
-    return path.join(env.CLAUDE_PLUGIN_ROOT, 'scripts', 'pbi-mcp-bridge.sh');
+    const pluginRoot = env.CLAUDE_PLUGIN_ROOT.trim();
+    const join = platform === 'darwin' ? path.posix.join : path.join;
+    return join(pluginRoot, 'scripts', 'pbi-mcp-bridge.sh');
   }
   const here = path.dirname(fileURLToPath(import.meta.url));
   return path.resolve(here, '../../../../scripts/pbi-mcp-bridge.sh');
@@ -107,7 +109,7 @@ export function resolveSpawnConfig(
     return { command, args, env: envStringRecord(env) };
   }
   if (platform === 'darwin') {
-    return { command: 'bash', args: [defaultBridgePath(env)], env: envStringRecord(env) };
+    return { command: 'bash', args: [defaultBridgePath(env, platform)], env: envStringRecord(env) };
   }
   const version = env.PBI_MODELING_MCP_VERSION?.trim() || DEFAULT_MS_MCP_VERSION;
   return {
@@ -128,7 +130,7 @@ export const defaultClientFactory: ClientFactory = async (config, onClose) => {
   transport.onerror = () => onClose();
 
   const client = new Client(
-    { name: 'pbi-mcp-ts-model-bridge', version: '0.1.0' },
+    { name: 'pbi-agent-kit-model-bridge', version: '0.1.0' },
     { capabilities: {} },
   );
   await client.connect(transport);

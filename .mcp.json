@@ -2,10 +2,7 @@
   "mcpServers": {
     "pbi-modeling-beta": {
       "command": "node",
-      "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/start-mcp.mjs"],
-      "env": {
-        "PBI_MCP_SURFACE": "modeling"
-      }
+      "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/start-mcp.mjs"]
     }
   }
 }

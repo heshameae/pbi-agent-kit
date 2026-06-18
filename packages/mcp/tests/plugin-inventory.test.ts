@@ -1,8 +1,8 @@
 // EFFECTIVE-INVENTORY packaging launch gate.
 //
 // This is the deterministic, CI-safe launch gate that would have caught the two
-// packaging defects this beta shipped with: (1) the report-skill leak — report
-// skills/agents bleeding into the modeling-only surface — and (2) Agents(0) —
+// packaging defects this beta guards against: (1) report skills/agents bleeding
+// into the modeling-only surface and (2) Agents(0) —
 // the plugin manifest declaring agents/skills in a way that produced an empty
 // effective inventory. The manual equivalent is `claude plugin details` showing
 // Skills (5) + Agents (3); this gate asserts the same effective inventory purely
@@ -35,20 +35,20 @@ function markdownNames(...parts: string[]): string[] {
     .sort();
 }
 
+// pbi-init-config is a slash COMMAND (commands/pbi-init-config.md), not a skill — it has no
+// `name` and uses command frontmatter, so it must not sit under skills/.
 const MODELING_SKILLS = [
   'authoring-measures',
   'modeling-semantic-model',
-  'pbi-init-config',
   'power-query',
   'reviewing-models',
 ];
 
 const MODELING_AGENTS = ['data-analyst.md', 'model-builder.md', 'model-reviewer.md'];
 
-// The 12 report skills that must never appear under skills/ (they live in
-// archive/skills/). Hardcoding the packaging inventory here is intentional and is
-// NOT a dataset hardcode — these are first-party skill directory names that the
-// launch gate exists to pin.
+// Report skills that must never appear under skills/. Hardcoding the packaging
+// inventory here is intentional and is NOT a dataset hardcode — these are
+// first-party skill directory names that the launch gate exists to pin.
 const REPORT_SKILLS = [
   'designing-reports',
   'pbi-bookmarks',
@@ -62,14 +62,6 @@ const REPORT_SKILLS = [
   'pbi-visuals',
   'planning-dashboards',
   'reviewing-reports',
-];
-
-const ARCHIVED_REPORT_SKILLS = [
-  ...REPORT_SKILLS,
-  'pbi-scaffold',
-  'pbi-scaffold-drill',
-  'pbi-scaffold-kpi-grid',
-  'pbi-scaffold-overview',
 ];
 
 const REPORT_AGENTS = [
@@ -99,8 +91,24 @@ describe('plugin effective-inventory launch gate', () => {
     });
   });
 
+  describe('.claude-plugin/marketplace.json', () => {
+    const marketplace = JSON.parse(
+      readFileSync(repoPath('.claude-plugin', 'marketplace.json'), 'utf8'),
+    ) as {
+      name?: string;
+      plugins?: Array<{ name?: string }>;
+    };
+
+    it('uses the release product name for marketplace and plugin identity', () => {
+      expect(marketplace.name).toBe('pbi-agent-kit-marketplace');
+      expect(marketplace.plugins?.map((plugin) => plugin.name)).toEqual(['pbi-agent-kit']);
+      expect(JSON.stringify(marketplace)).not.toContain('pbi-mcp-ts');
+      expect(JSON.stringify(marketplace)).not.toContain('pbi-mcp-marketplace');
+    });
+  });
+
   describe('skills/ effective inventory', () => {
-    it('contains exactly the 5 modeling skills', () => {
+    it('contains exactly the 4 modeling skills', () => {
       expect(dirNames('skills')).toEqual([...MODELING_SKILLS].sort());
     });
 
@@ -127,23 +135,16 @@ describe('plugin effective-inventory launch gate', () => {
       }
     });
 
-    it('all report-authoring skills exist under archive/skills/', () => {
-      const reportShipped = new Set(dirNames('archive/skills'));
-      for (const reportSkill of ARCHIVED_REPORT_SKILLS) {
-        expect(
-          reportShipped.has(reportSkill),
-          `${reportSkill} should be under archive/skills/`,
-        ).toBe(true);
-      }
+    it('does not ship the report-skill archive on main', () => {
+      expect(existsSync(repoPath('archive', 'skills'))).toBe(false);
     });
 
-    it('report agents live under archive/agents/ and NOT under agents/', () => {
+    it('report agents are absent from main and NOT under agents/', () => {
       const modelingAgents = new Set(markdownNames('agents'));
-      const reportAgents = new Set(markdownNames('archive/agents'));
       for (const agent of REPORT_AGENTS) {
         expect(modelingAgents.has(agent), `${agent} must NOT be under agents/`).toBe(false);
-        expect(reportAgents.has(agent), `${agent} should be under archive/agents/`).toBe(true);
       }
+      expect(existsSync(repoPath('archive', 'agents'))).toBe(false);
     });
   });
 
@@ -163,10 +164,11 @@ describe('plugin effective-inventory launch gate', () => {
     };
     const hookKeys = hooks.hooks ?? {};
 
-    it('keeps UserPromptSubmit, UserPromptExpansion, and PreToolUse', () => {
+    it('keeps UserPromptSubmit and PreToolUse and drops the unsupported UserPromptExpansion event', () => {
       expect(Object.hasOwn(hookKeys, 'UserPromptSubmit')).toBe(true);
-      expect(Object.hasOwn(hookKeys, 'UserPromptExpansion')).toBe(true);
       expect(Object.hasOwn(hookKeys, 'PreToolUse')).toBe(true);
+      // UserPromptExpansion is not a documented Claude Code hook event — it must not be present.
+      expect(Object.hasOwn(hookKeys, 'UserPromptExpansion')).toBe(false);
     });
 
     it('no longer registers a PostToolUse block', () => {

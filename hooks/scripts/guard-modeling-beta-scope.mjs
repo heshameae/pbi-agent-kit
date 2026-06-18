@@ -5,11 +5,9 @@ const REFUSAL =
 const SCOPE_NOTICE =
   'Modeling beta scope: report/dashboard/page/visual/PBIR authoring in the user request is unavailable. Do not design, create, edit, bind, format, publish, export, or validate report artifacts. Continue only explicit semantic-model work such as model inventory, KPI or measure intent, DAX, Date tables, relationships, star-schema planning, refresh, model checks, or modeling-only prep specs.';
 
-// Matches report/dashboard skill or agent NAMES (keyword match in a prompt or
-// tool input). Must list every non-modeling skill/agent that lives in the repo
-// (now under archive/skills/ and archive/agents/) so a stale slash-expansion or
-// Skill/Task call by name is still refused even though those are no longer
-// auto-scanned into the modeling-beta plugin surface.
+// Matches stale report/dashboard skill or agent NAMES (keyword match in a
+// prompt or tool input). They are absent from main, but stale slash-expansions,
+// copied configs, or old plugin caches must still be refused.
 const REPORT_SKILL_OR_AGENT_PATTERN =
   /\b(?:planning-dashboards|designing-reports|pbi-report|pbi-pages|pbi-visuals|pbi-layout|pbi-themes|pbi-filters|pbi-bookmarks|pbi-status|pbi-validate|reviewing-reports|pbi-scaffold|lineage-analysis|pbi-designer|pbi-report-reviewer|pbi-report-validator|report-builder|report-reviewer)\b/i;
 const REPORT_MCP_TOOL_PATTERN =
@@ -41,10 +39,8 @@ try {
   process.exit(0);
 }
 
-// Internal/dogfood-only override: setting PBI_MCP_ALLOW_REPORT_AUTHORING=1
-// disables ALL modeling-beta scope blocking (report prompts, report skill/agent
-// expansion, report tool calls). It exists for the full report/PBIR dogfood
-// profile and must NOT be set in a public modeling-beta install.
+// Local development override for stale/full-surface checkouts. It cannot enable
+// report authoring in this main release because report tools are not shipped.
 if (process.env.PBI_MCP_ALLOW_REPORT_AUTHORING === '1') {
   process.exit(0);
 }

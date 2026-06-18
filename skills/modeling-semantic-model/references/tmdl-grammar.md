@@ -274,7 +274,7 @@ Use observed fact min/max dates from `pbi_model_plan_date_table.recommendedRange
 ### `columnType`
 `data` · `calculated` · `rowNumber` · `calculatedTableColumn`
 
-For the complete enum reference for all 30+ TMDL object types, see `references/object-properties-full.md`.
+See the **Additional Enum Values** section below for the remaining enum values; for any token not listed here, confirm it against live model metadata (e.g. `pbi_model_snapshot`) rather than guessing an enum value.
 
 ### Additional Enum Values
 

@@ -27,6 +27,6 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/config.sh"
 
 # Vendored win32 exe installed by scripts/setup-pbi-mcp.sh. Override with PBI_MS_MCP_EXE.
-EXE_PATH="${PBI_MS_MCP_EXE:-C:\\pbi-mcp\\package\\dist\\powerbi-modeling-mcp.exe}"
+EXE_PATH="${PBI_MS_MCP_EXE:-C:\\pbi-agent-kit\\vendor\\powerbi-modeling-mcp\\package\\dist\\powerbi-modeling-mcp.exe}"
 
 exec prlctl exec "$PBI_VM_NAME" --current-user "$EXE_PATH" "--start" "--skipconfirmation"

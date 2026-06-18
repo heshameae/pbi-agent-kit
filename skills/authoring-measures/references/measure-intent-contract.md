@@ -44,5 +44,5 @@ If any item is missing and it could change the result, return `needs-user-input`
 
 - `data-analyst` owns draft dictionary and measure intent planning, then marks each item `draft` or `confirmed`.
 - `model-builder` writes only from confirmed measure intent and refuses draft or inferred formulas.
-- `report-builder` binds visuals only to confirmed metrics, targets, and RAG semantics.
+- Report authoring (when available outside the modeling-only beta) binds visuals only to confirmed metrics, targets, and RAG semantics.
 - `model-reviewer` treats missing confirmed business evidence as semantic readiness risk, not a structural model error.

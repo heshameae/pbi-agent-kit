@@ -57,7 +57,7 @@ The default for any query that combines groupby columns with measure-like calcul
 
 **Key rules:**
 - Returns only rows where at least one measure value is not BLANK
-- Do NOT use boolean filters directly with SUMMARIZECOLUMNS — wrap them in CALCULATETABLE (see DAX009 in `dax-performance.md`)
+- Do NOT use boolean filters directly with SUMMARIZECOLUMNS — wrap them in CALCULATETABLE (see PERF009 in `dax-performance.md`)
 - Do not use SUMMARIZECOLUMNS without at least one measure-like extension column
 
 ---
@@ -211,5 +211,5 @@ RETURN _Ratio
 | Context | Rule |
 |---|---|
 | General use, denominator may be zero | `DIVIDE(numerator, denominator)` — safe zero protection |
-| Inside row iterators (SUMX, AVERAGEX), denominator guaranteed non-zero | `/` operator — avoids FE callback (see DAX018) |
+| Inside row iterators (SUMX, AVERAGEX), denominator guaranteed non-zero | `/` operator — avoids FE callback (see PERF018) |
 | Never use `IFERROR(expr / denom, 0)` | Wraps entire expression in FE callback — use `DIVIDE()` instead |

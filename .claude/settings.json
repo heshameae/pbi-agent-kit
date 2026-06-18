@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__plugin_pbi-agent-kit_pbi-modeling-beta__*"
+    ]
+  },
+  "enabledMcpjsonServers": [
+    "pbi-modeling-beta"
+  ]
+}
