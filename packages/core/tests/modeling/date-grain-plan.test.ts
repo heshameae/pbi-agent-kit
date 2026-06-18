@@ -5,10 +5,12 @@ import {
   classifyObservedDateGrain,
   deriveRequiredDateCoverageFacts,
   findCalendarSourceRisks,
+  isDataProvenDailyKey,
   parseDateGrainProbeResult,
   parseDateTableCoverageProbeResult,
   planDateGrain,
   planDateTableCoverage,
+  readGovernedDatePolicy,
 } from '../../src/modeling/date-grain-plan.js';
 import type {
   TMDLColumn,
@@ -217,6 +219,81 @@ describe('date grain planner', () => {
     expect(result.facts[0]?.observedGrain).toBe('day');
     expect(result.facts[0]?.measureGuidance.plainSumSafe).toBe(true);
     expect(result.facts[0]?.measureGuidance.safeVisualDateGrain).toBe('day-or-above');
+    expect(result.facts[0]?.writePlan).toEqual([
+      {
+        action: 'activate-date-relationship',
+        id: 'Forecast_Date_Calendar_Date',
+        description:
+          'Observed day-level date values support activating the existing date relationship.',
+      },
+    ]);
+  });
+
+  it('emits the date-relationship write plan for an UNMARKED but data-proven Date table (Import no-op decoupling)', () => {
+    // H-C: the dataCategory="Time" mark silently no-ops on Import, so the gate's outer
+    // layers were decoupled to key off the data-proven key. buildWritePlan must agree:
+    // an unmarked (no dataCategory) Date table whose key is proven from data must still
+    // produce the activate/create write plan, or the active relationship deadlocks.
+    const m = model(
+      [
+        tbl('Forecast', [
+          col('Forecast', 'Forecast Date', 'dateTime'),
+          col('Forecast', 'Amount', 'decimal', { summarizeBy: 'sum' }),
+        ]),
+        // No dataCategory:'Time' and isKey:false — proven ONLY by the live probe below.
+        tbl('Calendar', [col('Calendar', 'Date', 'dateTime')]),
+      ],
+      [relationship],
+    );
+    const cleanDaily = {
+      rowCount: 59,
+      nonBlankDateCount: 59,
+      distinctDateCount: 59,
+      blankDateCount: 0,
+      duplicateDateCount: 0,
+      gapCount: 0,
+      nonMidnightTimeCount: 0,
+      minDate: '2025-01-01T00:00:00',
+      maxDate: '2025-02-28T00:00:00',
+    };
+    const result = planDateGrain(
+      m,
+      {
+        facts: [{ tableName: 'Forecast', dateColumn: 'Forecast Date' }],
+        dateTable: 'Calendar',
+        dateColumn: 'Date',
+        dateTableCoverageEvidence: {
+          dateTable: { tableName: 'Calendar', dateColumn: 'Date', ...cleanDaily },
+          facts: [
+            {
+              tableName: 'Forecast',
+              dateColumn: 'Forecast Date',
+              distinctMonthStartCount: 2,
+              nonMonthStartDateCount: 57,
+              monthsWithMultipleDates: 2,
+              maxDistinctDatesPerMonth: 31,
+              ...cleanDaily,
+            },
+          ],
+        },
+      },
+      [
+        {
+          tableName: 'Forecast',
+          dateColumn: 'Forecast Date',
+          distinctMonthStartCount: 2,
+          nonMonthStartDateCount: 57,
+          monthsWithMultipleDates: 2,
+          maxDistinctDatesPerMonth: 31,
+          ...cleanDaily,
+        },
+      ],
+    );
+
+    // The key is proven from data even though the table is unmarked...
+    expect(result.dateTableCoverage?.dateTable.keyProvenFromData).toBe(true);
+    expect(result.dateTableCoverage?.dateTable.isMarkedDateTable).toBe(false);
+    // ...so the write plan is still produced (not deadlocked on the missing mark).
     expect(result.facts[0]?.writePlan).toEqual([
       {
         action: 'activate-date-relationship',
@@ -1220,6 +1297,239 @@ describe('date grain planner', () => {
     expect(result.blockers.map((blocker) => blocker.code)).not.toContain('date-column-not-key');
   });
 
+  it('isDataProvenDailyKey requires complete, unique, gap-free, non-blank, midnight-only evidence', () => {
+    const base = {
+      tableName: 'Calendar',
+      dateColumn: 'Date',
+      rowCount: 31,
+      nonBlankDateCount: 31,
+      distinctDateCount: 31,
+      blankDateCount: 0,
+      duplicateDateCount: 0,
+      gapCount: 0,
+      nonMidnightTimeCount: 0,
+      minDate: '2025-01-01T00:00:00',
+      maxDate: '2025-01-31T00:00:00',
+    };
+    expect(isDataProvenDailyKey(base)).toBe(true);
+    expect(isDataProvenDailyKey({ ...base, gapCount: 1 })).toBe(false);
+    expect(isDataProvenDailyKey({ ...base, duplicateDateCount: 1 })).toBe(false);
+    expect(isDataProvenDailyKey({ ...base, nonMidnightTimeCount: 1 })).toBe(false);
+    expect(isDataProvenDailyKey({ ...base, distinctDateCount: 30 })).toBe(false);
+    expect(isDataProvenDailyKey(undefined)).toBe(false);
+    expect(isDataProvenDailyKey({ tableName: 'Calendar', dateColumn: 'Date' })).toBe(false);
+  });
+
+  it('proves date-key-ness from data on an unmarked table lacking isKey (P2/P3): suppresses date-column-not-key and reports markReadiness', () => {
+    const m = model(
+      [
+        tbl('Fact', [col('Fact', 'Date', 'dateTime')]),
+        tbl('Calendar', [col('Calendar', 'Date', 'dateTime', { isKey: false })]),
+      ],
+      [
+        {
+          id: 'Fact_Date_Calendar_Date',
+          fromTable: 'Fact',
+          fromColumn: 'Date',
+          toTable: 'Calendar',
+          toColumn: 'Date',
+          isActive: true,
+          crossFilteringBehavior: 'single',
+          cardinality: 'manyToOne',
+        },
+      ],
+    );
+
+    const result = planDateTableCoverage(
+      m,
+      {
+        dateTable: 'Calendar',
+        dateColumn: 'Date',
+        facts: [{ tableName: 'Fact', dateColumn: 'Date' }],
+      },
+      {
+        dateTable: {
+          tableName: 'Calendar',
+          dateColumn: 'Date',
+          rowCount: 31,
+          nonBlankDateCount: 31,
+          distinctDateCount: 31,
+          blankDateCount: 0,
+          duplicateDateCount: 0,
+          gapCount: 0,
+          nonMidnightTimeCount: 0,
+          minDate: '2025-01-01T00:00:00',
+          maxDate: '2025-01-31T00:00:00',
+        },
+        facts: [
+          {
+            tableName: 'Fact',
+            dateColumn: 'Date',
+            rowCount: 10,
+            nonBlankDateCount: 10,
+            distinctDateCount: 10,
+            distinctMonthStartCount: 1,
+            nonMonthStartDateCount: 9,
+            monthsWithMultipleDates: 1,
+            maxDistinctDatesPerMonth: 10,
+            blankDateCount: 0,
+            duplicateDateCount: 0,
+            gapCount: 21,
+            nonMidnightTimeCount: 0,
+            minDate: '2025-01-01T00:00:00',
+            maxDate: '2025-01-31T00:00:00',
+          },
+        ],
+      },
+    );
+
+    expect(result.dateTable.keyProvenFromData).toBe(true);
+    expect(result.dateTable.isTemporalKey).toBe(true);
+    expect(result.blockers.map((b) => b.code)).not.toContain('date-column-not-key');
+    // Unmarked table is still blocked overall, but is ready to MARK purely from data.
+    expect(result.blockers.map((b) => b.code)).toContain('date-table-not-marked');
+    expect(result.status).toBe('blocked');
+    expect(result.markReadiness.dataProvenKey).toBe(true);
+    expect(result.markReadiness.coversAllFacts).toBe(true);
+    expect(result.markReadiness.blockingForMark.map((b) => b.code)).not.toContain(
+      'date-table-not-marked',
+    );
+    expect(result.markReadiness.ready).toBe(true);
+  });
+
+  it('keeps date-column-not-key and blocks mark readiness when the key is NOT proven from data (gap)', () => {
+    const m = model([
+      tbl('Fact', [col('Fact', 'Date', 'dateTime')]),
+      tbl('Calendar', [col('Calendar', 'Date', 'dateTime', { isKey: false })]),
+    ]);
+
+    const result = planDateTableCoverage(
+      m,
+      {
+        dateTable: 'Calendar',
+        dateColumn: 'Date',
+        facts: [{ tableName: 'Fact', dateColumn: 'Date' }],
+      },
+      {
+        dateTable: {
+          tableName: 'Calendar',
+          dateColumn: 'Date',
+          rowCount: 30,
+          nonBlankDateCount: 30,
+          distinctDateCount: 30,
+          blankDateCount: 0,
+          duplicateDateCount: 0,
+          gapCount: 1,
+          nonMidnightTimeCount: 0,
+          minDate: '2025-01-01T00:00:00',
+          maxDate: '2025-01-31T00:00:00',
+        },
+        facts: [],
+      },
+    );
+
+    expect(result.dateTable.keyProvenFromData).toBe(false);
+    expect(result.blockers.map((b) => b.code)).toContain('date-table-has-gaps');
+    expect(result.blockers.map((b) => b.code)).toContain('date-column-not-key');
+    expect(result.markReadiness.dataProvenKey).toBe(false);
+    expect(result.markReadiness.ready).toBe(false);
+    expect(result.markReadiness.blockingForMark.map((b) => b.code)).toContain(
+      'date-table-has-gaps',
+    );
+  });
+
+  it('readGovernedDatePolicy parses the stamped governed policy and ignores unstamped/undefined tables', () => {
+    const governed = tbl('Calendar', [], [], {
+      annotations: {
+        pbiAgentKit_governedByTool: 'true',
+        pbiAgentKit_dateRangePolicy: 'observed-full-years',
+        pbiAgentKit_futureHorizonDays: '0',
+      },
+    });
+    expect(readGovernedDatePolicy(governed)).toEqual({
+      governedByTool: true,
+      rangePolicy: 'observed-full-years',
+      futureHorizonDays: 0,
+      allowCalendarEndAfterFactMax: true,
+    });
+    expect(readGovernedDatePolicy(tbl('Plain')).governedByTool).toBe(false);
+    expect(readGovernedDatePolicy(undefined).governedByTool).toBe(false);
+  });
+
+  it('does not re-block a governed full-years Date table for end-after-fact-max when policy is persisted (P5)', () => {
+    const cols = [col('Calendar', 'Date', 'dateTime', { isKey: true })];
+    const evidence = {
+      dateTable: {
+        tableName: 'Calendar',
+        dateColumn: 'Date',
+        rowCount: 365,
+        nonBlankDateCount: 365,
+        distinctDateCount: 365,
+        blankDateCount: 0,
+        duplicateDateCount: 0,
+        gapCount: 0,
+        nonMidnightTimeCount: 0,
+        minDate: '2025-01-01T00:00:00',
+        maxDate: '2025-12-31T00:00:00',
+      },
+      facts: [
+        {
+          tableName: 'Fact',
+          dateColumn: 'Date',
+          rowCount: 5,
+          nonBlankDateCount: 5,
+          distinctDateCount: 5,
+          distinctMonthStartCount: 1,
+          nonMonthStartDateCount: 4,
+          monthsWithMultipleDates: 1,
+          maxDistinctDatesPerMonth: 5,
+          blankDateCount: 0,
+          duplicateDateCount: 0,
+          gapCount: 100,
+          nonMidnightTimeCount: 0,
+          minDate: '2025-03-01T00:00:00',
+          maxDate: '2025-06-30T00:00:00',
+        },
+      ],
+    };
+    const opts = {
+      dateTable: 'Calendar',
+      dateColumn: 'Date',
+      facts: [{ tableName: 'Fact', dateColumn: 'Date' }],
+    };
+
+    const governed = planDateTableCoverage(
+      model([
+        tbl('Fact', [col('Fact', 'Date', 'dateTime')]),
+        tbl('Calendar', cols, [], {
+          dataCategory: 'Time',
+          annotations: {
+            pbiAgentKit_governedByTool: 'true',
+            pbiAgentKit_dateRangePolicy: 'observed-full-years',
+            pbiAgentKit_futureHorizonDays: '0',
+          },
+        }),
+      ]),
+      opts,
+      evidence,
+    );
+    expect(governed.blockers.map((b) => b.code)).not.toContain(
+      'date-table-end-after-fact-max-without-policy',
+    );
+
+    const plain = planDateTableCoverage(
+      model([
+        tbl('Fact', [col('Fact', 'Date', 'dateTime')]),
+        tbl('Calendar', cols, [], { dataCategory: 'Time' }),
+      ]),
+      opts,
+      evidence,
+    );
+    expect(plain.blockers.map((b) => b.code)).toContain(
+      'date-table-end-after-fact-max-without-policy',
+    );
+  });
+
   it('blocks volatile TODAY or NOW calendar anchors instead of accepting current-date bounds', () => {
     const m = model([
       tbl('Fact', [col('Fact', 'Date', 'dateTime')]),
@@ -1595,7 +1905,7 @@ describe('date grain planner', () => {
     ).toEqual([{ tableName: 'Actual', dateColumn: 'Date' }]);
   });
 
-  it('blocks live Date-table reliance when the source expression is not proven', () => {
+  it('WARNS (does not block) live Date-table reliance when the source expression is merely unreadable', () => {
     const m = {
       ...model([
         tbl('Actual', [
@@ -1644,6 +1954,7 @@ describe('date grain planner', () => {
             blankDateCount: 0,
             duplicateDateCount: 0,
             gapCount: 0,
+            nonMidnightTimeCount: 0,
             minDate: '2025-01-01T00:00:00',
             maxDate: '2025-01-10T00:00:00',
           },
@@ -1651,10 +1962,19 @@ describe('date grain planner', () => {
       },
     );
 
-    expect(result.status).toBe('blocked');
-    expect(result.blockers.map((blocker) => blocker.code)).toContain(
+    // An unreadable calendar source on a live Import model is structurally unobservable
+    // through the MS MCP (partitionSources is never populated live; a Power-Query Date table
+    // has no table-level expression), so absence is NOT proof of a defect. It must degrade
+    // to a relayed warning and the clean data probe must keep the table usable — otherwise
+    // proving the key from data would self-arm the refusal and deadlock every Import Date
+    // table. A positively-observed volatile/literal anchor is a separate blocker (covered
+    // by the volatile-calendar-anchor / literal-calendar-range tests).
+    expect(result.status).toBe('valid');
+    expect(result.blockers.map((blocker) => blocker.code)).not.toContain(
       'calendar-source-proof-missing',
     );
+    expect(result.warnings.map((warning) => warning.code)).toContain('calendar-source-unproven');
+    expect(result.markReadiness.ready).toBe(true);
   });
 
   it('rejects Date-table coverage proof for a different table identity', () => {

@@ -1,13 +1,12 @@
 #!/usr/bin/env node
-// pbi-report-mcp — MCP server exposing pbi-core's PBIR operations.
+// pbi-modeling-mcp — MCP server exposing governed semantic-model operations.
 //
 // Stdio transport. Designed to run as a child process of any MCP-capable
 // agent (Claude Code, Claude Desktop, Cursor, VS Code, Cline, …) and as
-// part of the pbi-mcp-ts plugin via its `.mcp.json`.
+// part of the pbi-agent-kit plugin via its `.mcp.json`.
 //
 // All tools are prefixed `pbi_` to avoid collision with Microsoft's
-// `@microsoft/powerbi-modeling-mcp` (which covers the modeling layer
-// side-by-side).
+// `@microsoft/powerbi-modeling-mcp` (which is wrapped behind this governed surface).
 
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
@@ -15,6 +14,8 @@ import { pathToFileURL } from 'node:url';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import {
+  GOVERNED_DATE_TABLE_ANNOTATIONS,
+  MAX_FUTURE_HORIZON_DAYS,
   type MeasureIntent,
   MeasureIntentSchema,
   type RegulatedEnterprisePolicyEvidence,
@@ -22,77 +23,35 @@ import {
   type TMDLModel,
   type TMDLRelationship,
   VERSION,
-  bookmarkAdd,
-  bookmarkDelete,
-  bookmarkGet,
-  bookmarkList,
-  bookmarkSetVisibility,
   buildDataDictionary,
   buildDateGrainProbeQuery,
   buildDateTableCoverageProbeQuery,
   buildModelFieldIndexFromModel,
+  buildTimeIntelligenceMeasureExpression,
+  calendarOvershootsFactDay,
+  compareByName,
   daxReferenceCheck,
   deriveRequiredDateCoverageFacts,
   expressionUsesTimeIntelligence,
-  filterAddCategorical,
-  filterAddRelativeDate,
-  filterAddTopN,
-  filterClear,
-  filterList,
-  filterRemove,
   findCalendarSourceRisks,
   findColumn,
   findMeasure,
-  formatBackgroundConditional,
-  formatBackgroundGradient,
-  formatBackgroundMeasure,
-  formatClear,
-  formatGet,
   isNumericType,
   isTemporalType,
-  layoutColumn,
-  layoutGrid,
-  layoutRow,
+  isYearEndDateLiteral,
   modelDoctor,
   modelDoctorFromFolder,
   normalizeDataType,
-  pageAdd,
-  pageDelete,
-  pageGet,
-  pageList,
-  pageSetBackground,
-  pageSetVisibility,
+  parseBarePeriodToDate,
   parseDateGrainProbeResult,
   parseDateTableCoverageProbeResult,
   parseTMDLFolder,
   planDateGrain,
   planDateTableCoverage,
   planStarSchemaSharedDimensions,
+  readGovernedDatePolicy,
   relationshipCheck,
-  reportConvert,
-  reportCreate,
-  reportInfo,
-  resolveReportPath,
-  themeDiff,
-  themeGet,
-  themeSet,
   validateDashboardSpec,
-  validateReportFull,
-  validateVisualBindingPlan,
-  visualAdd,
-  visualBind,
-  visualBulkBind,
-  visualBulkDelete,
-  visualBulkUpdate,
-  visualCalcAdd,
-  visualCalcDelete,
-  visualCalcList,
-  visualDelete,
-  visualGet,
-  visualList,
-  visualSetContainer,
-  visualUpdate,
-  visualWhere,
 } from 'pbi-core';
 import { z } from 'zod';
 import {
@@ -108,7 +67,7 @@ import { getMsMcpClient } from './model-bridge/ms-mcp-client.js';
 
 function createMcpServer(): McpServer {
   return new McpServer({
-    name: 'pbi-report-mcp-server',
+    name: 'pbi-modeling-mcp-server',
     version: VERSION,
   });
 }
@@ -134,57 +93,6 @@ type ToolDefinition = {
 };
 
 const toolDefinitions: ToolDefinition[] = [];
-
-const REPORT_DISK_WRITE_TOOL_PREFIXES = [
-  'pbi_report_',
-  'pbi_theme_',
-  'pbi_page_',
-  'pbi_visual_',
-  'pbi_filter_',
-  'pbi_bookmark_',
-  'pbi_format_',
-  'pbi_layout_',
-] as const;
-
-const REPORT_DISK_WRITE_PERSISTENCE = {
-  mode: 'pbir-disk',
-  userAction:
-    'Report changes were written to PBIR files on disk. If Power BI Desktop is already open on this report, do not press Ctrl+S from that stale in-memory copy; close/reopen or reload the .pbip so Desktop reads these disk changes first.',
-  saveRule:
-    'Ctrl+S is only for Desktop edits made after the .pbip has loaded the updated PBIR files.',
-} as const;
-
-const REPORT_DISK_WRITE_DESCRIPTION =
-  ' Writes PBIR files on DISK. If Power BI Desktop is already open on this report, do not tell the user to press Ctrl+S after this write; Desktop may overwrite the disk changes from stale in-memory state. Tell the user to close/reopen or reload the .pbip first.';
-
-function isReportDiskWriteTool(name: string, annotations: ToolAnnotations): boolean {
-  if (annotations.readOnlyHint === true) return false;
-  if (!REPORT_DISK_WRITE_TOOL_PREFIXES.some((prefix) => name.startsWith(prefix))) return false;
-  if (name === 'pbi_report_info' || name === 'pbi_report_validate') return false;
-  if (name === 'pbi_theme_get' || name === 'pbi_theme_diff') return false;
-  if (name === 'pbi_visual_where' || name === 'pbi_visual_get' || name === 'pbi_visual_list') {
-    return false;
-  }
-  if (name === 'pbi_visual_bind_check' || name === 'pbi_visual_calc_list') return false;
-  if (name === 'pbi_filter_list' || name === 'pbi_bookmark_list' || name === 'pbi_bookmark_get') {
-    return false;
-  }
-  if (name === 'pbi_format_get') return false;
-  return true;
-}
-
-function withReportDiskPersistence(result: unknown): unknown {
-  if (result !== null && typeof result === 'object' && !Array.isArray(result)) {
-    return {
-      ...(result as Record<string, unknown>),
-      reportPersistence: REPORT_DISK_WRITE_PERSISTENCE,
-    };
-  }
-  return {
-    value: result,
-    reportPersistence: REPORT_DISK_WRITE_PERSISTENCE,
-  };
-}
 
 function summarizeToolResult(name: string, result: unknown): string {
   if (result === null || result === undefined) return `${name}: ok`;
@@ -228,9 +136,7 @@ function registerToolDefinition(target: McpServer, definition: ToolDefinition): 
     definition.name,
     {
       title: definition.title,
-      description: isReportDiskWriteTool(definition.name, definition.annotations)
-        ? `${definition.description}${REPORT_DISK_WRITE_DESCRIPTION}`
-        : definition.description,
+      description: definition.description,
       inputSchema: definition.inputShape,
       annotations: { openWorldHint: false, ...definition.annotations },
     },
@@ -252,10 +158,7 @@ function tool<TShape extends z.ZodRawShape>(
   // biome-ignore lint/suspicious/noExplicitAny: SDK generic threading
   const callback: any = async (input: unknown) => {
     try {
-      const rawResult = await handler(input as z.infer<z.ZodObject<TShape>>);
-      const result = isReportDiskWriteTool(name, annotations)
-        ? withReportDiskPersistence(rawResult)
-        : rawResult;
+      const result = await handler(input as z.infer<z.ZodObject<TShape>>);
       const structured =
         result !== null && typeof result === 'object'
           ? (result as Record<string, unknown>)
@@ -294,16 +197,8 @@ function tool<TShape extends z.ZodRawShape>(
   registerToolDefinition(server, definition);
 }
 
-export type PbiMcpSurface = 'full' | 'modeling';
-
 export interface BuildServerOptions {
-  readonly surface?: PbiMcpSurface;
-}
-
-function resolveSurface(options: BuildServerOptions = {}): PbiMcpSurface {
-  const surface = options.surface ?? process.env.PBI_MCP_SURFACE ?? 'full';
-  if (surface === 'full' || surface === 'modeling') return surface;
-  throw new Error('PBI_MCP_SURFACE must be either "full" or "modeling".');
+  readonly surface?: 'modeling';
 }
 
 const MODELING_SURFACE_TOOL_NAMES: ReadonlySet<string> = new Set([
@@ -314,6 +209,7 @@ const MODELING_SURFACE_TOOL_NAMES: ReadonlySet<string> = new Set([
   'pbi_model_list_columns',
   'pbi_model_list_measures',
   'pbi_model_list_relationships',
+  'pbi_data_dictionary_get',
   'pbi_model_plan_star_schema_join',
   'pbi_model_plan_actuals_targets_join',
   'pbi_model_apply_star_schema_join',
@@ -342,26 +238,12 @@ const MODELING_SURFACE_TOOL_NAMES: ReadonlySet<string> = new Set([
   'pbi_spec_validate',
 ] as const);
 
-function isModelingSurfaceTool(name: string): boolean {
-  return MODELING_SURFACE_TOOL_NAMES.has(name);
-}
-
-function toolDefinitionsForSurface(surface: PbiMcpSurface): ReadonlyArray<ToolDefinition> {
-  if (surface === 'full') return toolDefinitions;
-  return toolDefinitions.filter((definition) => isModelingSurfaceTool(definition.name));
-}
-
 // Shared field-shape fragments.
-const PATH_FIELD = z
-  .string()
-  .optional()
-  .describe('Path to the .Report folder. Auto-detected from cwd if omitted.');
-const PAGE_FIELD = z.string().describe('Page name/id (e.g. "overview" or a 20-char hex id).');
-const VISUAL_FIELD = z.string().describe('Visual name/id within the page.');
 const LIVE_MODEL_PERSISTENCE =
   'Live semantic-model metadata is updated in Power BI Desktop — press Ctrl+S in Desktop to persist the model metadata.';
 const FOLDER_MODEL_PERSISTENCE = 'Call pbi_model_export to write the TMDL to disk.';
-const MAX_FUTURE_HORIZON_DAYS = 3660;
+// MAX_FUTURE_HORIZON_DAYS is imported from pbi-core so the zod input bound, the
+// relationship gate, and readGovernedDatePolicy's annotation clamp share one ceiling.
 const FUTURE_HORIZON_DAYS_FIELD = z
   .number()
   .int()
@@ -415,10 +297,6 @@ function dateProofParseShapeGuidance(): Record<string, unknown> {
   };
 }
 
-function resolvePath(p?: string): string {
-  return resolveReportPath(p);
-}
-
 function resolveSemanticModelDefinition(input?: string): string {
   const start = input ? path.resolve(input) : process.cwd();
   const candidates: string[] = [];
@@ -459,51 +337,6 @@ function resolveSemanticModelDefinition(input?: string): string {
     `Could not locate a .SemanticModel/definition folder from "${input ?? process.cwd()}". Pass an explicit modelPath.`,
   );
 }
-
-// =========================================================================
-// REPORT
-// =========================================================================
-
-tool(
-  'pbi_report_create',
-  'Create Power BI Report',
-  'Scaffold a new .pbip project with empty .Report and (optionally) blank .SemanticModel folders. Produces files Power BI Desktop (Mar 2026+) accepts.',
-  {
-    targetPath: z.string().describe('Directory under which <name>.Report/ is created.'),
-    name: z.string().describe('Logical report name (used for <name>.pbip and <name>.Report/).'),
-    datasetPath: z
-      .string()
-      .optional()
-      .describe(
-        'Optional path to existing .SemanticModel; if omitted a blank model is scaffolded.',
-      ),
-  },
-  { destructiveHint: false, idempotentHint: false },
-  (input) =>
-    reportCreate({
-      targetPath: input.targetPath,
-      name: input.name,
-      datasetPath: input.datasetPath,
-    }),
-);
-
-tool(
-  'pbi_report_info',
-  'Get Report Info',
-  'Read metadata summary: page count, theme, per-page visual counts. Reads PBIR files from DISK. Unsaved Desktop edits are invisible to this read until Desktop saves them; after report-tool disk writes, reopen/reload Desktop before saving.',
-  { path: PATH_FIELD },
-  { readOnlyHint: true, idempotentHint: true },
-  (input) => reportInfo(resolvePath(input.path)),
-);
-
-tool(
-  'pbi_report_validate',
-  'Validate Report',
-  'Run all 3 validation tiers (structural, schema, cross-file consistency). Returns errors/warnings/info.',
-  { path: PATH_FIELD },
-  { readOnlyHint: true, idempotentHint: true },
-  (input) => validateReportFull(resolvePath(input.path)),
-);
 
 tool(
   'pbi_model_check',
@@ -915,19 +748,26 @@ function tableInventory(
   model: TMDLModel,
   opts: { includeColumns?: boolean; includeMeasures?: boolean } = {},
 ): Array<Record<string, unknown>> {
-  return model.tables.map((table) => ({
-    name: table.name,
-    isHidden: table.isHidden,
-    isCalculated: table.isCalculated,
-    isAutoDateTable: table.isAutoDateTable,
-    dataCategory: table.dataCategory,
-    storageMode: table.storageMode,
-    description: table.description,
-    columnCount: table.columns.length,
-    measureCount: table.measures.length,
-    ...(opts.includeColumns ? { columns: table.columns } : {}),
-    ...(opts.includeMeasures ? { measures: table.measures } : {}),
-  }));
+  return (
+    model.tables
+      .map((table) => ({
+        name: table.name,
+        isHidden: table.isHidden,
+        isCalculated: table.isCalculated,
+        isAutoDateTable: table.isAutoDateTable,
+        dataCategory: table.dataCategory,
+        storageMode: table.storageMode,
+        description: table.description,
+        columnCount: table.columns.length,
+        measureCount: table.measures.length,
+        ...(opts.includeColumns ? { columns: table.columns } : {}),
+        ...(opts.includeMeasures ? { measures: table.measures } : {}),
+      }))
+      // Canonical code-unit name order so pbi_model_list_tables is byte-identical
+      // run-to-run. Folder mode is already canonical via the parser sort; this also
+      // normalizes LIVE mode, where model.tables arrives in host-return order.
+      .sort((a, b) => compareByName(a.name, b.name))
+  );
 }
 
 const LIVE_DISCOVERY_REMEDIATION = [
@@ -1561,7 +1401,16 @@ function inferCommonGovernedDateEndpoint(
         .map((relationship) => relationshipDateEndpointForFactRef(relationship, ref))
         .filter((endpoint): endpoint is { tableName: string; dateColumn: string } => {
           if (!endpoint) return false;
-          return looksLikeGovernedDateEndpoint(model, endpoint.tableName, endpoint.dateColumn);
+          // Mark-INDEPENDENT detection, consistent with the relationship/mark/coverage write
+          // gates (looksLikeDateRelationshipEndpoint + markReadiness.ready). The dataCategory
+          // "Time" mark is unobservable on a live Import read, so requiring it here made the
+          // actuals/targets readiness planner fail to recognize a real, fact-related, non-auto
+          // Date table — steering the agent to recreate/re-mark a table that is already the
+          // de-facto governed axis. A non-auto temporal column to which every participating
+          // fact has an active relationship IS that axis; the live coverage/grain proof that
+          // runs next in planActualsTargetsJoin enforces the actual data-cleanliness safety,
+          // and auto LocalDateTables are still excluded.
+          return looksLikeDateRelationshipEndpoint(model, endpoint.tableName, endpoint.dateColumn);
         }),
     );
     if (endpoints.length !== 1) return undefined;
@@ -1719,10 +1568,27 @@ async function planActualsTargetsJoin(
     ? dateGrainPlan.dateTableCoverage
     : undefined;
   const rawDateTableCoverageBlockers = dateTableCoverage ? records(dateTableCoverage.blockers) : [];
+  // Key off markReadiness.ready (data-proven-key aware), NOT coverage.status, exactly like
+  // enforceMarkAsDateGate (server.ts), enforceDateRelationshipWriteGate, and buildWritePlan.
+  // coverage.status is "blocked" purely because of the cosmetic date-table-not-marked /
+  // date-column-not-key blockers when an Import mark no-ops (or is unobservable), even though
+  // the key is fully data-proven and the table is usable. Using status here re-blocked this
+  // read-only readiness planner for a clean, data-proven, unmarked, source-less Import Date
+  // table and steered the agent to recreate/re-mark it — the same deadlock the write gates
+  // already removed. markReadiness.blockingForMark drops the two cosmetic premark codes when
+  // the key is proven from data while keeping every real proof blocker (blanks/dups/gaps/
+  // time/coverage/source-risk/end-after-fact-max).
+  const coverageMarkReadiness = isRecord(dateTableCoverage?.markReadiness)
+    ? dateTableCoverage.markReadiness
+    : undefined;
+  const coverageReady = coverageMarkReadiness?.ready === true;
+  const blockingForMark = coverageMarkReadiness
+    ? records(coverageMarkReadiness.blockingForMark)
+    : rawDateTableCoverageBlockers;
   const dateTableCoverageBlockers =
-    dateTableCoverage && dateTableCoverage.status !== 'valid'
-      ? rawDateTableCoverageBlockers.length > 0
-        ? rawDateTableCoverageBlockers
+    dateTableCoverage && !coverageReady
+      ? blockingForMark.length > 0
+        ? blockingForMark
         : [
             {
               code: 'date-table-coverage-not-valid',
@@ -1732,6 +1598,11 @@ async function planActualsTargetsJoin(
             },
           ]
       : [];
+  // Relay the non-blocking calendar-source caveat (unreadable Import source) so the agent
+  // surfaces an honest warning instead of a refusal.
+  const dateTableCoverageWarnings = dateTableCoverage
+    ? records(dateTableCoverage.warnings).map((warning) => String(warning.message ?? ''))
+    : [];
   const blockers = [
     ...sourceBlockers('star-schema', starBlockers),
     ...sourceBlockers('date-grain', dateBlockers),
@@ -1782,6 +1653,9 @@ async function planActualsTargetsJoin(
     dateGrainPlan,
     remainingBusinessQuestions: actualsTargetsRemainingBusinessQuestions(),
     ...(blockers.length > 0 ? { blockers } : {}),
+    ...(dateTableCoverageWarnings.length > 0
+      ? { dateTableWarnings: dateTableCoverageWarnings }
+      : {}),
     ...(requiredInputs.length > 0 ? { requiredInputs } : {}),
   };
 }
@@ -2234,14 +2108,19 @@ async function gateStarSchemaCreateRelationshipWrite(
       warnings: check.warnings,
     });
   }
-  await enforceDateRelationshipWriteGate(
+  const dateTableWarnings = await enforceDateRelationshipWriteGate(
     'live',
     model,
     connection,
     write,
     'create-date-relationship',
   );
-  return [...check.warnings];
+  // Relay the non-blocking calendar-source caveat (unreadable Import source) as a warning
+  // reason so star-schema apply surfaces it honestly instead of silently dropping it.
+  return [
+    ...check.warnings,
+    ...dateTableWarnings.map((message) => ({ code: 'calendar-source-unproven', message })),
+  ];
 }
 
 async function gateStarSchemaRepairRelationshipWrite(
@@ -3133,7 +3012,7 @@ function governedDateTableQuestions(
     questions.push({
       id: 'date_range_policy',
       prompt:
-        'What Date table range policy should be used: exact observed min/max fact dates, full observed calendar years, or an explicit future-horizon extension?',
+        'What Date table range policy should be used? (1) observed-min-max — the calendar ENDS at the last real fact date [DEFAULT for historical YTD/QTD/MTD reporting; no forecasting]; (2) observed-full-years — pad to whole calendar years (Jan 1–Dec 31) around the observed data; (3) observed-min-max-plus-future-horizon / observed-full-years-plus-future-horizon — extend the calendar past the last fact date, ONLY when explicitly modeling future/budget/forecast dates. Note: any future-horizon policy makes default-context (no date slicer) time-intelligence measures return BLANK over the empty future tail, so do not choose it for plain historical analysis.',
       requiredFor: 'Date table creation',
     });
   }
@@ -3523,6 +3402,42 @@ async function createGovernedDateTable(
   );
   const markResult = await drv.markAsDateTable(input.tableName, input.dateColumn, connection);
 
+  // Persist the calendar-range/horizon policy as a table annotation so later mark/relationship/
+  // plan steps don't re-block on end-after-fact-max or require re-supplying futureHorizonDays
+  // (P5/circular). Best-effort: the MS MCP annotation write shape is UNVERIFIED, so a rejection
+  // degrades to a warning and never blocks the governed create.
+  let dateTablePolicyStamp: Record<string, unknown>;
+  try {
+    await drv.updateTable(
+      {
+        name: input.tableName,
+        annotations: {
+          [GOVERNED_DATE_TABLE_ANNOTATIONS.governedByTool]: 'true',
+          [GOVERNED_DATE_TABLE_ANNOTATIONS.rangePolicy]: rangePolicy,
+          [GOVERNED_DATE_TABLE_ANNOTATIONS.futureHorizonDays]: String(input.futureHorizonDays ?? 0),
+        },
+      },
+      connection,
+    );
+    // The annotation write is accepted by the host, but tableUpdateApplied does NOT
+    // assert annotations on read-back (the annotation wire shape is UNVERIFIED), so we
+    // cannot confirm the stamp actually persisted. Report it honestly as attempted-but-
+    // unverified rather than a definitive stamped:true the agent would over-trust. (If
+    // the stamp did not persist, the only consequence is later steps re-run the proof.)
+    dateTablePolicyStamp = {
+      stamped: true,
+      verified: false,
+      note: 'Annotation write accepted but not verified on read-back (annotations are not asserted; UNVERIFIED MS MCP write shape). If it did not persist, later steps will re-run the date proof.',
+    };
+  } catch (err) {
+    dateTablePolicyStamp = {
+      stamped: false,
+      warning:
+        'Could not persist the governed Date-table range/horizon policy annotation (UNVERIFIED MS MCP write shape). Non-fatal; later steps may re-require futureHorizonDays until verified on a live model.',
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+
   const relationshipResults: unknown[] = [];
   if (input.createRelationships !== false) {
     const afterMark = await readDriverSnapshot(
@@ -3670,18 +3585,43 @@ async function createGovernedDateTable(
     coverageEvidence,
   );
 
+  // Deterministic, dataset-agnostic warning: a future-horizon calendar extends past
+  // the last fact date, so default-context (no date slicer) TOTALYTD/QTD/MTD will be
+  // BLANK over the empty future tail. Surface this as an expected consequence instead
+  // of letting it resurface later as a "measures came back empty" bug.
+  const futureHorizonWarning = rangePolicy.includes('future-horizon')
+    ? 'This Date table extends beyond the last fact date (future-horizon policy). Default-context period-to-date measures (TOTALYTD/QTD/MTD) will return BLANK without a date selection. Add a date slicer, or author the measures to default to the last date with data (cap the upper bound per measure, at day grain). For pure historical reporting, recreate with rangePolicy "observed-min-max".'
+    : undefined;
+
+  // A no-op dataCategory mark (Import host accepted but did not reflect it) must
+  // NOT report the whole governed create as "blocked": the table, data-proven key,
+  // and relationships are all committed and usable. Surface it as a non-blocking
+  // warning so the agent reports it honestly instead of inventing manual Desktop
+  // steps or treating the table as unusable.
+  const markNotApplied = isRecord(markResult) && markResult.dataCategoryNotApplied === true;
+  const markWarning = markNotApplied
+    ? `The Date table was created and its key is proven from data, but the host did not reflect the dataCategory="Time" mark on a fresh read (a known Import-mode metadata no-op). Relationships and explicit-column time intelligence (TOTALYTD(<measure>, '${input.tableName}'[${input.dateColumn}])) work regardless. Built-in/implicit time intelligence and the Date-hierarchy UX stay off until the table is marked in Power BI Desktop (Model view → right-click → Mark as date table). Do NOT block on this and do NOT claim Import tables cannot be marked.`
+    : undefined;
+  // Use markReadiness.ready (data-proven-key aware), not coverage.status: status is
+  // "blocked" purely because of the cosmetic date-table-not-marked blocker when the
+  // mark no-ops, even though the table is fully usable. markReadiness.ready keeps
+  // every real proof blocker but ignores the cosmetic mark when the key is proven.
+  const usable = coverage.markReadiness.ready && !coverageParseShapeBlocker;
   return {
-    status: coverage.status === 'valid' && !coverageParseShapeBlocker ? 'created' : 'blocked',
+    status: usable ? 'created' : 'blocked',
     mode,
     tableName: input.tableName,
     dateColumn: input.dateColumn,
     rangePolicy,
     futureHorizonDays: input.futureHorizonDays ?? 0,
+    ...(futureHorizonWarning ? { futureHorizonWarning } : {}),
+    ...(markWarning ? { markWarning } : {}),
     expression,
     refreshes,
     createResult,
     columnMetadataResults,
     markResult,
+    dateTablePolicyStamp,
     relationshipResults,
     coverage,
     ...(coverageParseShapeBlocker
@@ -3691,7 +3631,7 @@ async function createGovernedDateTable(
         }
       : {}),
     ...(coverageProbeError !== undefined ? { coverageProbeError } : {}),
-    ...(coverage.status !== 'valid' && coverageQuery && !coverageParseShapeBlocker
+    ...(!usable && coverageQuery && !coverageParseShapeBlocker
       ? { probeDiagnostics: coverageDiagnostics ?? daxResultDiagnostics(rawCoverage) }
       : {}),
     persist: LIVE_MODEL_PERSISTENCE,
@@ -3775,9 +3715,16 @@ async function enforceDateRelationshipWriteGate(
         }>;
         readonly allowCalendarEndAfterFactMax?: boolean;
       } = 0,
-): Promise<void> {
-  const futureHorizonDays =
-    typeof gateOptions === 'number' ? gateOptions : (gateOptions.futureHorizonDays ?? 0);
+): Promise<string[]> {
+  // Seed the calendar-range/horizon policy from the Date table's persisted governed stamp
+  // when the caller omits it, so a governed full-years Date table does not re-block on
+  // end-after-fact-max and callers need not re-supply futureHorizonDays (P5/circular).
+  const governedDatePolicy = readGovernedDatePolicy(
+    model.tables.find((table) => table.name === candidate.toTable),
+  );
+  const requestedFutureHorizonDays =
+    typeof gateOptions === 'number' ? gateOptions : gateOptions.futureHorizonDays;
+  const futureHorizonDays = requestedFutureHorizonDays ?? governedDatePolicy.futureHorizonDays ?? 0;
   if (futureHorizonDays > MAX_FUTURE_HORIZON_DAYS) {
     throwDateGateError(
       `Date relationship write refused: futureHorizonDays exceeds ${MAX_FUTURE_HORIZON_DAYS}.`,
@@ -3800,15 +3747,27 @@ async function enforceDateRelationshipWriteGate(
       : (gateOptions.gate ?? 'date-grain-write-gate');
   const coverageFacts = typeof gateOptions === 'number' ? undefined : gateOptions.coverageFacts;
   const allowCalendarEndAfterFactMax =
-    typeof gateOptions === 'number' ? false : gateOptions.allowCalendarEndAfterFactMax === true;
-  if (!looksLikeDateRelationshipCandidate(model, candidate)) return;
-  if (!looksLikeGovernedDateEndpoint(model, candidate.toTable, candidate.toColumn)) {
+    (typeof gateOptions === 'number' ? undefined : gateOptions.allowCalendarEndAfterFactMax) ??
+    governedDatePolicy.allowCalendarEndAfterFactMax ??
+    false;
+  if (!looksLikeDateRelationshipCandidate(model, candidate)) return [];
+  // The endpoint must be a real, non-auto temporal column — but NOT necessarily
+  // carry the dataCategory="Time" mark. The mark is a host-side metadata write
+  // that silently no-ops on Import models (markAsDateTable returns
+  // dataCategoryNotApplied), and gating relationship creation on its read-back
+  // deadlocks a relationship whose key is fully proven from data. TOM allows the
+  // relationship regardless of the mark, and explicit-column time intelligence
+  // (TOTALYTD(<m>, 'Date'[Date])) works on an unmarked-but-data-proven contiguous
+  // key. The real safety — a unique, contiguous, non-blank daily key that covers
+  // every fact — is enforced below by the live coverage/grain proof via
+  // markReadiness.ready, exactly as the mark gate already does (P-livewrite).
+  if (!looksLikeDateRelationshipEndpoint(model, candidate.toTable, candidate.toColumn)) {
     throwDateGateError(
-      'Date relationship write refused: target date endpoint is not a governed marked Date table/key.',
+      'Date relationship write refused: target date endpoint is not a governed temporal date column (missing/non-date column, or an auto LocalDateTable).',
       {
         gate,
         status: 'blocked',
-        reason: 'date-endpoint-not-governed',
+        reason: 'date-endpoint-not-temporal',
         candidate,
       },
     );
@@ -3904,7 +3863,15 @@ async function enforceDateRelationshipWriteGate(
     },
     coverageEvidence,
   );
-  if (coverage.status !== 'valid') {
+  // Use markReadiness.ready, not coverage.status: ready drops the two cosmetic
+  // pre-mark blockers (date-table-not-marked / date-column-not-key) WHEN the key is
+  // proven from data, while keeping every real proof blocker (blanks, duplicates,
+  // gaps, time component, missing coverage, end-after-fact-max, source risk). This
+  // mirrors the mark gate (enforceMarkAsDateGate) so a no-op dataCategory mark can
+  // no longer deadlock a relationship whose key is fully data-proven, but a genuine
+  // data defect still blocks. coverage.status alone would re-block on the cosmetic
+  // mark and reintroduce the deadlock this gate just removed above.
+  if (!coverage.markReadiness.ready) {
     throwDateGateError('Date relationship write refused: Date-table coverage proof is blocked.', {
       gate,
       status: 'blocked',
@@ -3983,6 +3950,9 @@ async function enforceDateRelationshipWriteGate(
       },
     );
   }
+  // Relay non-blocking caveats (e.g. an unreadable calendar source on a live Import model)
+  // so the caller can surface them honestly; they did NOT refuse the relationship write.
+  return coverage.warnings.map((warning) => warning.message);
 }
 
 function looksLikeDateRelationshipCandidate(
@@ -4017,6 +3987,23 @@ function looksLikeGovernedDateEndpoint(
   const temporal = isTemporalDataType(column.dataType);
   const marked = isTimeDataCategory(table.dataCategory) || isTimeDataCategory(column.dataCategory);
   return temporal && marked;
+}
+
+// A valid Date-relationship endpoint: a real, non-auto temporal date column. This
+// deliberately does NOT require the dataCategory="Time" mark — the mark is a
+// host-side metadata write that silently no-ops on Import models, and the actual
+// data-proven-key safety is enforced separately by the live coverage/grain proof
+// (markReadiness.ready). The auto LocalDateTable exclusion is kept because binding
+// to an engine-generated date table is never the intended governed endpoint.
+function looksLikeDateRelationshipEndpoint(
+  model: TMDLModel,
+  tableName: string,
+  columnName: string,
+): boolean {
+  const table = model.tables.find((candidate) => candidate.name === tableName);
+  const column = findModelColumn(model, tableName, columnName);
+  if (!table || !column || table.isAutoDateTable) return false;
+  return isTemporalDataType(column.dataType);
 }
 
 function findModelColumn(
@@ -4190,6 +4177,194 @@ function hasMeasureIntentTimeEvidence(
   );
 }
 
+// Default-context BLANK guard for period-to-date measures. A bare
+// TOTALYTD/QTD/MTD over a Date table whose calendar extends past THIS measure's
+// own fact returns BLANK with no date slicer — the exact field failure, and the
+// common multi-fact case where one shared Date table spans the union of fact
+// max-dates (observed-min-max cannot fix it; the calendar must still cover the
+// longer fact). Detect it with a live max-vs-max probe and refuse with the
+// deterministic capped (shape-B) expression, so a silently-blank measure is never
+// written. Dataset-agnostic: every name flows from the measure intent / probe.
+// A probe failure never blocks authoring — the honest write proceeds.
+async function enforceTimeIntelligenceNotBlankInDefaultContext(
+  connection: ConnectionInfo,
+  model: TMDLModel,
+  toolName: string,
+  measureName: string,
+  expression: string,
+  intent: MeasureIntent | undefined,
+): Promise<string | undefined> {
+  if (!expressionUsesTimeIntelligence(expression)) return undefined;
+  const bare = parseBarePeriodToDate(expression);
+  if (!bare) return undefined;
+  const time = intent?.timeIntelligence;
+  if (
+    time?.dateTable === undefined ||
+    time.dateColumn === undefined ||
+    (time.dateRefs?.length ?? 0) === 0
+  ) {
+    return undefined;
+  }
+  const facts = (time.dateRefs ?? []).map((ref) => ({
+    tableName: ref.table,
+    dateColumn: ref.column,
+  }));
+  const query = buildDateTableCoverageProbeQuery(model, {
+    dateTable: time.dateTable,
+    dateColumn: time.dateColumn,
+    facts,
+  });
+  if (!query) return undefined;
+  let raw: unknown;
+  try {
+    raw = await getModelDriver().daxQuery(query, connection, { includeRawDiagnostics: true });
+  } catch (err) {
+    // The probe could not run. Do NOT fail closed (that would block legitimate authoring
+    // on a transient probe error), but do NOT fail SILENTLY either — return a warning so
+    // the caller can distinguish "proven not-blank" from "could not prove", instead of an
+    // unobservable fail-open that lets a possibly-blank measure through quietly.
+    return `Could not verify default-context blank-risk for "${measureName}": the Date/fact max-date probe failed (${err instanceof Error ? err.message : String(err)}). The measure was written, but if the Date table extends past this measure's fact, a bare ${bare.period} will be BLANK without a date slicer — re-check, or use the per-fact upper-bound cap from buildTimeIntelligenceMeasureExpression.`;
+  }
+  const evidence = parseDateTableCoverageProbeResult(raw);
+  const calendarMaxDate = evidence.dateTable?.maxDate;
+  const overshootFacts = facts.filter((fact) => {
+    const factEvidence = evidence.facts.find(
+      (candidate) =>
+        candidate.tableName === fact.tableName && candidate.dateColumn === fact.dateColumn,
+    );
+    return calendarOvershootsFactDay(calendarMaxDate, factEvidence?.maxDate);
+  });
+  if (overshootFacts.length === 0) return;
+  // Pick the overshoot fact deterministically: prefer the one whose table the
+  // measure's base expression actually aggregates (so the cap anchors to the right
+  // fact in a multi-fact intent), falling back to the first overshooting fact.
+  const overshootFact =
+    overshootFacts.find((fact) =>
+      baseExpressionReferencesTable(bare.baseExpression, fact.tableName),
+    ) ?? overshootFacts[0];
+  if (!overshootFact) return;
+
+  // The measure's actual date axis must match the intent's declared Date axis. If a
+  // user authored the period-to-date over a DIFFERENT calendar than intent declares,
+  // rebuilding the cap on the intent's axis would silently swap the calendar and
+  // change every value — refuse instead of guessing.
+  const declaredDatesRef = `'${time.dateTable.replace(/'/g, "''")}'[${time.dateColumn}]`;
+  if (normalizeDaxRef(bare.datesRef) !== normalizeDaxRef(declaredDatesRef)) {
+    throwInputValidationError(
+      `Measure write refused: "${measureName}" applies ${bare.period} over ${bare.datesRef}, but its declared time-intelligence date axis is ${declaredDatesRef}. Re-point the measure to the declared Date axis, or correct the intent — the blank-risk cap will not silently swap the calendar.`,
+      {
+        tool: toolName,
+        reason: 'time-intelligence-date-axis-mismatch',
+        measureName,
+        expressionDatesRef: bare.datesRef,
+        declaredDatesRef,
+      },
+    );
+  }
+
+  // Extra top-level TOTAL*TD args (a fiscal year_end_date and/or a filter predicate)
+  // must NOT be silently dropped by the rebuild — that would change the result. Only a
+  // recognized fiscal year-end literal (YTD) can be safely re-threaded; anything else
+  // (a filter, a non-YTD extra arg, or multiple extras) is refused with a manual-cap
+  // instruction instead of an auto-correction that loses the user's filtering.
+  let yearEndDate: string | undefined;
+  if (bare.extraArgs.length > 0) {
+    const soleYearEnd =
+      bare.period === 'YTD' &&
+      bare.extraArgs.length === 1 &&
+      bare.extraArgs[0] !== undefined &&
+      isYearEndDateLiteral(bare.extraArgs[0]);
+    if (soleYearEnd) {
+      yearEndDate = bare.extraArgs[0];
+    } else {
+      throwInputValidationError(
+        `Measure write refused: "${measureName}" is a bare ${bare.period} measure whose Date table extends past "${overshootFact.tableName}"[${overshootFact.dateColumn}] (BLANK in default context), but it carries additional TOTAL*TD argument(s) (${bare.extraArgs.join(', ')}) that cannot be re-threaded automatically without changing the result. Add the upper-bound cap by hand: wrap the base with a "<date> <= last-data-date" filter (see buildTimeIntelligenceMeasureExpression shape B).`,
+        {
+          tool: toolName,
+          reason: 'time-intelligence-default-context-blank-risk-manual',
+          measureName,
+          period: bare.period,
+          extraArgs: bare.extraArgs,
+          fact: overshootFact,
+          calendarMaxDate: calendarMaxDate ?? null,
+        },
+      );
+    }
+  }
+
+  const correctedExpression = buildTimeIntelligenceMeasureExpression({
+    period: bare.period,
+    baseExpression: bare.baseExpression,
+    dateTable: time.dateTable,
+    dateKeyColumn: time.dateColumn,
+    ...(yearEndDate !== undefined ? { yearEndDate } : {}),
+    lastDataDate: {
+      factTable: overshootFact.tableName,
+      factDateColumn: overshootFact.dateColumn,
+    },
+  });
+  throwInputValidationError(
+    `Measure write refused: "${measureName}" is a bare ${bare.period} measure, but the Date table "${time.dateTable}" extends past the last date in "${overshootFact.tableName}"[${overshootFact.dateColumn}], so it returns BLANK in default (no-slicer) context. Write the capped expression in correctedExpression instead — it caps the upper bound at this fact's last data date, per measure, at day grain, so default, slicer, and drill-down contexts are all correct.`,
+    {
+      tool: toolName,
+      reason: 'time-intelligence-default-context-blank-risk',
+      measureName,
+      period: bare.period,
+      dateTable: time.dateTable,
+      dateColumn: time.dateColumn,
+      fact: overshootFact,
+      calendarMaxDate: calendarMaxDate ?? null,
+      correctedExpression,
+    },
+  );
+}
+
+// Normalize a DAX column ref for comparison: drop whitespace AND surrounding single
+// quotes so quoting/spacing differences do not produce false mismatches. DAX treats an
+// unquoted single-token table name identically to its quoted form (Calendar[Date] ==
+// 'Calendar'[Date]), so a same-axis measure authored either way must compare equal —
+// otherwise a correctly-authored unquoted measure is wrongly refused as an axis mismatch.
+function normalizeDaxRef(ref: string): string {
+  // Case-INSENSITIVE: DAX identifiers are case-insensitive, so 'Calendar'[Date] and
+  // 'Calendar'[date] are the SAME axis and must compare equal (else a same-axis measure
+  // authored with different casing is falsely refused as an axis mismatch). Whitespace and
+  // the outer table quotes are also normalized so 'Calendar'[Date] == Calendar[Date].
+  return ref.replace(/\s+/g, '').replace(/'/g, '').toLowerCase();
+}
+
+// True when a TOTAL*TD base expression references the given table by its DAX-quoted
+// name ('Table'[...]) — a structural, dataset-agnostic check used to anchor the cap
+// to the fact the measure actually aggregates. Falls back gracefully (no match) so
+// callers default to the first overshooting fact.
+function baseExpressionReferencesTable(baseExpression: string, tableName: string): boolean {
+  const quoted = `'${tableName.replace(/'/g, "''")}'`;
+  return baseExpression.includes(quoted) || baseExpression.includes(`${tableName}[`);
+}
+
+// Best-effort, dataset-agnostic pre-flight DAX reference check for a calculated-column
+// expression. ADVISORY ONLY (never blocks): the live engine also validates on write,
+// but that rejection is UNVERIFIED against the MS modeling MCP, so surfacing an
+// obviously-broken reference up front (the same deterministic gate the measure path
+// runs) is strictly better than relying on the engine alone. Bare `[Column]` refs
+// resolve against the hostTable row context, so normal self/sibling references do not
+// false-positive. Returns undefined when there is no expression or it resolves cleanly.
+function calcExpressionReferenceAdvisory(
+  model: TMDLModel,
+  hostTable: string,
+  expression: string | undefined,
+): Record<string, unknown> | undefined {
+  if (expression === undefined || expression.trim() === '') return undefined;
+  const check = daxReferenceCheck(expression, model, { hostTable });
+  if (check.valid) return undefined;
+  return {
+    advisory: 'calc-expression-reference-check',
+    note: 'Pre-flight reference check found names that do not resolve in the current model. The engine also validates on write; confirm these are intended (e.g. a sibling column created in the same batch) rather than a typo before relying on the calculated column.',
+    ...(check.missing.length > 0 ? { missing: check.missing.map((r) => r.raw) } : {}),
+    ...(check.ambiguous.length > 0 ? { ambiguous: check.ambiguous.map((r) => r.raw) } : {}),
+    ...(check.unsupported.length > 0 ? { unsupported: check.unsupported } : {}),
+  };
+}
+
 function enforceProvenRelationshipIdentity(
   relationship: TMDLRelationship,
   operation: string,
@@ -4317,6 +4492,14 @@ function looksLikeCalendarTableCreate(input: {
   readonly expression?: string;
   readonly mExpression?: string;
 }): boolean {
+  // The NAME heuristic is a genuine second signal, NOT redundant with the expression
+  // patterns: it catches date tables built via shapes the patterns below miss (e.g.
+  // SELECTCOLUMNS of a source date column), routing them to the governed date-table
+  // tool. It is an English-language routing convenience (false positives are low-harm —
+  // a clear "use the governed tool" message), consistent with the name heuristics used
+  // elsewhere in the deterministic layer (grain.ts). NOTE (audit D1, deferred): the
+  // token list is English-only; a future improvement could make it configurable for
+  // non-English models without weakening this guardrail.
   if (looksLikeCalendarTableName(input.name)) return true;
   const expression = [input.expression, input.mExpression].filter(Boolean).join('\n');
   return (
@@ -4350,7 +4533,7 @@ async function enforceMarkAsDateGate(
   facts: ReadonlyArray<{ readonly tableName: string; readonly dateColumn: string }>,
   futureHorizonDays: number | undefined,
   allowCalendarEndAfterFactMax = false,
-): Promise<void> {
+): Promise<string[]> {
   const table = model.tables.find((candidate) => candidate.name === tableName);
   const column = table?.columns.find((candidate) => candidate.name === dateColumn);
   if (!table || !column || table.isAutoDateTable || !isTemporalType(column.dataType)) {
@@ -4434,9 +4617,12 @@ async function enforceMarkAsDateGate(
     },
     evidence,
   );
-  const blockers = coverage.blockers.filter(
-    (blocker) => blocker.code !== 'date-table-not-marked' && blocker.code !== 'date-column-not-key',
-  );
+  // Single-source the allowed-blocker policy from the planner's data-proven readiness signal
+  // instead of inlining a code filter here (P2/P3). markReadiness.blockingForMark drops the
+  // two pre-mark metadata blockers (date-table-not-marked, date-column-not-key) ONLY when the
+  // key is proven from data — so an Import Date table whose isKey write was rejected still
+  // marks, while every real proof blocker (blanks/dups/gaps/time/coverage/source/end-after) holds.
+  const blockers = coverage.markReadiness.blockingForMark;
   if (blockers.length > 0) {
     throwDateGateError('Mark-as-date refused: date-table coverage/key proof is blocked.', {
       gate: 'mark-as-date-table-gate',
@@ -4447,6 +4633,9 @@ async function enforceMarkAsDateGate(
       probeDiagnostics: diagnostics,
     });
   }
+  // Relay non-blocking caveats (e.g. an unreadable calendar source on a live Import model)
+  // so the caller can surface them honestly; they did NOT refuse the mark.
+  return coverage.warnings.map((warning) => warning.message);
 }
 
 tool(
@@ -4788,17 +4977,36 @@ tool(
 tool(
   'pbi_model_refresh',
   'Refresh Live Model',
-  'Refresh/process the connected live Power BI Desktop semantic model through the Microsoft Modeling MCP only when the user explicitly authorizes processing/import refresh. Use this instead of asking the user to click Refresh when a modeling workflow needs Import data materialized. Never use this as a fallback after proof-parse-shape-unrecognized, parse-shape-unrecognized/evidenceRows:0 from a ROW()-based Date proof, or any Date proof blocker that instructs STOP. Folder mode is refused because refresh is a live engine operation.',
+  'Refresh/process the connected live Power BI Desktop semantic model through the Microsoft Modeling MCP only when the user explicitly authorizes processing/import refresh. Requires confirmReprocess:true (an explicit per-call authorization) because a refresh re-processes Import data and can change every measure value and probe result. Use this instead of asking the user to click Refresh when a modeling workflow needs Import data materialized. Never use this as a fallback after proof-parse-shape-unrecognized, parse-shape-unrecognized/evidenceRows:0 from a ROW()-based Date proof, or any Date proof blocker that instructs STOP. Folder mode is refused because refresh is a live engine operation.',
   {
     refreshType: z
       .enum(['Automatic', 'Full', 'Calculate'])
       .optional()
       .describe('Defaults to Automatic. Use Calculate after calculated-table metadata writes.'),
+    confirmReprocess: z
+      .boolean()
+      .optional()
+      .describe(
+        'Must be explicitly true to authorize the reprocess. A refresh re-materializes Import data and can change measure values and probe results, so it is gated behind this per-call consent rather than being callable as a silent fallback.',
+      ),
     folderPath: MODEL_FOLDER_FIELD,
     model: MODEL_SELECT_FIELD,
   },
   { destructiveHint: false, idempotentHint: true },
   async (input) => {
+    // Deterministic authorization backstop: a result-affecting reprocess must carry an
+    // explicit confirmReprocess:true, so an agent cannot invoke it as a silent fallback
+    // (e.g. to turn a parse-shape-unrecognized STOP into a re-probe). Mirrors the
+    // refreshBeforeProbe gate used inside the governed Date-create path.
+    if (input.confirmReprocess !== true) {
+      throwInputValidationError(
+        'Model refresh refused: a reprocess re-materializes Import data and can change measure values, so it requires explicit authorization. Re-call with confirmReprocess:true only when the user has approved processing/import refresh.',
+        {
+          tool: 'pbi_model_refresh',
+          reason: 'refresh-not-authorized',
+        },
+      );
+    }
     const drv = getModelDriver();
     const connection = await connectModel(drv, input.folderPath, input.model);
     if (connection.mode !== 'live') {
@@ -4920,6 +5128,14 @@ tool(
       input.measureIntent,
       model,
     );
+    const blankRiskWarning = await enforceTimeIntelligenceNotBlankInDefaultContext(
+      connection,
+      model,
+      'pbi_measure_create',
+      input.name,
+      input.expression,
+      input.measureIntent,
+    );
     const check = daxReferenceCheck(input.expression, model, { hostTable: input.tableName });
     if (!check.valid) {
       const missingTables = missingDaxReferenceTables(check.missing, model);
@@ -4960,6 +5176,9 @@ tool(
       created: true,
       mode,
       persist: mode === 'live' ? LIVE_MODEL_PERSISTENCE : FOLDER_MODEL_PERSISTENCE,
+      // Surface the blank-risk probe-failure warning so a "could not verify" is not lost
+      // (the gate returns it instead of failing open silently when the probe errors).
+      ...(blankRiskWarning ? { blankRiskWarning } : {}),
       result,
     };
   },
@@ -5017,7 +5236,16 @@ tool(
       input.measureIntent,
       model,
     );
+    let blankRiskWarning: string | undefined;
     if (input.expression !== undefined) {
+      blankRiskWarning = await enforceTimeIntelligenceNotBlankInDefaultContext(
+        connection,
+        model,
+        'pbi_measure_update',
+        input.name,
+        input.expression,
+        input.measureIntent,
+      );
       const check = daxReferenceCheck(input.expression, model, { hostTable: input.tableName });
       if (!check.valid) {
         const missingTables = missingDaxReferenceTables(check.missing, model);
@@ -5055,7 +5283,12 @@ tool(
       },
       connection,
     );
-    return { updated: true, mode, result };
+    return {
+      updated: true,
+      mode,
+      ...(blankRiskWarning ? { blankRiskWarning } : {}),
+      result,
+    };
   },
 );
 
@@ -5447,7 +5680,24 @@ tool(
       includeMeasures: true,
       includeRoles: false,
     });
-    await enforceMarkAsDateGate(
+    // Circular-proof short-circuit (P4/P2): a table our governed creator already proved and
+    // marked carries the governedByTool stamp. Honor the advertised idempotent no-op and skip
+    // the heavy coverage re-probe — but still CONFIRM dataCategory='Time' on the fresh snapshot
+    // so we never report a stale no-op as success.
+    const preTable = model.tables.find((candidate) => candidate.name === input.tableName);
+    if (
+      preTable !== undefined &&
+      readGovernedDatePolicy(preTable).governedByTool &&
+      looksLikeGovernedDateEndpoint(model, input.tableName, input.dateColumn)
+    ) {
+      return {
+        marked: true,
+        alreadyMarked: true,
+        mode,
+        persist: mode === 'live' ? LIVE_MODEL_PERSISTENCE : FOLDER_MODEL_PERSISTENCE,
+      };
+    }
+    const markGateWarnings = await enforceMarkAsDateGate(
       mode,
       model,
       connection,
@@ -5457,30 +5707,49 @@ tool(
       input.futureHorizonDays,
     );
     const result = await drv.markAsDateTable(input.tableName, input.dateColumn, connection);
-    const verified = await readDriverSnapshot(
-      drv,
-      mode === 'live' ? '(live)' : undefined,
-      {
-        includeMeasures: false,
-        includeRoles: false,
-      },
-      connection,
-    );
-    if (!looksLikeGovernedDateEndpoint(verified, input.tableName, input.dateColumn)) {
-      throwDateGateError(
-        'Mark-as-date refused: write completed but the model snapshot did not show the table as a governed Date table/key.',
-        {
-          gate: 'mark-as-date-table-gate',
-          tableName: input.tableName,
-          dateColumn: input.dateColumn,
-          reason: 'post-write-verification-failed',
-          result,
-        },
+    const readMarkVerification = () =>
+      readDriverSnapshot(
+        drv,
+        mode === 'live' ? '(live)' : undefined,
+        { includeMeasures: false, includeRoles: false },
+        connection,
       );
+    // Mark success requires only dataCategory='Time' on a fresh live read plus the pre-write
+    // coverage proof that already passed — isKey is NOT required (Import models reject it; the
+    // driver returns columnKeySkipped). One bounded re-read absorbs snapshot staleness.
+    let verified = await readMarkVerification();
+    if (!looksLikeGovernedDateEndpoint(verified, input.tableName, input.dateColumn)) {
+      verified = await readMarkVerification();
+    }
+    const columnKeySkipped = isRecord(result) && result.columnKeySkipped === true;
+    if (!looksLikeGovernedDateEndpoint(verified, input.tableName, input.dateColumn)) {
+      // The host accepted the write but the mark did not reflect on a fresh read —
+      // a known Import-mode metadata no-op. This is NOT a hard failure: the date key
+      // is proven from data, so relationships and explicit-column time intelligence
+      // work regardless. Return a non-blocking result instead of throwing, so the
+      // caller reports it honestly and proceeds (relationships no longer gate on the
+      // mark) rather than inventing manual Desktop steps or an "Import can't be
+      // marked" rule.
+      const verifiedTable = verified.tables.find((candidate) => candidate.name === input.tableName);
+      const dataCategoryNotApplied = isRecord(result) && result.dataCategoryNotApplied === true;
+      return {
+        marked: false,
+        mode,
+        reason: dataCategoryNotApplied
+          ? 'date-category-write-not-applied'
+          : 'post-write-verification-failed',
+        warning: `The host accepted the mark write but a fresh live read did not show dataCategory="Time". This is a host-side metadata no-op, NOT an "Import tables cannot be marked" rule (marking an Import table as a Date table is supported). The date key is proven from data, so relationships and explicit-column time intelligence (TOTALYTD(<measure>, '${input.tableName}'[${input.dateColumn}])) work regardless. Built-in/implicit time intelligence and the Date-hierarchy UX stay off until the table is marked in Power BI Desktop (Model view → right-click → Mark as date table). Do not block on this and do not ask the user to mark it manually unless implicit time intelligence is specifically required.`,
+        observedTableDataCategory: verifiedTable?.dataCategory ?? null,
+        ...(columnKeySkipped ? { columnKeySkipped: true } : {}),
+        ...(markGateWarnings.length > 0 ? { warnings: markGateWarnings } : {}),
+        persist: mode === 'live' ? LIVE_MODEL_PERSISTENCE : FOLDER_MODEL_PERSISTENCE,
+      };
     }
     return {
       marked: true,
       mode,
+      ...(columnKeySkipped ? { columnKeySkipped: true } : {}),
+      ...(markGateWarnings.length > 0 ? { warnings: markGateWarnings } : {}),
       persist: mode === 'live' ? LIVE_MODEL_PERSISTENCE : FOLDER_MODEL_PERSISTENCE,
       result,
     };
@@ -5630,10 +5899,16 @@ tool(
       },
       connection,
     );
+    const referenceAdvisory = calcExpressionReferenceAdvisory(
+      model,
+      input.tableName,
+      input.expression,
+    );
     return {
       created: true,
       mode,
       persist: mode === 'live' ? LIVE_MODEL_PERSISTENCE : FOLDER_MODEL_PERSISTENCE,
+      ...(referenceAdvisory ? { referenceAdvisory } : {}),
       result,
     };
   },
@@ -5722,10 +5997,16 @@ tool(
       },
       connection,
     );
+    const referenceAdvisory = calcExpressionReferenceAdvisory(
+      model,
+      input.tableName,
+      input.expression,
+    );
     return {
       updated: true,
       mode,
       persist: mode === 'live' ? LIVE_MODEL_PERSISTENCE : FOLDER_MODEL_PERSISTENCE,
+      ...(referenceAdvisory ? { referenceAdvisory } : {}),
       result,
     };
   },
@@ -5838,7 +6119,7 @@ tool(
       };
       throw err;
     }
-    await enforceDateRelationshipWriteGate(
+    const dateTableWarnings = await enforceDateRelationshipWriteGate(
       mode,
       model,
       connection,
@@ -5851,7 +6132,17 @@ tool(
         crossFilteringBehavior: input.crossFilteringBehavior ?? 'single',
       },
       'create-date-relationship',
-      input.futureHorizonDays,
+      {
+        futureHorizonDays: input.futureHorizonDays,
+        // Prove the full model-derived coverage set (not just this one fact), matching the
+        // governed creator / mark gate, so the standalone create can't pass a partial proof (P3).
+        coverageFacts: deriveRequiredDateCoverageFacts(model, {
+          dateTable: input.toTable,
+          dateColumn: input.toColumn,
+          facts: [{ tableName: input.fromTable, dateColumn: input.fromColumn }],
+          futureHorizonDays: input.futureHorizonDays,
+        }),
+      },
     );
     const result = await drv.createRelationship(
       {
@@ -5871,6 +6162,7 @@ tool(
       persist: mode === 'live' ? LIVE_MODEL_PERSISTENCE : FOLDER_MODEL_PERSISTENCE,
       result,
       warnings: check.warnings,
+      ...(dateTableWarnings.length > 0 ? { dateTableWarnings } : {}),
     };
   },
 );
@@ -5908,6 +6200,7 @@ tool(
     });
     const existing = model.relationships.find((r) => r.id === input.id);
     let warnings: RelationshipReason[] = [];
+    let dateTableWarnings: string[] = [];
     if (!existing) {
       throwDateGateError(`Refused: relationship "${input.id}" was not found in the model.`, {
         gate: 'relationship-check',
@@ -5962,7 +6255,7 @@ tool(
         candidate.crossFilteringBehavior !== existing.crossFilteringBehavior ||
         candidate.isActive !== existing.isActive ||
         cardinalityChanged;
-      await enforceDateRelationshipWriteGate(
+      dateTableWarnings = await enforceDateRelationshipWriteGate(
         mode,
         model,
         connection,
@@ -5976,7 +6269,15 @@ tool(
           crossFilteringBehavior: candidate.crossFilteringBehavior,
         },
         endpointChanged ? 'create-date-relationship' : 'activate-date-relationship',
-        input.futureHorizonDays,
+        {
+          futureHorizonDays: input.futureHorizonDays,
+          coverageFacts: deriveRequiredDateCoverageFacts(model, {
+            dateTable: candidate.toTable,
+            dateColumn: candidate.toColumn,
+            facts: [{ tableName: candidate.fromTable, dateColumn: candidate.fromColumn }],
+            futureHorizonDays: input.futureHorizonDays,
+          }),
+        },
       );
     }
     const result = await drv.updateRelationship(
@@ -5998,6 +6299,7 @@ tool(
       persist: mode === 'live' ? LIVE_MODEL_PERSISTENCE : FOLDER_MODEL_PERSISTENCE,
       result,
       warnings,
+      ...(dateTableWarnings.length > 0 ? { dateTableWarnings } : {}),
     };
   },
 );
@@ -6056,8 +6358,9 @@ tool(
       };
       throw err;
     }
+    let dateTableWarnings: string[] = [];
     if (existing && !existing.isActive) {
-      await enforceDateRelationshipWriteGate(
+      dateTableWarnings = await enforceDateRelationshipWriteGate(
         mode,
         model,
         connection,
@@ -6081,6 +6384,7 @@ tool(
       persist: mode === 'live' ? LIVE_MODEL_PERSISTENCE : FOLDER_MODEL_PERSISTENCE,
       result,
       warnings: check.warnings,
+      ...(dateTableWarnings.length > 0 ? { dateTableWarnings } : {}),
     };
   },
 );
@@ -6112,6 +6416,40 @@ tool(
       });
     }
     enforceProvenRelationshipIdentity(existing, 'deactivate');
+    // Orphan guard: refuse to deactivate a fact's ONLY active date relationship when
+    // no other active date relationship would remain on that same date FK. This
+    // prevents the deactivate-before-create footgun that strips the working
+    // (LocalDateTable) date relationship and leaves the fact with no date axis — the
+    // broken half-state seen in the field. Creating the governed Date relationship as
+    // active FIRST is allowed (it is a different table pair, so it does not trip
+    // ambiguous-active-path), so the correct order is create-then-deactivate.
+    const targetsDate = (relationship: TMDLRelationship): boolean =>
+      isTemporalDataType(
+        findModelColumn(model, relationship.toTable, relationship.toColumn)?.dataType,
+      );
+    if (existing.isActive && targetsDate(existing)) {
+      const remainingActiveDateRel = model.relationships.some(
+        (relationship) =>
+          relationship.id !== existing.id &&
+          relationship.isActive &&
+          relationship.fromTable === existing.fromTable &&
+          relationship.fromColumn === existing.fromColumn &&
+          targetsDate(relationship),
+      );
+      if (!remainingActiveDateRel) {
+        throwDateGateError(
+          `Refused: deactivating this relationship would leave "${existing.fromTable}"[${existing.fromColumn}] with no active date relationship. Create the replacement governed Date relationship as active FIRST (allowed — it is a different table pair), then deactivate this one. Deactivating first leaves the fact with no date axis.`,
+          {
+            gate: 'relationship-check',
+            status: 'blocked',
+            reason: 'date-relationship-orphan',
+            id: input.id,
+            fromTable: existing.fromTable,
+            fromColumn: existing.fromColumn,
+          },
+        );
+      }
+    }
     const result = await drv.deactivateRelationship({ id: input.id }, connection);
     return {
       updated: true,
@@ -6205,896 +6543,24 @@ tool(
   (input) => validateDashboardSpec(input.spec),
 );
 
-tool(
-  'pbi_report_convert',
-  'Convert .Report Folder to .pbip',
-  'Wrap a bare `.Report/` folder into a complete `.pbip` project. Writes `<name>.pbip` and a `.gitignore` (if missing). Does NOT convert .pbix files.',
-  {
-    sourcePath: z.string().describe('Path to a `.Report` folder OR a directory that contains one.'),
-    outputPath: z
-      .string()
-      .optional()
-      .describe("Where to write the .pbip + .gitignore. Defaults to sourcePath's parent."),
-    force: z.boolean().optional().describe('Overwrite an existing .pbip if one is there.'),
-  },
-  { destructiveHint: false, idempotentHint: false },
-  (input) =>
-    reportConvert({
-      sourcePath: input.sourcePath,
-      outputPath: input.outputPath,
-      force: input.force,
-    }),
-);
-
-// =========================================================================
-// THEMES
-// =========================================================================
-
-tool(
-  'pbi_theme_get',
-  'Get Current Theme',
-  'Read the current base + custom theme. Returns the full custom theme JSON if reachable in StaticResources/RegisteredResources.',
-  { path: PATH_FIELD },
-  { readOnlyHint: true, idempotentHint: true },
-  (input) => themeGet(resolvePath(input.path)),
-);
-
-tool(
-  'pbi_theme_set',
-  'Apply Custom Theme',
-  "Copy a theme JSON into the report's StaticResources/RegisteredResources, set themeCollection.customTheme, and update resourcePackages[].",
-  {
-    path: PATH_FIELD,
-    themePath: z.string().describe('Path to the theme JSON file to apply.'),
-  },
-  { destructiveHint: false, idempotentHint: true },
-  (input) => themeSet(resolvePath(input.path), input.themePath),
-);
-
-tool(
-  'pbi_theme_diff',
-  'Diff Theme Against Current',
-  'Compare a proposed theme JSON against the currently applied custom theme. Returns added/removed/changed key paths in dot-notation.',
-  {
-    path: PATH_FIELD,
-    themePath: z.string().describe('Path to the proposed theme JSON file.'),
-  },
-  { readOnlyHint: true, idempotentHint: true },
-  (input) => themeDiff(resolvePath(input.path), input.themePath),
-);
-
-// =========================================================================
-// PAGES
-// =========================================================================
-
-tool(
-  'pbi_page_list',
-  'List Pages',
-  'List all pages in the report, sorted by pages.json:pageOrder. Reads PBIR files from DISK. Unsaved Desktop edits are invisible to this read until Desktop saves them; after report-tool disk writes, reopen/reload Desktop before saving.',
-  { path: PATH_FIELD },
-  { readOnlyHint: true, idempotentHint: true },
-  (input) => pageList(resolvePath(input.path)),
-);
-
-tool(
-  'pbi_page_get',
-  'Get Page Details',
-  'Return one page including filterConfig, visual count, visibility. Reads PBIR files from DISK. Unsaved Desktop edits are invisible to this read until Desktop saves them; after report-tool disk writes, reopen/reload Desktop before saving.',
-  { path: PATH_FIELD, name: z.string().describe('Page name/id.') },
-  { readOnlyHint: true, idempotentHint: true },
-  (input) => pageGet(resolvePath(input.path), input.name),
-);
-
-tool(
-  'pbi_page_add',
-  'Add Page',
-  'Create a new page. If `name` is omitted, a 20-char hex id is generated.',
-  {
-    path: PATH_FIELD,
-    displayName: z.string().describe('Human-readable page name shown in tabs.'),
-    name: z.string().optional(),
-    width: z.number().int().default(1280),
-    height: z.number().int().default(720),
-    displayOption: z
-      .enum(['FitToPage', 'FitToWidth', 'ActualSize', 'ActualSizeTopLeft'])
-      .default('FitToPage'),
-  },
-  { destructiveHint: false, idempotentHint: false },
-  (input) =>
-    pageAdd(resolvePath(input.path), {
-      displayName: input.displayName,
-      name: input.name,
-      width: input.width,
-      height: input.height,
-      displayOption: input.displayOption,
-    }),
-);
-
-tool(
-  'pbi_page_delete',
-  'Delete Page',
-  'Remove a page and ALL its visuals. Also removes it from pages.json:pageOrder.',
-  { path: PATH_FIELD, name: z.string() },
-  { destructiveHint: true },
-  (input) => pageDelete(resolvePath(input.path), input.name),
-);
-
-tool(
-  'pbi_page_set_background',
-  'Set Page Background',
-  'Set the page background colour (hex). `transparency` is 0 (opaque) to 100.',
-  {
-    path: PATH_FIELD,
-    name: z.string(),
-    color: z
-      .string()
-      .regex(/^#[0-9A-Fa-f]{3,8}$/)
-      .describe('Hex colour like "#F8F9FA".'),
-    transparency: z.number().int().min(0).max(100).default(0),
-  },
-  { destructiveHint: false, idempotentHint: true },
-  (input) =>
-    pageSetBackground(resolvePath(input.path), input.name, input.color, input.transparency),
-);
-
-tool(
-  'pbi_page_set_visibility',
-  'Set Page Visibility',
-  'Show or hide a page in the navigation. Hidden pages are still reachable via drillthrough.',
-  { path: PATH_FIELD, name: z.string(), hidden: z.boolean() },
-  { destructiveHint: false, idempotentHint: true },
-  (input) => pageSetVisibility(resolvePath(input.path), input.name, input.hidden),
-);
-
-// =========================================================================
-// VISUALS
-// =========================================================================
-
-const VISUAL_TYPE_FIELD = z
-  .string()
-  .describe(
-    'Visual type, canonical or alias (bar, line, card, table, matrix, slicer, kpi, gauge, donut, scatter, funnel, area, ribbon, waterfall, etc.). All 32 PBIR types supported.',
-  );
-
-tool(
-  'pbi_visual_list',
-  'List Visuals',
-  'List visuals on a page (excluding the visualGroup container type by default). Reads PBIR files from DISK. Unsaved Desktop edits are invisible to this read until Desktop saves them; after report-tool disk writes, reopen/reload Desktop before saving.',
-  { path: PATH_FIELD, page: PAGE_FIELD },
-  { readOnlyHint: true, idempotentHint: true },
-  (input) => visualList(resolvePath(input.path), input.page),
-);
-
-tool(
-  'pbi_visual_get',
-  'Get Visual Details',
-  'Return visual details including current data bindings. Reads PBIR files from DISK. Unsaved Desktop edits are invisible to this read until Desktop saves them; after report-tool disk writes, reopen/reload Desktop before saving.',
-  { path: PATH_FIELD, page: PAGE_FIELD, name: VISUAL_FIELD },
-  { readOnlyHint: true, idempotentHint: true },
-  (input) => visualGet(resolvePath(input.path), input.page, input.name),
-);
-
-tool(
-  'pbi_visual_add',
-  'Add Visual',
-  'Add a visual from the bundled visual templates. Empty (no bindings) — call pbi_visual_bind separately.',
-  {
-    path: PATH_FIELD,
-    page: PAGE_FIELD,
-    visualType: VISUAL_TYPE_FIELD,
-    name: z.string().optional(),
-    x: z.number().optional(),
-    y: z.number().optional(),
-    width: z.number().optional(),
-    height: z.number().optional(),
-  },
-  { destructiveHint: false, idempotentHint: false },
-  (input) =>
-    visualAdd(resolvePath(input.path), input.page, {
-      visualType: input.visualType,
-      name: input.name,
-      x: input.x,
-      y: input.y,
-      width: input.width,
-      height: input.height,
-    }),
-);
-
-tool(
-  'pbi_visual_update',
-  'Update Visual',
-  'Change position, size, or visibility of an existing visual.',
-  {
-    path: PATH_FIELD,
-    page: PAGE_FIELD,
-    name: VISUAL_FIELD,
-    x: z.number().optional(),
-    y: z.number().optional(),
-    width: z.number().optional(),
-    height: z.number().optional(),
-    hidden: z.boolean().optional(),
-  },
-  { destructiveHint: false, idempotentHint: true },
-  (input) =>
-    visualUpdate(resolvePath(input.path), input.page, input.name, {
-      x: input.x,
-      y: input.y,
-      width: input.width,
-      height: input.height,
-      hidden: input.hidden,
-    }),
-);
-
-tool(
-  'pbi_visual_delete',
-  'Delete Visual',
-  'Remove a single visual and its folder.',
-  { path: PATH_FIELD, page: PAGE_FIELD, name: VISUAL_FIELD },
-  { destructiveHint: true },
-  (input) => visualDelete(resolvePath(input.path), input.page, input.name),
-);
-
-tool(
-  'pbi_visual_set_container',
-  'Set Visual Container Chrome',
-  'Set title, border, or background visibility on the container (chrome around the visual). Does NOT affect the visual data.',
-  {
-    path: PATH_FIELD,
-    page: PAGE_FIELD,
-    name: VISUAL_FIELD,
-    title: z.string().optional(),
-    borderShow: z.boolean().optional(),
-    backgroundShow: z.boolean().optional(),
-  },
-  { destructiveHint: false, idempotentHint: true },
-  (input) =>
-    visualSetContainer(resolvePath(input.path), input.page, input.name, {
-      title: input.title,
-      borderShow: input.borderShow,
-      backgroundShow: input.backgroundShow,
-    }),
-);
-
-tool(
-  'pbi_visual_bind',
-  'Bind Data to Visual',
-  'Bind semantic-model fields to the visual\'s data roles. Roles can be canonical (Y, Category, Values) or aliases (value, category, field). Field reference format: "Table[Column]". Prefer explicit `measure:true/false` from model metadata; role-based measure inference is a legacy fallback only. Multiple bindings in one call append; bindings on the same role accumulate.',
-  {
-    path: PATH_FIELD,
-    modelPath: z
-      .string()
-      .optional()
-      .describe(
-        'Optional path to the linked .SemanticModel/definition folder. If omitted, the sibling model is auto-detected. If no populated model exists, PBIR-only binding behavior is preserved.',
-      ),
-    page: PAGE_FIELD,
-    name: VISUAL_FIELD,
-    bindings: z
-      .array(
-        z.object({
-          role: z.string().describe('Data role name (e.g. "Y", "Category", "value", "category").'),
-          field: z
-            .string()
-            .describe(
-              'Field reference in `Table[Column]` notation (column or measure name on the right).',
-            ),
-          measure: z
-            .boolean()
-            .optional()
-            .describe('Force-treat as Measure (default: inferred from role).'),
-          aggregation: z
-            .enum(['sum', 'avg', 'count', 'min', 'max'])
-            .optional()
-            .describe(
-              "Wrap a column in an aggregation function. REQUIRED when binding a column with summarizeBy != 'None' to a measure-style role (Values, Y, Indicator, Size) — otherwise Desktop renders 'Something\\'s wrong with one or more fields'. Use 'sum' for the default summable column. Ignored when measure:true.",
-            ),
-        }),
-      )
-      .min(1),
-  },
-  { destructiveHint: false, idempotentHint: false },
-  (input) =>
-    visualBind(resolvePath(input.path), input.page, input.name, input.bindings, {
-      modelPath: input.modelPath,
-    }),
-);
-
-tool(
-  'pbi_visual_bind_check',
-  'Check Visual Binding Plan',
-  'Read-only model-aware validation for a visual binding plan. Checks existing projections plus optional proposed bindings against the semantic model before any write would occur.',
-  {
-    path: PATH_FIELD,
-    modelPath: z
-      .string()
-      .optional()
-      .describe(
-        'Optional path to the linked .SemanticModel/definition folder. If omitted, the sibling model is auto-detected.',
-      ),
-    page: PAGE_FIELD,
-    name: VISUAL_FIELD,
-    bindings: z
-      .array(
-        z.object({
-          role: z.string().describe('Data role name (e.g. "Y", "Category", "value", "category").'),
-          field: z
-            .string()
-            .describe(
-              'Field reference in `Table[Column]` notation (column or measure name on the right).',
-            ),
-          measure: z
-            .boolean()
-            .optional()
-            .describe('Force-treat as Measure (default: inferred from role).'),
-          aggregation: z.enum(['sum', 'avg', 'count', 'min', 'max']).optional(),
-        }),
-      )
-      .optional()
-      .describe(
-        'Optional proposed bindings. If omitted, only existing visual projections are checked.',
-      ),
-  },
-  { readOnlyHint: true, idempotentHint: true },
-  (input) =>
-    validateVisualBindingPlan(
-      resolvePath(input.path),
-      input.page,
-      input.name,
-      input.bindings ?? [],
-      { modelPath: input.modelPath },
-    ),
-);
-
-tool(
-  'pbi_visual_calc_add',
-  'Add Visual Calculation',
-  'Add a DAX visual calculation scoped to this visual. Idempotent — re-adding with the same `calcName` replaces.',
-  {
-    path: PATH_FIELD,
-    page: PAGE_FIELD,
-    name: VISUAL_FIELD,
-    calcName: z.string(),
-    expression: z.string().describe('DAX expression (e.g. a running total, ratio, or other calc).'),
-    role: z.string().default('Y').describe('Role to attach the calc to (default Y).'),
-  },
-  { destructiveHint: false, idempotentHint: true },
-  (input) =>
-    visualCalcAdd(
-      resolvePath(input.path),
-      input.page,
-      input.name,
-      input.calcName,
-      input.expression,
-      input.role,
-    ),
-);
-
-tool(
-  'pbi_visual_calc_list',
-  'List Visual Calculations',
-  'List all DAX visual calculations across all roles.',
-  { path: PATH_FIELD, page: PAGE_FIELD, name: VISUAL_FIELD },
-  { readOnlyHint: true, idempotentHint: true },
-  (input) => visualCalcList(resolvePath(input.path), input.page, input.name),
-);
-
-tool(
-  'pbi_visual_calc_delete',
-  'Delete Visual Calculation',
-  'Remove a visual calculation by name. Throws if not found.',
-  {
-    path: PATH_FIELD,
-    page: PAGE_FIELD,
-    name: VISUAL_FIELD,
-    calcName: z.string(),
-  },
-  { destructiveHint: true },
-  (input) => visualCalcDelete(resolvePath(input.path), input.page, input.name, input.calcName),
-);
-
-// =========================================================================
-// FILTERS  (visual scope when `visual` is set; otherwise page scope)
-// =========================================================================
-
-tool(
-  'pbi_filter_list',
-  'List Filters',
-  'List all filters on a page (or visual if `visual` is set).',
-  { path: PATH_FIELD, page: PAGE_FIELD, visual: z.string().optional() },
-  { readOnlyHint: true, idempotentHint: true },
-  (input) => filterList(resolvePath(input.path), { page: input.page, visual: input.visual }),
-);
-
-tool(
-  'pbi_filter_add_categorical',
-  'Add Categorical Filter',
-  'Add a filter that includes values from `values[]` for the given Table[Column]. Page-level filters get `howCreated="User"`; visual-level filters do not.',
-  {
-    path: PATH_FIELD,
-    page: PAGE_FIELD,
-    visual: z.string().optional(),
-    table: z.string(),
-    column: z.string(),
-    values: z
-      .array(z.string())
-      .min(1)
-      .describe('String values; ints/doubles get encoded as PBI literals.'),
-    name: z.string().optional(),
-  },
-  { destructiveHint: false, idempotentHint: false },
-  (input) =>
-    filterAddCategorical(resolvePath(input.path), {
-      page: input.page,
-      visual: input.visual,
-      table: input.table,
-      column: input.column,
-      values: input.values,
-      name: input.name,
-    }),
-);
-
-tool(
-  'pbi_filter_add_topn',
-  'Add TopN Filter',
-  'Add a "top N by measure-or-column" filter. `direction` is Top (descending) or Bottom (ascending). **Set `orderByMeasure: true` when `orderByColumn` names a DAX Measure** (e.g. a `measure X = SUM(...)` definition in TMDL); omitting it wraps the field in implicit SUM aggregation, which Desktop silently rejects for measure references. Discover whether a name is a measure vs a column via the semantic model — never assume.',
-  {
-    path: PATH_FIELD,
-    page: PAGE_FIELD,
-    visual: z.string().optional(),
-    table: z.string(),
-    column: z.string(),
-    n: z.number().int().positive(),
-    orderByTable: z.string(),
-    orderByColumn: z.string(),
-    orderByMeasure: z
-      .boolean()
-      .optional()
-      .describe('Set true when orderByColumn names a Measure (vs a raw column).'),
-    direction: z.enum(['Top', 'Bottom']).default('Top'),
-    name: z.string().optional(),
-  },
-  { destructiveHint: false, idempotentHint: false },
-  (input) =>
-    filterAddTopN(resolvePath(input.path), {
-      page: input.page,
-      visual: input.visual,
-      table: input.table,
-      column: input.column,
-      n: input.n,
-      orderByTable: input.orderByTable,
-      orderByColumn: input.orderByColumn,
-      orderByMeasure: input.orderByMeasure,
-      direction: input.direction,
-      name: input.name,
-    }),
-);
-
-tool(
-  'pbi_filter_add_relative_date',
-  'Add Relative Date Filter',
-  'Add a "last N {days|weeks|months|years}" filter relative to today.',
-  {
-    path: PATH_FIELD,
-    page: PAGE_FIELD,
-    visual: z.string().optional(),
-    table: z.string(),
-    column: z.string(),
-    amount: z.number().int().positive(),
-    timeUnit: z.enum(['days', 'weeks', 'months', 'years']),
-    name: z.string().optional(),
-  },
-  { destructiveHint: false, idempotentHint: false },
-  (input) =>
-    filterAddRelativeDate(resolvePath(input.path), {
-      page: input.page,
-      visual: input.visual,
-      table: input.table,
-      column: input.column,
-      amount: input.amount,
-      timeUnit: input.timeUnit,
-      name: input.name,
-    }),
-);
-
-tool(
-  'pbi_filter_remove',
-  'Remove Filter',
-  'Remove a single filter by name from a page or visual.',
-  {
-    path: PATH_FIELD,
-    page: PAGE_FIELD,
-    visual: z.string().optional(),
-    name: z.string(),
-  },
-  { destructiveHint: true },
-  (input) =>
-    filterRemove(resolvePath(input.path), { page: input.page, visual: input.visual }, input.name),
-);
-
-tool(
-  'pbi_filter_clear',
-  'Clear All Filters',
-  'Remove every filter on a page or visual. Returns count removed.',
-  { path: PATH_FIELD, page: PAGE_FIELD, visual: z.string().optional() },
-  { destructiveHint: true },
-  (input) => filterClear(resolvePath(input.path), { page: input.page, visual: input.visual }),
-);
-
-// =========================================================================
-// BOOKMARKS
-// =========================================================================
-
-tool(
-  'pbi_bookmark_list',
-  'List Bookmarks',
-  'List all bookmarks with their display names and active sections.',
-  { path: PATH_FIELD },
-  { readOnlyHint: true, idempotentHint: true },
-  (input) => bookmarkList(resolvePath(input.path)),
-);
-
-tool(
-  'pbi_bookmark_get',
-  'Get Bookmark',
-  'Return the full JSON of one bookmark (including explorationState).',
-  { path: PATH_FIELD, name: z.string() },
-  { readOnlyHint: true, idempotentHint: true },
-  (input) => bookmarkGet(resolvePath(input.path), input.name),
-);
-
-tool(
-  'pbi_bookmark_add',
-  'Add Bookmark',
-  'Create a new bookmark pointing at a page. Initialises an empty explorationState.',
-  {
-    path: PATH_FIELD,
-    displayName: z.string(),
-    targetPage: PAGE_FIELD,
-    name: z.string().optional(),
-  },
-  { destructiveHint: false, idempotentHint: false },
-  (input) => bookmarkAdd(resolvePath(input.path), input.displayName, input.targetPage, input.name),
-);
-
-tool(
-  'pbi_bookmark_delete',
-  'Delete Bookmark',
-  'Remove a bookmark file and its entry in the bookmarks.json index.',
-  { path: PATH_FIELD, name: z.string() },
-  { destructiveHint: true },
-  (input) => bookmarkDelete(resolvePath(input.path), input.name),
-);
-
-tool(
-  'pbi_bookmark_set_visibility',
-  'Set Visual Visibility in Bookmark',
-  'Hide or show a specific visual when this bookmark is applied. Visibility = presence of singleVisual.display in the bookmark.',
-  {
-    path: PATH_FIELD,
-    name: z.string().describe('Bookmark name.'),
-    page: PAGE_FIELD,
-    visual: VISUAL_FIELD,
-    hidden: z.boolean(),
-  },
-  { destructiveHint: false, idempotentHint: true },
-  (input) =>
-    bookmarkSetVisibility(
-      resolvePath(input.path),
-      input.name,
-      input.page,
-      input.visual,
-      input.hidden,
-    ),
-);
-
-// =========================================================================
-// FORMAT (visual conditional formatting)
-// =========================================================================
-
-tool(
-  'pbi_format_get',
-  'Get Visual Formatting',
-  'Return the visual.objects block (current formatting state).',
-  { path: PATH_FIELD, page: PAGE_FIELD, name: VISUAL_FIELD },
-  { readOnlyHint: true, idempotentHint: true },
-  (input) => formatGet(resolvePath(input.path), input.page, input.name),
-);
-
-tool(
-  'pbi_format_clear',
-  'Clear Visual Formatting',
-  'Clear ALL formatting (visual.objects = {}).',
-  { path: PATH_FIELD, page: PAGE_FIELD, name: VISUAL_FIELD },
-  { destructiveHint: true },
-  (input) => formatClear(resolvePath(input.path), input.page, input.name),
-);
-
-tool(
-  'pbi_format_background_gradient',
-  'Background Gradient Rule',
-  'Add a linear gradient background-colour rule driven by `inputTable[inputColumn]` aggregated.',
-  {
-    path: PATH_FIELD,
-    page: PAGE_FIELD,
-    name: VISUAL_FIELD,
-    inputTable: z.string(),
-    inputColumn: z.string(),
-    fieldQueryRef: z.string().describe('queryRef of the target column (selector.metadata).'),
-    minColor: z.string().optional(),
-    maxColor: z.string().optional(),
-  },
-  { destructiveHint: false, idempotentHint: true },
-  (input) =>
-    formatBackgroundGradient(resolvePath(input.path), input.page, input.name, {
-      inputTable: input.inputTable,
-      inputColumn: input.inputColumn,
-      fieldQueryRef: input.fieldQueryRef,
-      minColor: input.minColor,
-      maxColor: input.maxColor,
-    }),
-);
-
-tool(
-  'pbi_format_background_conditional',
-  'Background Conditional Rule',
-  'Set background colour when `aggregate(inputColumn) {comparison} threshold`. Default comparison: gt.',
-  {
-    path: PATH_FIELD,
-    page: PAGE_FIELD,
-    name: VISUAL_FIELD,
-    inputTable: z.string(),
-    inputColumn: z.string(),
-    threshold: z.number(),
-    colorHex: z.string().regex(/^#[0-9A-Fa-f]{3,8}$/),
-    comparison: z.enum(['eq', 'neq', 'gt', 'gte', 'lt', 'lte']).default('gt'),
-    fieldQueryRef: z
-      .string()
-      .optional()
-      .describe('queryRef of the target column. Defaults to "Sum({inputTable}.{inputColumn})".'),
-  },
-  { destructiveHint: false, idempotentHint: true },
-  (input) =>
-    formatBackgroundConditional(resolvePath(input.path), input.page, input.name, {
-      inputTable: input.inputTable,
-      inputColumn: input.inputColumn,
-      threshold: input.threshold,
-      colorHex: input.colorHex,
-      comparison: input.comparison,
-      fieldQueryRef: input.fieldQueryRef,
-    }),
-);
-
-tool(
-  'pbi_format_background_measure',
-  'Background Measure-Driven Rule',
-  'Background colour comes from a DAX measure that returns a hex string.',
-  {
-    path: PATH_FIELD,
-    page: PAGE_FIELD,
-    name: VISUAL_FIELD,
-    measureTable: z.string(),
-    measureProperty: z.string(),
-    fieldQueryRef: z.string(),
-  },
-  { destructiveHint: false, idempotentHint: true },
-  (input) =>
-    formatBackgroundMeasure(resolvePath(input.path), input.page, input.name, {
-      measureTable: input.measureTable,
-      measureProperty: input.measureProperty,
-      fieldQueryRef: input.fieldQueryRef,
-    }),
-);
-
-// =========================================================================
-// LAYOUT  (composition / arrangement of existing visuals + named scaffolds)
-// =========================================================================
-
-tool(
-  'pbi_layout_grid',
-  'Arrange Visuals in a Grid',
-  'Position existing visuals into a `rows × cols` grid (row-major fill). Each cell gets equal width/height. Use when the user wants a uniform grid of cards, charts, etc.',
-  {
-    path: PATH_FIELD,
-    page: PAGE_FIELD,
-    visuals: z.array(z.string()).min(1).describe('Visual names to position, in row-major order.'),
-    rows: z.number().int().positive(),
-    cols: z.number().int().positive(),
-    x: z.number().optional().describe('Top-left x of the grid area. Defaults to 0.'),
-    y: z.number().optional().describe('Top-left y of the grid area. Defaults to 0.'),
-    width: z.number().optional().describe('Total grid width. Defaults to page width minus x.'),
-    height: z.number().optional().describe('Total grid height. Defaults to page height minus y.'),
-    gap: z.number().optional().describe('Pixel gap between cells. Defaults to 8.'),
-  },
-  { destructiveHint: false, idempotentHint: true },
-  (input) =>
-    layoutGrid(resolvePath(input.path), input.page, {
-      visuals: input.visuals,
-      rows: input.rows,
-      cols: input.cols,
-      x: input.x,
-      y: input.y,
-      width: input.width,
-      height: input.height,
-      gap: input.gap,
-    }),
-);
-
-tool(
-  'pbi_layout_row',
-  'Arrange Visuals in a Row',
-  'Position existing visuals horizontally in a single row at a given y. Each visual gets equal width.',
-  {
-    path: PATH_FIELD,
-    page: PAGE_FIELD,
-    visuals: z.array(z.string()).min(1),
-    y: z.number().optional(),
-    height: z.number().optional(),
-    x: z.number().optional(),
-    width: z.number().optional(),
-    gap: z.number().optional(),
-  },
-  { destructiveHint: false, idempotentHint: true },
-  (input) =>
-    layoutRow(resolvePath(input.path), input.page, {
-      visuals: input.visuals,
-      y: input.y,
-      height: input.height,
-      x: input.x,
-      width: input.width,
-      gap: input.gap,
-    }),
-);
-
-tool(
-  'pbi_layout_column',
-  'Arrange Visuals in a Column',
-  'Position existing visuals vertically in a single column at a given x. Each visual gets equal height.',
-  {
-    path: PATH_FIELD,
-    page: PAGE_FIELD,
-    visuals: z.array(z.string()).min(1),
-    x: z.number().optional(),
-    width: z.number().optional(),
-    y: z.number().optional(),
-    height: z.number().optional(),
-    gap: z.number().optional(),
-  },
-  { destructiveHint: false, idempotentHint: true },
-  (input) =>
-    layoutColumn(resolvePath(input.path), input.page, {
-      visuals: input.visuals,
-      x: input.x,
-      width: input.width,
-      y: input.y,
-      height: input.height,
-      gap: input.gap,
-    }),
-);
-
-// =========================================================================
-// BULK
-// =========================================================================
-
-tool(
-  'pbi_visual_where',
-  'Filter Visuals',
-  'Filter visuals on a page by type, name glob (fnmatch-style: *, ?), and/or position bounds. Returns matches.',
-  {
-    path: PATH_FIELD,
-    page: PAGE_FIELD,
-    visualType: z.string().optional(),
-    namePattern: z.string().optional(),
-    xMin: z.number().optional(),
-    xMax: z.number().optional(),
-    yMin: z.number().optional(),
-    yMax: z.number().optional(),
-  },
-  { readOnlyHint: true, idempotentHint: true },
-  (input) =>
-    visualWhere(resolvePath(input.path), input.page, {
-      visualType: input.visualType,
-      namePattern: input.namePattern,
-      xMin: input.xMin,
-      xMax: input.xMax,
-      yMin: input.yMin,
-      yMax: input.yMax,
-    }),
-);
-
-tool(
-  'pbi_visual_bulk_bind',
-  'Bulk Bind Visuals',
-  'Apply the same bindings to every visual of a given type (optionally filtered by name pattern).',
-  {
-    path: PATH_FIELD,
-    modelPath: z
-      .string()
-      .optional()
-      .describe(
-        'Optional path to the linked .SemanticModel/definition folder. If omitted, the sibling model is auto-detected. Bulk bind validates every target before writing any target.',
-      ),
-    page: PAGE_FIELD,
-    visualType: VISUAL_TYPE_FIELD,
-    namePattern: z.string().optional(),
-    bindings: z
-      .array(
-        z.object({
-          role: z.string(),
-          field: z.string(),
-          measure: z.boolean().optional(),
-          aggregation: z.enum(['sum', 'avg', 'count', 'min', 'max']).optional(),
-        }),
-      )
-      .min(1),
-  },
-  { destructiveHint: false, idempotentHint: false },
-  (input) =>
-    visualBulkBind(resolvePath(input.path), input.page, {
-      visualType: input.visualType,
-      namePattern: input.namePattern,
-      bindings: input.bindings,
-      modelPath: input.modelPath,
-    }),
-);
-
-tool(
-  'pbi_visual_bulk_update',
-  'Bulk Update Visuals',
-  'Apply position/size/hidden updates to every matching visual. At least one `set*` field is required.',
-  {
-    path: PATH_FIELD,
-    page: PAGE_FIELD,
-    whereType: z.string().optional(),
-    whereNamePattern: z.string().optional(),
-    setHidden: z.boolean().optional(),
-    setWidth: z.number().optional(),
-    setHeight: z.number().optional(),
-    setX: z.number().optional(),
-    setY: z.number().optional(),
-  },
-  { destructiveHint: false, idempotentHint: true },
-  (input) =>
-    visualBulkUpdate(resolvePath(input.path), input.page, {
-      whereType: input.whereType,
-      whereNamePattern: input.whereNamePattern,
-      setHidden: input.setHidden,
-      setWidth: input.setWidth,
-      setHeight: input.setHeight,
-      setX: input.setX,
-      setY: input.setY,
-    }),
-);
-
-tool(
-  'pbi_visual_bulk_delete',
-  'Bulk Delete Visuals',
-  'Delete every visual matching the filter. At least one `where*` field is required (safety guard).',
-  {
-    path: PATH_FIELD,
-    page: PAGE_FIELD,
-    whereType: z.string().optional(),
-    whereNamePattern: z.string().optional(),
-  },
-  { destructiveHint: true },
-  (input) =>
-    visualBulkDelete(resolvePath(input.path), input.page, {
-      whereType: input.whereType,
-      whereNamePattern: input.whereNamePattern,
-    }),
-);
-
 // -- Boot ------------------------------------------------------------------
 
 export function buildServer(options: BuildServerOptions = {}): McpServer {
+  if (options.surface !== undefined && options.surface !== 'modeling') {
+    throw new Error('This release exposes only the "modeling" MCP surface.');
+  }
   const built = createMcpServer();
-  for (const definition of toolDefinitionsForSurface(resolveSurface(options))) {
+  for (const definition of toolDefinitions) {
+    if (!MODELING_SURFACE_TOOL_NAMES.has(definition.name)) {
+      throw new Error(`Unexpected non-modeling tool registered: ${definition.name}`);
+    }
     registerToolDefinition(built, definition);
   }
   return built;
 }
 
 export function buildModelingServer(): McpServer {
-  return buildServer({ surface: 'modeling' });
+  return buildServer();
 }
 
 async function main(): Promise<void> {
@@ -7102,7 +6568,7 @@ async function main(): Promise<void> {
   const transport = new StdioServerTransport();
   await runtimeServer.connect(transport);
   // IMPORTANT: stdio servers must NOT log to stdout (that's the protocol channel).
-  process.stderr.write(`pbi-report-mcp-server v${VERSION} ready (stdio, ${resolveSurface()})\n`);
+  process.stderr.write(`pbi-modeling-mcp-server v${VERSION} ready (stdio, modeling)\n`);
 }
 
 const invokedAsScript =

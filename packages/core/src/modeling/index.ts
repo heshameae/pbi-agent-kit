@@ -1,5 +1,6 @@
 export * from './types.js';
 export {
+  isAggregatableNumeric,
   isBooleanType,
   isNumericColumn,
   isNumericType,
@@ -10,6 +11,7 @@ export {
   toCanonicalDataType,
 } from './data-types.js';
 export type { CanonicalDataType } from './data-types.js';
+export { compareByName, looksLikeKeyName } from './naming.js';
 export {
   parseTMDLFolder,
   parseTableFile,
@@ -70,10 +72,14 @@ export {
   classifyObservedDateGrain,
   deriveRequiredDateCoverageFacts,
   findCalendarSourceRisks,
+  GOVERNED_DATE_TABLE_ANNOTATIONS,
+  isDataProvenDailyKey,
+  MAX_FUTURE_HORIZON_DAYS,
   parseDateGrainProbeResult,
   parseDateTableCoverageProbeResult,
   planDateGrain,
   planDateTableCoverage,
+  readGovernedDatePolicy,
 } from './date-grain-plan.js';
 export type {
   CalendarSourceRisk,
@@ -88,10 +94,12 @@ export type {
   DateTableCoveragePlanOptions,
   DateTableCoveragePlanResult,
   DateTableCoverageProbeEvidence,
+  DateTableCoverageWarning,
   DateTableFactCoverage,
   DateTableKeyProbeEvidence,
   DateTruncatingMeasureCandidate,
   FactDateGrainPlan,
+  GovernedDatePolicy,
   ObservedDateGrain,
 } from './date-grain-plan.js';
 export { deriveCardinality } from './cardinality.js';
@@ -138,3 +146,16 @@ export type {
   StarSchemaWritePlanItem,
   TableNotFoundBlocker,
 } from './star-schema-plan.js';
+
+export {
+  buildTimeIntelligenceMeasureExpression,
+  calendarOvershootsFactDay,
+  isYearEndDateLiteral,
+  parseBarePeriodToDate,
+  parseTimeIntelligencePeriod,
+} from './time-intelligence-plan.js';
+export type {
+  BarePeriodToDate,
+  TimeIntelligenceMeasureInput,
+  TimeIntelligencePeriod,
+} from './time-intelligence-plan.js';

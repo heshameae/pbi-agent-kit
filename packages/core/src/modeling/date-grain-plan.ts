@@ -56,6 +56,59 @@ export interface DateGrainPlanResult {
   };
 }
 
+/**
+ * Annotation keys the governed Date-table creator stamps on the table so its calendar
+ * range / future-horizon policy is durable and later gates do not re-block or require the
+ * caller to re-supply the horizon (P5 / circular mark-vs-proof). Tool-internal keys only —
+ * never any dataset field name.
+ */
+export const GOVERNED_DATE_TABLE_ANNOTATIONS = {
+  governedByTool: 'pbiAgentKit_governedByTool',
+  rangePolicy: 'pbiAgentKit_dateRangePolicy',
+  futureHorizonDays: 'pbiAgentKit_futureHorizonDays',
+} as const;
+
+// Single source of truth for the maximum allowed future-horizon padding (~10y).
+// Both the MCP zod input bound and every date gate clamp to this, so a persisted
+// (UNVERIFIED, possibly tampered) horizon annotation cannot exceed it on ANY gate.
+export const MAX_FUTURE_HORIZON_DAYS = 3660;
+
+export interface GovernedDatePolicy {
+  readonly governedByTool: boolean;
+  readonly rangePolicy?: string;
+  readonly futureHorizonDays?: number;
+  readonly allowCalendarEndAfterFactMax?: boolean;
+}
+
+/**
+ * Reads the persisted governed Date-table policy from a table's annotations. Only honored
+ * when our own creator stamped governedByTool='true'; the volatile/literal anchor detectors
+ * still run independently, so a TODAY()/NOW() calendar can never be trusted via a stamped
+ * flag. Dataset-agnostic (keys/values are tool-internal policy, not model fields).
+ */
+export function readGovernedDatePolicy(table: TMDLTable | undefined): GovernedDatePolicy {
+  const annotations = table?.annotations;
+  if (!annotations || annotations[GOVERNED_DATE_TABLE_ANNOTATIONS.governedByTool] !== 'true') {
+    return { governedByTool: false };
+  }
+  const rangePolicy = annotations[GOVERNED_DATE_TABLE_ANNOTATIONS.rangePolicy];
+  const horizonRaw = annotations[GOVERNED_DATE_TABLE_ANNOTATIONS.futureHorizonDays];
+  const parsedHorizon = horizonRaw !== undefined ? Number.parseInt(horizonRaw, 10) : Number.NaN;
+  // Clamp the persisted (UNVERIFIED) annotation to the shared ceiling HERE, the single
+  // reader every gate flows through, so the mark gate and the relationship gate can no
+  // longer diverge on an oversized/tampered horizon (one clamped, one did not).
+  const futureHorizonDays =
+    Number.isFinite(parsedHorizon) && parsedHorizon >= 0
+      ? Math.min(parsedHorizon, MAX_FUTURE_HORIZON_DAYS)
+      : undefined;
+  return {
+    governedByTool: true,
+    ...(rangePolicy !== undefined ? { rangePolicy } : {}),
+    ...(futureHorizonDays !== undefined ? { futureHorizonDays } : {}),
+    allowCalendarEndAfterFactMax: rangePolicy === 'observed-full-years',
+  };
+}
+
 export interface DateTableCoveragePlanOptions {
   readonly dateTable: string;
   readonly dateColumn: string;
@@ -108,11 +161,19 @@ export interface DateTableCoveragePlanResult {
     readonly isAutoDateTable: boolean;
     readonly isMarkedDateTable: boolean;
     readonly isTemporalKey: boolean;
+    readonly keyProvenFromData: boolean;
     readonly hasVolatileAnchor: boolean;
     readonly evidence?: DateTableKeyProbeEvidence;
   };
   readonly factCoverage: ReadonlyArray<DateTableFactCoverage>;
   readonly blockers: ReadonlyArray<DateTableCoverageBlocker>;
+  readonly warnings: ReadonlyArray<DateTableCoverageWarning>;
+  readonly markReadiness: {
+    readonly ready: boolean;
+    readonly dataProvenKey: boolean;
+    readonly coversAllFacts: boolean;
+    readonly blockingForMark: ReadonlyArray<DateTableCoverageBlocker>;
+  };
   readonly autoDateTables: DateGrainPlanResult['autoDateTables'];
   readonly recommendation: string;
 }
@@ -145,7 +206,6 @@ export type DateTableCoverageBlocker = {
     | 'date-table-start-after-fact-min'
     | 'date-table-end-before-fact-max'
     | 'date-table-end-after-fact-max-without-policy'
-    | 'calendar-source-proof-missing'
     | 'volatile-calendar-anchor'
     | 'literal-calendar-range'
     | 'fact-table-not-found'
@@ -156,6 +216,22 @@ export type DateTableCoverageBlocker = {
   readonly column?: string;
   readonly factTable?: string;
   readonly factColumn?: string;
+};
+
+/**
+ * Non-blocking caveats that the consuming gates must RELAY to the agent but that must
+ * NOT refuse the operation. Used for signals that are structurally unobservable through
+ * the Microsoft Modeling MCP read layer (e.g. a live Import Date table whose calendar
+ * source expression / partition cannot be read back) — absence of the signal is not
+ * proof of a defect, so it degrades to a warning rather than a fail-closed blocker. A
+ * positively-observed risk (a TODAY()/NOW() volatile anchor or a hardcoded literal range)
+ * is a different thing and still blocks via DateTableCoverageBlocker.
+ */
+export type DateTableCoverageWarning = {
+  readonly code: 'calendar-source-unproven';
+  readonly message: string;
+  readonly table?: string;
+  readonly column?: string;
 };
 
 export interface FactDateGrainPlan {
@@ -354,7 +430,14 @@ export function planDateGrain(
       observedGrain,
       dayRelationshipSafe,
       relationship,
-      dateCoverage?.status === 'valid',
+      // Use markReadiness.ready (data-proven-key aware), NOT status === 'valid':
+      // status stays blocked on the two cosmetic pre-mark blockers (date-table-not-marked
+      // / date-column-not-key) even when the key is fully proven from data, which would
+      // deadlock the write plan on an Import no-op mark. markReadiness.ready drops only
+      // those cosmetic blockers while keeping every real proof blocker — matching the
+      // server relationship gate (enforceDateRelationshipWriteGate).
+      dateCoverage?.markReadiness.ready === true,
+      dateCoverage?.dateTable.keyProvenFromData === true,
     );
 
     return {
@@ -489,6 +572,7 @@ export function planDateTableCoverage(
   const table = model.tables.find((candidate) => candidate.name === options.dateTable);
   const column = table?.columns.find((candidate) => candidate.name === options.dateColumn);
   const blockers: DateTableCoverageBlocker[] = [];
+  const warnings: DateTableCoverageWarning[] = [];
   const rawDateTableEvidence = evidence.dateTable;
   const dateTableEvidence =
     rawDateTableEvidence?.tableName === options.dateTable &&
@@ -507,6 +591,8 @@ export function planDateTableCoverage(
       message: `Date-table proof was returned for "${rawDateTableEvidence.tableName}"[${rawDateTableEvidence.dateColumn}], not "${options.dateTable}"[${options.dateColumn}].`,
     });
   }
+
+  const keyProvenFromData = isDataProvenDailyKey(dateTableEvidence);
 
   if (!table) {
     blockers.push({
@@ -548,7 +634,7 @@ export function planDateTableCoverage(
       message: `Date key "${options.dateTable}"[${options.dateColumn}] is ${column.dataType}, not date/dateTime.`,
     });
   }
-  if (table && column && !column.isKey && !isMarkedDateTable(table, column)) {
+  if (table && column && !column.isKey && !isMarkedDateTable(table, column) && !keyProvenFromData) {
     blockers.push({
       code: 'date-column-not-key',
       table: options.dateTable,
@@ -565,15 +651,26 @@ export function planDateTableCoverage(
     model.modelPath === '(live)' &&
     table &&
     column &&
-    isMarkedDateTable(table, column) &&
+    (isMarkedDateTable(table, column) || keyProvenFromData) &&
     !hasSourceProvenance
   ) {
-    blockers.push({
-      code: 'calendar-source-proof-missing',
+    // WARN, do not BLOCK. hasSourceProvenance is structurally UNOBSERVABLE on a live
+    // Import model: the MS Modeling MCP table read never populates partitionSources, and a
+    // Power-Query/M Date table carries no table-level DAX expression, so this is always
+    // false on live Import — even for a perfectly clean, data-proven calendar. Treating that
+    // absence as a defect made the very act of proving the key (keyProvenFromData) ARM the
+    // refusal, deadlocking mark-as-date, date relationships, and YTD/QTD/MTD on every Import
+    // Date table. A positively-observed volatile/literal anchor is a different matter and
+    // still BLOCKS via findDateTableSourceRisks below (that net reads an actual source
+    // string). When the source is merely unreadable we relay an honest caveat instead so the
+    // agent can surface it, and rely on the live data probe (blanks/gaps/dups/non-midnight/
+    // coverage/end-after-fact-max) — which measures the realized key — as the real safety.
+    warnings.push({
+      code: 'calendar-source-unproven',
       table: options.dateTable,
       column: options.dateColumn,
       message:
-        'Live Date-table source expression is not proven. Refusing to rely on a Date table whose calendar bounds cannot be checked for volatile or hardcoded anchors.',
+        'The Date table calendar source could not be read on this live Import model, so it cannot be checked for a volatile TODAY()/NOW() anchor or a hardcoded literal range that may shift calendar bounds on a future refresh. The live data probe shows the current key is clean; verify the calendar source is anchored to data, not to a volatile/literal expression.',
     });
   }
   for (const risk of sourceRisks) {
@@ -642,13 +739,21 @@ export function planDateTableCoverage(
     )
     .map((factEvidence) => dateOnlyOrdinal(factEvidence?.maxDate))
     .filter((value): value is number => value !== undefined);
+  // Persisted governed policy is the DEFAULT when the caller omits the horizon, so a
+  // governed full-years Date table proven valid at creation does not re-block here (P5).
+  // An explicit caller option still wins; a non-governed table reads no policy (false/0).
+  const persistedPolicy = readGovernedDatePolicy(table);
+  const effectiveFutureHorizonDays =
+    options.futureHorizonDays ?? persistedPolicy.futureHorizonDays ?? 0;
+  const effectiveAllowEndAfterFactMax =
+    options.allowCalendarEndAfterFactMax ?? persistedPolicy.allowCalendarEndAfterFactMax ?? false;
   if (
     hasCompleteDateTableKeyProof(dateTableEvidence) &&
     requiredFacts.length > 0 &&
     factMaxes.length === requiredFacts.length &&
     dateMax !== undefined &&
-    dateMax > Math.max(...factMaxes) + (options.futureHorizonDays ?? 0) &&
-    options.allowCalendarEndAfterFactMax !== true
+    dateMax > Math.max(...factMaxes) + effectiveFutureHorizonDays &&
+    effectiveAllowEndAfterFactMax !== true
   ) {
     blockers.push({
       code: 'date-table-end-after-fact-max-without-policy',
@@ -667,6 +772,22 @@ export function planDateTableCoverage(
     );
   const status = blockers.length === 0 ? 'valid' : onlyProofMissing ? 'unknown' : 'blocked';
 
+  // markReadiness exposes a data-proven readiness signal so the mark-as-date gate
+  // can stop string-stripping metadata blockers itself (P2/P3). The two pre-mark
+  // metadata blockers are removed ONLY when the key is proven from data; every real
+  // proof blocker (blanks/dups/gaps/time/coverage/source-risk/end-after-fact-max) stays.
+  const coversAllFacts = factCoverage.every((coverage) => coverage.covered);
+  const premarkOnlyBlockerCodes = ['date-table-not-marked', 'date-column-not-key'];
+  const blockingForMark = keyProvenFromData
+    ? blockers.filter((blocker) => !premarkOnlyBlockerCodes.includes(blocker.code))
+    : blockers;
+  const markReadiness = {
+    ready: keyProvenFromData && coversAllFacts && blockingForMark.length === 0,
+    dataProvenKey: keyProvenFromData,
+    coversAllFacts,
+    blockingForMark,
+  };
+
   return {
     design: 'date-table-coverage',
     status,
@@ -682,12 +803,15 @@ export function planDateTableCoverage(
         table !== undefined &&
         column !== undefined &&
         isTemporalColumn(column) &&
-        (column.isKey || isMarkedDateTable(table, column)),
+        (column.isKey || isMarkedDateTable(table, column) || keyProvenFromData),
+      keyProvenFromData,
       hasVolatileAnchor,
       ...(dateTableEvidence ? { evidence: dateTableEvidence } : {}),
     },
     factCoverage,
     blockers,
+    warnings,
+    markReadiness,
     autoDateTables: autoDateTableSummary(model),
     recommendation:
       'Use one explicit, marked date table whose daily key covers the observed min/max dates of every related fact. Anchor default calendar bounds to observed fact min/max dates, not TODAY()/NOW(); future padding requires an explicit forecast horizon policy.',
@@ -737,6 +861,16 @@ export function deriveRequiredDateCoverageFacts(
   return [...facts.values()];
 }
 
+// Day-grain heuristic thresholds for classifyObservedDateGrain. A fact's date column
+// reads as day-grain when, alongside at least one non-month-start date, ANY of: at
+// least half the observed day-span has data; OR a month holds many distinct dates; OR
+// several months each hold several distinct dates. Named so the gate's decision is
+// auditable rather than relying on inline magic numbers.
+const DAY_GRAIN_MIN_DENSITY = 0.5;
+const DAY_GRAIN_MIN_MAX_DATES_PER_MONTH = 15;
+const DAY_GRAIN_MIN_MULTI_DATE_MONTHS = 6;
+const DAY_GRAIN_MIN_DATES_PER_MULTI_DATE_MONTH = 6;
+
 export function classifyObservedDateGrain(
   evidence: DateGrainProbeEvidence | undefined,
 ): ObservedDateGrain {
@@ -758,9 +892,10 @@ export function classifyObservedDateGrain(
 
   if (
     nonMonthStartDateCount > 0 &&
-    (dateDensity >= 0.5 ||
-      maxDistinctDatesPerMonth >= 15 ||
-      (monthsWithMultipleDates >= 6 && maxDistinctDatesPerMonth >= 6))
+    (dateDensity >= DAY_GRAIN_MIN_DENSITY ||
+      maxDistinctDatesPerMonth >= DAY_GRAIN_MIN_MAX_DATES_PER_MONTH ||
+      (monthsWithMultipleDates >= DAY_GRAIN_MIN_MULTI_DATE_MONTHS &&
+        maxDistinctDatesPerMonth >= DAY_GRAIN_MIN_DATES_PER_MULTI_DATE_MONTH))
   ) {
     return 'day';
   }
@@ -1032,17 +1167,21 @@ function buildWritePlan(
   observedGrain: ObservedDateGrain,
   dayRelationshipSafe: boolean,
   relationship: DateRelationshipPlan,
-  dateCoverageValid: boolean,
+  coverageWritable: boolean,
+  dateKeyProvenFromData: boolean,
 ): ReadonlyArray<DateGrainWritePlanItem> {
   if (observedGrain !== 'day' || !dayRelationshipSafe) {
     return [];
   }
 
-  if (!dateCoverageValid) {
+  // coverageWritable is markReadiness.ready (data-proven-key aware), so a fully
+  // proven but unmarked Date table is still writable — the cosmetic mark no-op no
+  // longer deadlocks the plan.
+  if (!coverageWritable) {
     return [];
   }
 
-  if (!relationshipTargetsGovernedDateEndpoint(model, relationship)) {
+  if (!relationshipTargetsGovernedDateEndpoint(model, relationship, dateKeyProvenFromData)) {
     return [];
   }
 
@@ -1150,17 +1289,22 @@ function buildMeasureGuidance(
 function relationshipTargetsGovernedDateEndpoint(
   model: TMDLModel,
   relationship: DateRelationshipPlan,
+  dateKeyProvenFromData: boolean,
 ): boolean {
   if (relationship.status !== 'inactive' && relationship.status !== 'missing') return true;
   if (!relationship.toTable || !relationship.toColumn) return false;
   const table = model.tables.find((candidate) => candidate.name === relationship.toTable);
   const column = table?.columns.find((candidate) => candidate.name === relationship.toColumn);
-  return (
-    table !== undefined &&
-    column !== undefined &&
-    !table.isAutoDateTable &&
-    isMarkedDateTable(table, column)
-  );
+  if (table === undefined || column === undefined || table.isAutoDateTable) return false;
+  // Accept the endpoint when it carries the dataCategory="Time" mark OR when the
+  // date key was PROVEN from live data. The mark is a host-side metadata write that
+  // silently no-ops on Import models; requiring it here — while the relationship
+  // gate's outer layers (looksLikeDateRelationshipEndpoint + markReadiness.ready)
+  // are already mark-independent — would deadlock an ACTIVE create/activate on a
+  // fully data-proven-but-unmarked Date table, the exact case the decoupling fixed.
+  // keyProvenFromData is only true after a unique, contiguous, non-blank daily-key
+  // probe, so accepting it is as safe as the mark and is data-truthful.
+  return isMarkedDateTable(table, column) || (dateKeyProvenFromData && isTemporalColumn(column));
 }
 
 function findDateTruncatingMeasureCandidates(
@@ -1437,14 +1581,17 @@ function toIsoDate(dayOrdinal: number): string {
 
 function dateOnlyOrdinal(value: string | undefined): number | undefined {
   if (!value) return undefined;
-  const dateOnly = /^(\d{4})-(\d{2})-(\d{2})/.exec(value);
+  // ISO date / dateTime ONLY. We deliberately do not fall back to Date.parse: a
+  // non-ISO locale cell like "05/03/2024" is read as MM/DD by Date.parse, silently
+  // swapping day and month and corrupting the date-table coverage min/max
+  // comparisons (which decide start-after-fact-min / end-before-fact-max). Failing
+  // closed (undefined) makes the coverage gate refuse rather than act on a
+  // mis-parsed date — mirrors the ISO-only dayOrdinal in time-intelligence-plan.ts.
+  const dateOnly = /^(\d{4})-(\d{2})-(\d{2})/.exec(value.trim());
   if (dateOnly?.[1] && dateOnly[2] && dateOnly[3]) {
     return Date.UTC(Number(dateOnly[1]), Number(dateOnly[2]) - 1, Number(dateOnly[3])) / 86400000;
   }
-  const parsed = Date.parse(value);
-  if (!Number.isFinite(parsed)) return undefined;
-  const d = new Date(parsed);
-  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()) / 86400000;
+  return undefined;
 }
 
 function isMarkedDateTable(table: TMDLTable, column: TMDLColumn): boolean {
@@ -1592,6 +1739,23 @@ function hasCompleteDateTableKeyProof(
   );
 }
 
+/**
+ * Proves date-key-ness FROM DATA (not the isKey metadata flag): a complete probe
+ * showing a non-blank, unique (distinct == non-blank), gap-free daily key with no
+ * non-midnight time component. Import models often reject the isKey write, so the
+ * gates must be able to prove a usable Date key from the probe alone. Dataset-agnostic.
+ */
+export function isDataProvenDailyKey(evidence: DateTableKeyProbeEvidence | undefined): boolean {
+  return (
+    hasCompleteDateTableKeyProof(evidence) &&
+    evidence.blankDateCount === 0 &&
+    evidence.duplicateDateCount === 0 &&
+    evidence.gapCount === 0 &&
+    evidence.nonMidnightTimeCount === 0 &&
+    evidence.distinctDateCount === evidence.nonBlankDateCount
+  );
+}
+
 function hasCompleteDateGrainProof(
   evidence: DateGrainProbeEvidence | undefined,
 ): evidence is CompleteDateGrainProof {
@@ -1711,8 +1875,19 @@ function numberValue(row: Record<string, unknown>, ...aliases: string[]): number
   const value = findValue(row, ...aliases);
   if (typeof value === 'number' && Number.isFinite(value)) return value;
   if (typeof value === 'string') {
-    const parsed = Number(value);
-    if (Number.isFinite(parsed)) return parsed;
+    // Every probe metric routed through here is an integer COUNT (COUNTROWS /
+    // DISTINCTCOUNT / gap / duplicate counts). Accept ONLY a bare integer string so
+    // a locale-formatted cell fails CLOSED rather than silently coercing to a wrong
+    // value: on a European host a count of 1234 serializes as "1.234", and
+    // Number("1.234") === 1.234 would pass the `!== undefined` completeness checks
+    // while being ~1000x too small, corrupting grain/key proofs. "1,234" (US
+    // grouping) is likewise rejected. Real JS numbers are never locale-formatted, so
+    // the number branch above stays permissive.
+    const trimmed = value.trim();
+    if (/^-?\d+$/.test(trimmed)) {
+      const parsed = Number(trimmed);
+      if (Number.isFinite(parsed)) return parsed;
+    }
   }
   return undefined;
 }

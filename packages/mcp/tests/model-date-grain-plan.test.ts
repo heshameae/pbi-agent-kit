@@ -14,8 +14,8 @@ type ToolInfo = {
   };
 };
 
-const TRUTH_SEMANTIC_MODEL = fileURLToPath(
-  new URL('../../../dashboard/Truth.SemanticModel', import.meta.url),
+const MODELING_FIXTURE_ROOT = fileURLToPath(
+  new URL('./fixtures/Minimal.SemanticModel', import.meta.url),
 );
 
 afterEach(() => {
@@ -2446,6 +2446,285 @@ describe('date grain planner tool', () => {
     });
   });
 
+  // ── time-intelligence default-context blank-risk gate (enforceTimeIntelligenceNotBlankInDefaultContext) ──
+  const blankRiskIntent = {
+    measureName: 'Sales YTD',
+    status: 'confirmed' as const,
+    owner: 'test',
+    definition: 'Confirmed YTD intent.',
+    sourceRefs: [{ table: 'Actual', column: 'Date', kind: 'column' as const, isHidden: false }],
+    grain: 'day' as const,
+    additivity: 'non-additive' as const,
+    filters: [],
+    format: '#,0',
+    unit: 'units',
+    caveats: [],
+    timeIntelligence: {
+      dateRefs: [{ table: 'Actual', column: 'Date', kind: 'column' as const, isHidden: false }],
+      dateTable: 'Calendar',
+      dateColumn: 'Date',
+      period: 'YTD' as const,
+      grain: 'day' as const,
+      calendarPolicy: 'standard' as const,
+      incompletePeriodBehavior: 'show' as const,
+    },
+  };
+  // Calendar ends 2021-01-05 (overshoots), Actual ends 2020-12-30 — the multi-fact case
+  // where a plain default-context TOTALYTD over Calendar would be BLANK for Actual.
+  const overshootDriver = (onCreate: (def: { expression?: string }) => void) =>
+    ({
+      async ensureConnection() {
+        return { mode: 'live', connectionString: 'Data Source=localhost:61234;' };
+      },
+      async getModelSnapshot() {
+        return liveSnapshot();
+      },
+      async daxQuery() {
+        return {
+          results: [
+            {
+              tables: [
+                {
+                  rows: [
+                    {
+                      '[__kind]': 'date-table',
+                      '[__table]': 'Calendar',
+                      '[__column]': 'Date',
+                      '[maxDate]': '2021-01-05T00:00:00',
+                    },
+                    {
+                      '[__kind]': 'fact',
+                      '[__table]': 'Actual',
+                      '[__column]': 'Date',
+                      '[maxDate]': '2020-12-30T00:00:00',
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        };
+      },
+      async createMeasure(def: { expression?: string }) {
+        onCreate(def);
+        return {};
+      },
+    }) as unknown as Parameters<typeof setModelDriverForTests>[0];
+
+  it('refuses a bare period-to-date measure that would be BLANK because the calendar outruns the fact', async () => {
+    let created = false;
+    setModelDriverForTests(
+      overshootDriver(() => {
+        created = true;
+      }),
+    );
+    const result = await withClient((client) =>
+      client.callTool({
+        name: 'pbi_measure_create',
+        arguments: {
+          tableName: 'Actual',
+          name: 'Sales YTD',
+          expression: "TOTALYTD([Total Sales], 'Calendar'[Date])",
+          measureIntent: blankRiskIntent,
+        },
+      }),
+    );
+    const payload = jsonPayload(result);
+    expect(result.isError).toBe(true);
+    expect(payload.reason).toBe('time-intelligence-default-context-blank-risk');
+    expect(payload.correctedExpression).toEqual(expect.stringContaining('_AsOf'));
+    expect(payload.correctedExpression).toEqual(expect.stringContaining("MAX('Actual'[Date])"));
+    expect(created).toBe(false);
+  });
+
+  it('allows a bare period-to-date measure when the calendar ends at the fact max', async () => {
+    let createdExpression: string | undefined;
+    setModelDriverForTests({
+      async ensureConnection() {
+        return { mode: 'live', connectionString: 'Data Source=localhost:61234;' };
+      },
+      async getModelSnapshot() {
+        return liveSnapshot();
+      },
+      async daxQuery() {
+        return {
+          results: [
+            {
+              tables: [
+                {
+                  rows: [
+                    {
+                      '[__kind]': 'date-table',
+                      '[__table]': 'Calendar',
+                      '[__column]': 'Date',
+                      '[maxDate]': '2020-12-30T00:00:00',
+                    },
+                    {
+                      '[__kind]': 'fact',
+                      '[__table]': 'Actual',
+                      '[__column]': 'Date',
+                      '[maxDate]': '2020-12-30T00:00:00',
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        };
+      },
+      async createMeasure(def: { expression?: string }) {
+        createdExpression = def.expression;
+        return {};
+      },
+    } as unknown as Parameters<typeof setModelDriverForTests>[0]);
+    const result = await withClient((client) =>
+      client.callTool({
+        name: 'pbi_measure_create',
+        arguments: {
+          tableName: 'Actual',
+          name: 'Sales YTD',
+          // Base resolves against a real model column so the downstream daxReferenceCheck
+          // passes (the no-overshoot path proceeds past the blank-risk gate to the write).
+          expression: "TOTALYTD(SUM('Actual'[Date]), 'Calendar'[Date])",
+          measureIntent: blankRiskIntent,
+        },
+      }),
+    );
+    const payload = jsonPayload(result);
+    expect(result.isError).not.toBe(true);
+    expect(payload.created).toBe(true);
+    expect(createdExpression).toBe("TOTALYTD(SUM('Actual'[Date]), 'Calendar'[Date])");
+  });
+
+  it('refuses to auto-rewrite a blank-risk bare measure that carries an extra filter arg (would drop it)', async () => {
+    let created = false;
+    setModelDriverForTests(
+      overshootDriver(() => {
+        created = true;
+      }),
+    );
+    const result = await withClient((client) =>
+      client.callTool({
+        name: 'pbi_measure_create',
+        arguments: {
+          tableName: 'Actual',
+          name: 'Sales YTD',
+          expression: "TOTALYTD([Total Sales], 'Calendar'[Date], 'Product'[Cat]=\"A\")",
+          measureIntent: blankRiskIntent,
+        },
+      }),
+    );
+    const payload = jsonPayload(result);
+    expect(result.isError).toBe(true);
+    expect(payload.reason).toBe('time-intelligence-default-context-blank-risk-manual');
+    expect(payload.correctedExpression).toBeUndefined();
+    expect(created).toBe(false);
+  });
+
+  it('re-threads a fiscal year-end literal into the blank-risk corrected expression', async () => {
+    let created = false;
+    setModelDriverForTests(
+      overshootDriver(() => {
+        created = true;
+      }),
+    );
+    const result = await withClient((client) =>
+      client.callTool({
+        name: 'pbi_measure_create',
+        arguments: {
+          tableName: 'Actual',
+          name: 'Sales YTD',
+          expression: 'TOTALYTD([Total Sales], \'Calendar\'[Date], "06-30")',
+          measureIntent: blankRiskIntent,
+        },
+      }),
+    );
+    const payload = jsonPayload(result);
+    expect(result.isError).toBe(true);
+    expect(payload.reason).toBe('time-intelligence-default-context-blank-risk');
+    expect(payload.correctedExpression).toEqual(expect.stringContaining('"06-30"'));
+    expect(payload.correctedExpression).toEqual(expect.stringContaining('_AsOf'));
+    expect(created).toBe(false);
+  });
+
+  it('refuses to swap the calendar when the expression date axis differs from the declared intent axis', async () => {
+    let created = false;
+    setModelDriverForTests(
+      overshootDriver(() => {
+        created = true;
+      }),
+    );
+    const result = await withClient((client) =>
+      client.callTool({
+        name: 'pbi_measure_create',
+        arguments: {
+          tableName: 'Actual',
+          name: 'Sales YTD',
+          expression: "TOTALYTD([Total Sales], 'FiscalCalendar'[Date])",
+          measureIntent: blankRiskIntent,
+        },
+      }),
+    );
+    const payload = jsonPayload(result);
+    expect(result.isError).toBe(true);
+    expect(payload.reason).toBe('time-intelligence-date-axis-mismatch');
+    expect(created).toBe(false);
+  });
+
+  it('does NOT flag an axis mismatch for an UNQUOTED same-axis table ref (Calendar[Date] vs declared Calendar)', async () => {
+    // normalizeDaxRef must treat the unquoted form identically to the quoted declared
+    // form, so this same-axis measure is NOT refused as a mismatch — it proceeds to the
+    // normal blank-risk refusal because the calendar overshoots the fact.
+    let created = false;
+    setModelDriverForTests(
+      overshootDriver(() => {
+        created = true;
+      }),
+    );
+    const result = await withClient((client) =>
+      client.callTool({
+        name: 'pbi_measure_create',
+        arguments: {
+          tableName: 'Actual',
+          name: 'Sales YTD',
+          expression: "TOTALYTD(SUM('Actual'[Date]), Calendar[Date])",
+          measureIntent: blankRiskIntent,
+        },
+      }),
+    );
+    const payload = jsonPayload(result);
+    expect(result.isError).toBe(true);
+    // Reached the blank-risk gate (same axis), NOT refused as an axis mismatch.
+    expect(payload.reason).toBe('time-intelligence-default-context-blank-risk');
+    expect(created).toBe(false);
+  });
+
+  it('does NOT flag an axis mismatch for a CASE-DIFFERING same-axis ref (DAX identifiers are case-insensitive)', async () => {
+    // 'Calendar'[date] (lowercase column) and declared 'Calendar'[Date] are the SAME axis
+    // in DAX, so normalizeDaxRef must compare them equal — not refuse as an axis mismatch.
+    let created = false;
+    setModelDriverForTests(
+      overshootDriver(() => {
+        created = true;
+      }),
+    );
+    const result = await withClient((client) =>
+      client.callTool({
+        name: 'pbi_measure_create',
+        arguments: {
+          tableName: 'Actual',
+          name: 'Sales YTD',
+          expression: "TOTALYTD(SUM('Actual'[Date]), 'Calendar'[date])",
+          measureIntent: blankRiskIntent,
+        },
+      }),
+    );
+    const payload = jsonPayload(result);
+    expect(result.isError).toBe(true);
+    expect(payload.reason).toBe('time-intelligence-default-context-blank-risk');
+    expect(created).toBe(false);
+  });
+
   it('refuses live model export because Desktop persistence is Ctrl+S', async () => {
     let exported = false;
     setModelDriverForTests({
@@ -2461,7 +2740,7 @@ describe('date grain planner tool', () => {
     const result = await withClient((client) =>
       client.callTool({
         name: 'pbi_model_export',
-        arguments: { folderPath: TRUTH_SEMANTIC_MODEL },
+        arguments: { folderPath: MODELING_FIXTURE_ROOT },
       }),
     );
 
@@ -2486,7 +2765,7 @@ describe('date grain planner tool', () => {
     const result = await withClient((client) =>
       client.callTool({
         name: 'pbi_model_export',
-        arguments: { folderPath: TRUTH_SEMANTIC_MODEL },
+        arguments: { folderPath: MODELING_FIXTURE_ROOT },
       }),
     );
 
@@ -2704,7 +2983,7 @@ describe('date grain planner tool', () => {
     expect(created).toBe(false);
   });
 
-  it('refuses activating a date relationship to an unmarked temporal endpoint', async () => {
+  it('probes (does not pre-refuse on the mark) an unmarked temporal endpoint, then refuses on failed proof', async () => {
     const snapshot = liveSnapshot();
     snapshot.tables = snapshot.tables.map((table) =>
       table.name === 'Calendar' ? { ...table, dataCategory: undefined } : table,
@@ -2735,10 +3014,15 @@ describe('date grain planner tool', () => {
       }),
     );
 
+    // The mark-INDEPENDENT endpoint check (looksLikeDateRelationshipEndpoint) lets an
+    // unmarked-but-temporal endpoint through to the LIVE proof instead of pre-refusing on
+    // the missing dataCategory:Time mark (which can no-op on Import). With an empty/
+    // unparseable probe it is then refused on the PROOF — not on the cosmetic mark — and
+    // nothing is written.
     const payload = jsonPayload(result);
     expect(result.isError).toBe(true);
-    expect(payload.reason).toBe('date-endpoint-not-governed');
-    expect(probed).toBe(false);
+    expect(payload.reason).toBe('proof-parse-shape-unrecognized');
+    expect(probed).toBe(true);
     expect(activated).toBe(false);
   });
 
@@ -2801,9 +3085,12 @@ describe('date grain planner tool', () => {
       }),
     );
 
+    // An auto LocalDateTable endpoint is excluded by looksLikeDateRelationshipEndpoint
+    // (binding to an engine-generated date table is never the governed endpoint), so it
+    // is refused at the endpoint check BEFORE any probe.
     const payload = jsonPayload(result);
     expect(result.isError).toBe(true);
-    expect(payload.reason).toBe('date-endpoint-not-governed');
+    expect(payload.reason).toBe('date-endpoint-not-temporal');
     expect(probed).toBe(false);
     expect(activated).toBe(false);
   });
@@ -3004,6 +3291,287 @@ describe('date grain planner tool', () => {
       toColumn: 'Date',
       isActive: false,
     });
+  });
+
+  it('creates a Date relationship for a clean Import Date table whose calendar source is UNREADABLE, relaying a warning instead of refusing', async () => {
+    // REGRESSION (the reported deadlock): a pre-existing Date table on a live Import model
+    // is data-proven clean (contiguous, unique, non-blank, covers the fact) but the MS
+    // Modeling MCP read surfaces NO dataCategory mark and NO partitionSources/expression —
+    // both are structurally unobservable on Import. The calendar-source net used to treat
+    // that absence as a defect and refuse, so proving the key from data self-armed the
+    // refusal and blocked relationship creation entirely. It must now SUCCEED and relay a
+    // non-blocking caveat. Dataset-agnostic: no field names are special-cased.
+    const snapshot = {
+      modelPath: '(live)',
+      tables: [
+        {
+          name: 'Forecast',
+          columns: [
+            {
+              table: 'Forecast',
+              name: 'Date',
+              dataType: 'dateTime',
+              isHidden: false,
+              isKey: false,
+              isCalculated: false,
+            },
+            {
+              table: 'Forecast',
+              name: 'Amount',
+              dataType: 'decimal',
+              summarizeBy: 'sum',
+              isHidden: false,
+              isKey: false,
+              isCalculated: false,
+            },
+          ],
+          measures: [],
+          isHidden: false,
+          isCalculated: false,
+          isAutoDateTable: false,
+        },
+        {
+          name: 'Calendar',
+          columns: [
+            {
+              table: 'Calendar',
+              name: 'Date',
+              dataType: 'dateTime',
+              isHidden: false,
+              // Import rejects the isKey write, so the live read shows it unset.
+              isKey: false,
+              isCalculated: false,
+            },
+          ],
+          measures: [],
+          isHidden: false,
+          isCalculated: true,
+          isAutoDateTable: false,
+          // No dataCategory: 'Time' and no partitionSources — the unobservable Import case.
+        },
+      ],
+      relationships: [],
+    };
+    let createdDefinition: unknown;
+    setModelDriverForTests({
+      async ensureConnection() {
+        return { mode: 'live', connectionString: 'Data Source=localhost:61234;' };
+      },
+      async getCachedSnapshot() {
+        return snapshot;
+      },
+      async daxQuery() {
+        return {
+          results: [
+            {
+              tables: [
+                {
+                  rows: [
+                    {
+                      '[__kind]': 'date-table',
+                      '[__table]': 'Calendar',
+                      '[__column]': 'Date',
+                      '[rowCount]': 59,
+                      '[nonBlankDateCount]': 59,
+                      '[distinctDateCount]': 59,
+                      '[blankDateCount]': 0,
+                      '[duplicateDateCount]': 0,
+                      '[gapCount]': 0,
+                      '[nonMidnightTimeCount]': 0,
+                      '[minDate]': '2025-01-01T00:00:00',
+                      '[maxDate]': '2025-02-28T00:00:00',
+                    },
+                    {
+                      '[__kind]': 'fact',
+                      '[__table]': 'Forecast',
+                      '[__column]': 'Date',
+                      '[rowCount]': 45,
+                      '[nonBlankDateCount]': 45,
+                      '[distinctDateCount]': 40,
+                      '[distinctMonthStartCount]': 2,
+                      '[nonMonthStartDateCount]': 43,
+                      '[monthsWithMultipleDates]': 2,
+                      '[maxDistinctDatesPerMonth]': 21,
+                      '[blankDateCount]': 0,
+                      '[duplicateDateCount]': 5,
+                      '[gapCount]': 19,
+                      '[nonMidnightTimeCount]': 0,
+                      '[minDate]': '2025-01-01T00:00:00',
+                      '[maxDate]': '2025-02-28T00:00:00',
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        };
+      },
+      async createRelationship(definition: unknown) {
+        createdDefinition = definition;
+        return { created: true };
+      },
+    } as unknown as Parameters<typeof setModelDriverForTests>[0]);
+
+    const result = await withClient((client) =>
+      client.callTool({
+        name: 'pbi_relationship_create',
+        arguments: {
+          fromTable: 'Forecast',
+          fromColumn: 'Date',
+          toTable: 'Calendar',
+          toColumn: 'Date',
+          isActive: false,
+        },
+      }),
+    );
+
+    const payload = jsonPayload(result);
+    expect(result.isError, JSON.stringify(payload, null, 2)).not.toBe(true);
+    expect(payload.created).toBe(true);
+    expect(createdDefinition).toMatchObject({
+      fromTable: 'Forecast',
+      toTable: 'Calendar',
+      toColumn: 'Date',
+    });
+    // The unreadable calendar source must be RELAYED as a caveat, never refused.
+    const dateTableWarnings = payload.dateTableWarnings as string[] | undefined;
+    expect(dateTableWarnings, JSON.stringify(payload, null, 2)).toBeDefined();
+    expect((dateTableWarnings ?? []).join(' ')).toMatch(/calendar source could not be read/i);
+  });
+
+  it('creates an ACTIVE Date relationship on an unmarked, source-less, data-proven Import Date table (exercises buildWritePlan dateKeyProvenFromData)', async () => {
+    // The ACTIVE path is stricter than inactive: it requires factPlan.observedGrain==='day'
+    // AND a matching create-date-relationship write from buildWritePlan, which in turn keys
+    // off coverageWritable (markReadiness.ready) and relationshipTargetsGovernedDateEndpoint
+    // accepting the endpoint via dateKeyProvenFromData (NOT the unobservable isMarkedDateTable).
+    // This locks the planner-layer disjunct so a clean unmarked source-less Import Date table
+    // can take an ACTIVE fact relationship.
+    const snapshot = {
+      modelPath: '(live)',
+      tables: [
+        {
+          name: 'Forecast',
+          columns: [
+            {
+              table: 'Forecast',
+              name: 'Date',
+              dataType: 'dateTime',
+              isHidden: false,
+              isKey: false,
+              isCalculated: false,
+            },
+          ],
+          measures: [],
+          isHidden: false,
+          isCalculated: false,
+          isAutoDateTable: false,
+        },
+        {
+          name: 'Calendar',
+          columns: [
+            {
+              table: 'Calendar',
+              name: 'Date',
+              dataType: 'dateTime',
+              isHidden: false,
+              isKey: false,
+              isCalculated: false,
+            },
+          ],
+          measures: [],
+          isHidden: false,
+          isCalculated: true,
+          isAutoDateTable: false,
+          // unmarked + no partitionSources/expression: the Import case.
+        },
+      ],
+      relationships: [],
+    };
+    let createdDefinition: unknown;
+    setModelDriverForTests({
+      async ensureConnection() {
+        return { mode: 'live', connectionString: 'Data Source=localhost:61234;' };
+      },
+      async getCachedSnapshot() {
+        return snapshot;
+      },
+      async daxQuery() {
+        return {
+          results: [
+            {
+              tables: [
+                {
+                  rows: [
+                    {
+                      '[__kind]': 'date-table',
+                      '[__table]': 'Calendar',
+                      '[__column]': 'Date',
+                      '[rowCount]': 59,
+                      '[nonBlankDateCount]': 59,
+                      '[distinctDateCount]': 59,
+                      '[blankDateCount]': 0,
+                      '[duplicateDateCount]': 0,
+                      '[gapCount]': 0,
+                      '[nonMidnightTimeCount]': 0,
+                      '[minDate]': '2025-01-01T00:00:00',
+                      '[maxDate]': '2025-02-28T00:00:00',
+                    },
+                    {
+                      '[__kind]': 'fact',
+                      '[__table]': 'Forecast',
+                      '[__column]': 'Date',
+                      '[rowCount]': 45,
+                      '[nonBlankDateCount]': 45,
+                      '[distinctDateCount]': 40,
+                      '[distinctMonthStartCount]': 2,
+                      '[nonMonthStartDateCount]': 43,
+                      '[monthsWithMultipleDates]': 2,
+                      '[maxDistinctDatesPerMonth]': 21,
+                      '[blankDateCount]': 0,
+                      '[duplicateDateCount]': 5,
+                      '[gapCount]': 19,
+                      '[nonMidnightTimeCount]': 0,
+                      '[minDate]': '2025-01-01T00:00:00',
+                      '[maxDate]': '2025-02-28T00:00:00',
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        };
+      },
+      async createRelationship(definition: unknown) {
+        createdDefinition = definition;
+        return { created: true };
+      },
+    } as unknown as Parameters<typeof setModelDriverForTests>[0]);
+
+    const result = await withClient((client) =>
+      client.callTool({
+        name: 'pbi_relationship_create',
+        arguments: {
+          fromTable: 'Forecast',
+          fromColumn: 'Date',
+          toTable: 'Calendar',
+          toColumn: 'Date',
+          isActive: true,
+        },
+      }),
+    );
+
+    const payload = jsonPayload(result);
+    expect(result.isError, JSON.stringify(payload, null, 2)).not.toBe(true);
+    expect(payload.created).toBe(true);
+    expect(createdDefinition).toMatchObject({
+      fromTable: 'Forecast',
+      toTable: 'Calendar',
+      toColumn: 'Date',
+      isActive: true,
+    });
+    expect((payload.dateTableWarnings as string[] | undefined)?.join(' ') ?? '').toMatch(
+      /calendar source could not be read/i,
+    );
   });
 
   it('refuses bidirectional active date relationship creation before live proof', async () => {
@@ -3872,7 +4440,7 @@ describe('date grain planner tool', () => {
     expect(marked).toBe(false);
   });
 
-  it('refuses mark-as-date when post-write snapshot does not show the table as marked', async () => {
+  it('returns a NON-BLOCKING result (not a thrown error) when the mark no-ops on a data-proven table', async () => {
     const snapshot = liveSnapshot();
     snapshot.tables = snapshot.tables.map((table) =>
       table.name === 'Calendar'
@@ -3976,10 +4544,132 @@ describe('date grain planner tool', () => {
       }),
     );
 
+    // A data-proven Date table whose dataCategory:Time write no-ops on read-back is
+    // reported as a NON-BLOCKING result (marked:false + actionable warning), NOT a thrown
+    // error: the date key is proven from data, so relationships/explicit-column TI work
+    // regardless and the workflow must not deadlock on the cosmetic mark.
     const payload = jsonPayload(result);
-    expect(result.isError).toBe(true);
-    expect(payload).toMatchObject({ reason: 'post-write-verification-failed' });
+    expect(result.isError).not.toBe(true);
+    expect(payload).toMatchObject({ marked: false, reason: 'post-write-verification-failed' });
+    expect(payload.warning).toBeDefined();
     expect(marked).toBe(true);
+  });
+
+  it('relays the calendar-source-unproven warning from pbi_table_mark_as_date on a clean UNMARKED, source-less Import Date table', async () => {
+    // REGRESSION (mark relay): a data-proven Date table whose dataCategory mark AND calendar
+    // source are both unobservable on Import must still mark (or no-op) and RELAY the
+    // unreadable-source caveat as `warnings`, never refuse. Strips both the mark and the
+    // partitionSources from the shared Calendar fixture.
+    const snapshot = liveSnapshot();
+    snapshot.tables = snapshot.tables.map((table) =>
+      table.name === 'Calendar'
+        ? {
+            ...table,
+            dataCategory: undefined,
+            partitionSources: undefined,
+            columns: table.columns.map((column) =>
+              column.name === 'Date'
+                ? { ...column, isKey: false, dataCategory: undefined }
+                : column,
+            ),
+          }
+        : table,
+    );
+    setModelDriverForTests({
+      async ensureConnection() {
+        return { mode: 'live', connectionString: 'Data Source=localhost:61234;' };
+      },
+      async getCachedSnapshot() {
+        return snapshot;
+      },
+      async daxQuery() {
+        return {
+          results: [
+            {
+              tables: [
+                {
+                  rows: [
+                    {
+                      '[__kind]': 'date-table',
+                      '[__table]': 'Calendar',
+                      '[__column]': 'Date',
+                      '[rowCount]': 366,
+                      '[nonBlankDateCount]': 366,
+                      '[distinctDateCount]': 366,
+                      '[blankDateCount]': 0,
+                      '[duplicateDateCount]': 0,
+                      '[gapCount]': 0,
+                      '[nonMidnightTimeCount]': 0,
+                      '[minDate]': '2020-01-01T00:00:00',
+                      '[maxDate]': '2020-12-31T00:00:00',
+                    },
+                    {
+                      '[__kind]': 'fact',
+                      '[__table]': 'Actual',
+                      '[__column]': 'Date',
+                      '[rowCount]': 366,
+                      '[nonBlankDateCount]': 366,
+                      '[distinctDateCount]': 366,
+                      '[distinctMonthStartCount]': 12,
+                      '[nonMonthStartDateCount]': 354,
+                      '[monthsWithMultipleDates]': 12,
+                      '[maxDistinctDatesPerMonth]': 31,
+                      '[blankDateCount]': 0,
+                      '[duplicateDateCount]': 0,
+                      '[gapCount]': 0,
+                      '[nonMidnightTimeCount]': 0,
+                      '[minDate]': '2020-01-01T00:00:00',
+                      '[maxDate]': '2020-12-31T00:00:00',
+                    },
+                    {
+                      '[__kind]': 'fact',
+                      '[__table]': 'Target',
+                      '[__column]': 'Date',
+                      '[rowCount]': 366,
+                      '[nonBlankDateCount]': 366,
+                      '[distinctDateCount]': 366,
+                      '[distinctMonthStartCount]': 12,
+                      '[nonMonthStartDateCount]': 354,
+                      '[monthsWithMultipleDates]': 12,
+                      '[maxDistinctDatesPerMonth]': 31,
+                      '[blankDateCount]': 0,
+                      '[duplicateDateCount]': 0,
+                      '[gapCount]': 0,
+                      '[nonMidnightTimeCount]': 0,
+                      '[minDate]': '2020-01-01T00:00:00',
+                      '[maxDate]': '2020-12-31T00:00:00',
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        };
+      },
+      async markAsDateTable() {
+        return {};
+      },
+    } as unknown as Parameters<typeof setModelDriverForTests>[0]);
+
+    const result = await withClient((client) =>
+      client.callTool({
+        name: 'pbi_table_mark_as_date',
+        arguments: {
+          tableName: 'Calendar',
+          dateColumn: 'Date',
+          facts: [
+            { tableName: 'Actual', dateColumn: 'Date' },
+            { tableName: 'Target', dateColumn: 'Date' },
+          ],
+        },
+      }),
+    );
+
+    const payload = jsonPayload(result);
+    expect(result.isError, JSON.stringify(payload, null, 2)).not.toBe(true);
+    const warnings = payload.warnings as string[] | undefined;
+    expect(warnings, JSON.stringify(payload, null, 2)).toBeDefined();
+    expect((warnings ?? []).join(' ')).toMatch(/calendar source could not be read/i);
   });
 
   it('allows date relationship activation with governed endpoint, valid coverage, and daily proof', async () => {

@@ -296,18 +296,23 @@ function liveTwoTableSnapshotWithSharedDate() {
   return snapshot;
 }
 
-function liveTwoTableSnapshotWithGovernedDate(options: { withSource?: boolean } = {}) {
+function liveTwoTableSnapshotWithGovernedDate(
+  options: { withSource?: boolean; unmarked?: boolean } = {},
+) {
   const withSource = options.withSource !== false;
+  // unmarked simulates the live Import read where the dataCategory='Time' mark does not
+  // reflect back (and isKey is rejected) — the key is provable only from the data probe.
+  const marked = options.unmarked !== true;
   const snapshot = liveTwoTableSnapshotWithSharedDate();
   const dateTable = {
     name: 'Date',
-    dataCategory: 'Time',
+    ...(marked ? { dataCategory: 'Time' } : {}),
     columns: [
       {
         table: 'Date',
         name: 'Date',
         dataType: 'dateTime',
-        dataCategory: 'Time',
+        ...(marked ? { dataCategory: 'Time' } : {}),
         isHidden: false,
         isKey: false,
         isCalculated: false,
@@ -989,6 +994,121 @@ describe('star-schema join planner tool', () => {
     expect(daxCalls).toBe(1);
   });
 
+  it('reports actuals-vs-targets READY for a clean data-proven but UNMARKED, source-less Import Date table (relays a warning, does not re-block)', async () => {
+    // REGRESSION: the read-only readiness planner must agree with the write gates and key off
+    // markReadiness.ready, NOT coverage.status. An Import Date table whose dataCategory mark
+    // does not reflect back and whose calendar source is unreadable still proves a clean,
+    // contiguous, covering daily key from data — so the join is READY and the agent must NOT
+    // be steered to recreate/re-mark it. The unreadable source is relayed as a caveat.
+    // biome-ignore lint/performance/noDelete: this test exercises live-first behavior
+    delete process.env.PBI_REPORT_MCP_DISABLE_LIVE_PROBE;
+    setModelDriverForTests({
+      async listLiveInstances() {
+        return [{ connectionString: 'Data Source=localhost:61234;' }];
+      },
+      async ensureConnection() {
+        return { mode: 'live', connectionString: 'Data Source=localhost:61234;' };
+      },
+      async getModelSnapshot() {
+        return liveTwoTableSnapshotWithGovernedDate({ withSource: false, unmarked: true });
+      },
+      async daxQuery() {
+        return {
+          results: [
+            {
+              tables: [
+                {
+                  rows: [
+                    {
+                      '[__kind]': 'date-table',
+                      '[__table]': 'Date',
+                      '[__column]': 'Date',
+                      '[rowCount]': 10,
+                      '[nonBlankDateCount]': 10,
+                      '[distinctDateCount]': 10,
+                      '[distinctMonthStartCount]': 1,
+                      '[nonMonthStartDateCount]': 9,
+                      '[monthsWithMultipleDates]': 1,
+                      '[maxDistinctDatesPerMonth]': 10,
+                      '[nonMidnightTimeCount]': 0,
+                      '[blankDateCount]': 0,
+                      '[duplicateDateCount]': 0,
+                      '[gapCount]': 0,
+                      '[minDate]': '2025-01-01T00:00:00',
+                      '[maxDate]': '2025-01-10T00:00:00',
+                    },
+                    {
+                      '[__kind]': 'fact',
+                      '[__table]': 'FactLeft',
+                      '[__column]': 'TxnDate',
+                      '[rowCount]': 20,
+                      '[nonBlankDateCount]': 20,
+                      '[distinctDateCount]': 10,
+                      '[distinctMonthStartCount]': 1,
+                      '[nonMonthStartDateCount]': 9,
+                      '[monthsWithMultipleDates]': 1,
+                      '[maxDistinctDatesPerMonth]': 10,
+                      '[nonMidnightTimeCount]': 0,
+                      '[blankDateCount]': 0,
+                      '[duplicateDateCount]': 10,
+                      '[gapCount]': 0,
+                      '[minDate]': '2025-01-01T00:00:00',
+                      '[maxDate]': '2025-01-10T00:00:00',
+                    },
+                    {
+                      '[__kind]': 'fact',
+                      '[__table]': 'FactRight',
+                      '[__column]': 'TxnDate',
+                      '[rowCount]': 12,
+                      '[nonBlankDateCount]': 12,
+                      '[distinctDateCount]': 6,
+                      '[distinctMonthStartCount]': 1,
+                      '[nonMonthStartDateCount]': 5,
+                      '[monthsWithMultipleDates]': 1,
+                      '[maxDistinctDatesPerMonth]': 6,
+                      '[nonMidnightTimeCount]': 0,
+                      '[blankDateCount]': 0,
+                      '[duplicateDateCount]': 6,
+                      '[gapCount]': 0,
+                      '[minDate]': '2025-01-01T00:00:00',
+                      '[maxDate]': '2025-01-06T00:00:00',
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        };
+      },
+    } as unknown as Parameters<typeof setModelDriverForTests>[0]);
+
+    const result = await withClient((client) =>
+      client.callTool({
+        name: 'pbi_model_plan_actuals_targets_join',
+        arguments: {
+          leftTable: 'FactLeft',
+          rightTable: 'FactRight',
+          axes: ['SharedCode'],
+        },
+      }),
+    );
+
+    const payload = jsonPayload(result);
+    expect(result.isError, JSON.stringify(payload, null, 2)).not.toBe(true);
+    // The cosmetic date-table-not-marked blocker must NOT force a block when the key is
+    // data-proven; the join is ready (no date-table coverage blockers).
+    const blockerCodes = ((payload.blockers as ReadonlyArray<{ code: string }>) ?? []).map(
+      (blocker) => blocker.code,
+    );
+    expect(blockerCodes, JSON.stringify(payload, null, 2)).not.toContain('date-table-not-marked');
+    expect(blockerCodes).not.toContain('date-table-coverage-not-valid');
+    expect(payload.status, JSON.stringify(payload, null, 2)).toBe('ready');
+    // The unreadable Import calendar source is relayed honestly, never as a refusal.
+    expect((payload.dateTableWarnings as string[] | undefined)?.join(' ') ?? '').toMatch(
+      /calendar source could not be read/i,
+    );
+  });
+
   it('blocks actuals-vs-targets readiness when governed Date coverage is not valid', async () => {
     // biome-ignore lint/performance/noDelete: this test exercises live-first behavior
     delete process.env.PBI_REPORT_MCP_DISABLE_LIVE_PROBE;
@@ -1018,7 +1138,11 @@ describe('star-schema join planner tool', () => {
                       '[distinctDateCount]': 10,
                       '[blankDateCount]': 0,
                       '[duplicateDateCount]': 0,
-                      '[gapCount]': 0,
+                      // A real probed defect (the daily key is not contiguous) — this is what
+                      // legitimately invalidates coverage. An unreadable calendar source alone
+                      // no longer blocks (it degrades to a relayed warning), so the block must
+                      // come from a positively-proven data defect like this gap.
+                      '[gapCount]': 2,
                       '[nonMidnightTimeCount]': 0,
                       '[minDate]': '2025-01-01T00:00:00',
                       '[maxDate]': '2025-01-10T00:00:00',
@@ -1081,12 +1205,16 @@ describe('star-schema join planner tool', () => {
 
     const payload = jsonPayload(result);
     expect(payload.status).toBe('blocked');
-    expect(payload.blockers).toEqual([
+    expect(payload.blockers).toContainEqual(
       expect.objectContaining({
         source: 'date-table',
-        code: 'calendar-source-proof-missing',
+        code: 'date-table-has-gaps',
       }),
-    ]);
+    );
+    // The unreadable calendar source must NOT itself be a blocker any more.
+    expect(
+      (payload.blockers as ReadonlyArray<{ code: string }>).map((blocker) => blocker.code),
+    ).not.toContain('calendar-source-proof-missing');
   });
 
   it('does not expose executable normalized writes for a blocked axis', async () => {
