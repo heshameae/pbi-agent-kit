@@ -316,7 +316,6 @@ describe('Claude model-operation contracts', () => {
 
   it('keeps dashboard/model workflows explicit about the semantic clarification gate', () => {
     const contractFiles = [
-      'docs/system-improvements.md',
       'agents/data-analyst.md',
       'agents/model-builder.md',
       'agents/model-reviewer.md',
@@ -375,7 +374,6 @@ describe('Claude model-operation contracts', () => {
 
   it('keeps Date table workflows on the governed create path', () => {
     const contractFiles = [
-      'docs/system-improvements.md',
       'skills/modeling-semantic-model/SKILL.md',
       'agents/data-analyst.md',
       'agents/model-builder.md',
@@ -400,7 +398,6 @@ describe('Claude model-operation contracts', () => {
 
   it('documents Date proof parse-shape failures as no-fallback stop conditions', () => {
     const contractFiles = [
-      'docs/system-improvements.md',
       'skills/modeling-semantic-model/SKILL.md',
       'skills/modeling-semantic-model/references/grain.md',
       'skills/authoring-measures/SKILL.md',
@@ -423,11 +420,7 @@ describe('Claude model-operation contracts', () => {
   });
 
   it('requires governed shared Date axes for cross-fact joins', () => {
-    const contractFiles = [
-      'docs/system-improvements.md',
-      'skills/modeling-semantic-model/SKILL.md',
-      'agents/model-builder.md',
-    ];
+    const contractFiles = ['skills/modeling-semantic-model/SKILL.md', 'agents/model-builder.md'];
 
     for (const file of contractFiles) {
       const lower = readRepoFile(file).toLowerCase();
@@ -443,7 +436,6 @@ describe('Claude model-operation contracts', () => {
 
   it('requires observable target/date grain to be probed before asking the user', () => {
     const contractFiles = [
-      'docs/system-improvements.md',
       'skills/modeling-semantic-model/SKILL.md',
       'agents/data-analyst.md',
       'agents/model-builder.md',
@@ -577,7 +569,6 @@ describe('Claude model-operation contracts', () => {
       'skills/authoring-measures/SKILL.md',
       'skills/power-query/SKILL.md',
       'agents/data-analyst.md',
-      'docs/system-improvements.md',
     ];
 
     for (const file of contractFiles) {
@@ -608,11 +599,7 @@ describe('Claude model-operation contracts', () => {
   });
 
   it('keeps live refresh separate from Ctrl+S persistence', () => {
-    const contractFiles = [
-      'docs/system-improvements.md',
-      'skills/modeling-semantic-model/SKILL.md',
-      'agents/model-builder.md',
-    ];
+    const contractFiles = ['skills/modeling-semantic-model/SKILL.md', 'agents/model-builder.md'];
 
     for (const file of contractFiles) {
       const text = readRepoFile(file).toLowerCase();

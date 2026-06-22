@@ -36,3 +36,7 @@ coverage/
 # Generated release artifacts (zip, checksums, SBOM, test evidence) — produced by
 # `pnpm release`, never committed.
 release-artifacts/
+
+# Internal AA CoE dev docs — kept LOCAL, not shipped to the bank.
+docs/system-improvements.md
+docs/workflows/
