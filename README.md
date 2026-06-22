@@ -33,11 +33,14 @@ pnpm install
 pnpm build          # compiles packages/{core,mcp}; the plugin also ships prebuilt dist
 ```
 
-1. Install the plugin in Claude Code: `/plugin install <repo-path>`
-2. Run `/mcp` and confirm `pbi-modeling-beta` is connected.
-3. Open a model in Power BI Desktop and ask, e.g. *"connect to my model and list the tables."*
+1. **Install the plugin** in Claude Code: `/plugin install <repo-path>`. Confirm it's enabled with `/plugin`.
+2. **Confirm the MCP server is up:** run `/mcp` and check that `pbi-modeling-beta` shows **connected**. If it doesn't, restart Claude Code and re-check before continuing.
+3. **Open your model in Power BI Desktop.**
+4. **Make your first prompt `connect to my dashboard`** (see the note below).
 
-For air-gapped / Windows installs (no internet, no `npx`), see **[docs/install-offline-windows.md](docs/install-offline-windows.md)**.
+> ⚠️ **Always start a session with `connect to my dashboard`** (or `connect to my model`). The plugin works against the *live* Power BI Desktop model, so the agent must attach to it before any modeling request — make this your first prompt every time, before asking for measures, Date tables, checks, etc.
+
+For air-gapped / Windows installs (no internet), see **[docs/install-offline-windows.md](docs/install-offline-windows.md)**.
 
 ## Using it
 
