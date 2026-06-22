@@ -91,6 +91,8 @@ Changes run through checks in code first, so the plugin does not improvise: it w
 
 ## Development
 
+Prerequisites: Node.js 20+ and pnpm 9 (the repo pins `pnpm@9.15.0` via `packageManager`; run `corepack enable` to use it). `pnpm install` brings the toolchain (TypeScript, Biome, Vitest).
+
 This repo is both a Claude Code plugin and a small Node monorepo.
 
 ```
