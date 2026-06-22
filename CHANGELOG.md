@@ -17,5 +17,5 @@ First bank-ready release. **Scope: modeling workflows only.** Report, page, and 
 
 ### Notes
 - **Readiness is not certification**; RLS is read/evidence-only. See `docs/known-limitations.md`.
-- The release zip (`git archive`) contains **source + compiled `dist`**. A runnable offline bundle additionally needs production `node_modules` and the bank-approved Microsoft MCP executable — see `docs/install-offline-windows.md`.
+- The release zip (`git archive`) contains **source + compiled `dist` + the bundled win32-arm64 Microsoft MCP** (`vendor/`). A runnable offline bundle additionally needs production `node_modules` (`pnpm install --prod`). x86-64 machines must swap in the `win32-x64` MS MCP build — see `docs/install-offline-windows.md`.
 - Validated against Microsoft Power BI modeling MCP `0.5.0-beta.2`; the `win32-arm64` 0.5.10 build is confirmed working on Windows-on-ARM (Parallels / Apple Silicon).

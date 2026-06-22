@@ -29,7 +29,7 @@ Verify the package before handover with `node scripts/verify-release-artifact.mj
 <plugin-root>\vendor\powerbi-modeling-mcp\package\dist\powerbi-modeling-mcp.exe
 ```
 
-`<plugin-root>` is the installed plugin directory (the value of `CLAUDE_PLUGIN_ROOT`). A flat `vendor\powerbi-modeling-mcp\powerbi-modeling-mcp.exe` is also accepted. The `vendor/` directory is gitignored, so the binary is never committed to the repo. With the exe present, **no environment variable is needed** — the wrapper spawns it with `--start --skipconfirmation`.
+`<plugin-root>` is the installed plugin directory (the value of `CLAUDE_PLUGIN_ROOT`). A flat `vendor\powerbi-modeling-mcp\powerbi-modeling-mcp.exe` is also accepted. **The `win32-arm64` build (v0.5.10) is bundled in this repo** under `vendor/powerbi-modeling-mcp/` (with Microsoft's `LICENSE.txt`), so an ARM Windows install needs no extra step. **x86-64 machines** must replace that folder's contents with the `win32-x64` build (same layout), or set `PBI_MODELING_MCP_COMMAND`. With the exe present, **no environment variable is needed** — the wrapper spawns it with `--start --skipconfirmation`.
 
 **Option B — explicit path.** If the exe lives outside the plugin, point the wrapper at it via `PBI_MODELING_MCP_COMMAND` (Step 2).
 
