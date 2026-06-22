@@ -29,7 +29,7 @@ coverage/
 # hook sidecar state (project-scoped connection/uncommitted-measures registry)
 .pbi-agent-kit/
 
-# The bank-approved win32-arm64 Microsoft Power BI modeling MCP is INTENTIONALLY
+# The approved win32-arm64 Microsoft Power BI modeling MCP is INTENTIONALLY
 # committed under vendor/powerbi-modeling-mcp/ (with its LICENSE) so offline Windows
 # installs need no runtime download. x86-64 machines supply their own build.
 
@@ -37,6 +37,6 @@ coverage/
 # `pnpm release`, never committed.
 release-artifacts/
 
-# Internal AA CoE dev docs — kept LOCAL, not shipped to the bank.
+# Internal AA CoE dev docs — kept LOCAL, not shipped.
 docs/system-improvements.md
 docs/workflows/

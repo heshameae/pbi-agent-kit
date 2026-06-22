@@ -1,13 +1,13 @@
-# Offline Windows Install (Bank Runtime)
+# Offline Windows Install
 
-This guide covers installing `pbi-agent-kit` on a locked-down Windows machine with **no internet access** and **no `npx`** — the assumed bank runtime. It is dataset-agnostic: nothing here depends on a specific model, table, or field.
+This guide covers installing `pbi-agent-kit` on a locked-down Windows machine with **no internet access** and **no `npx`** — the assumed offline runtime. It is dataset-agnostic: nothing here depends on a specific model, table, or field.
 
 ## Assumptions
 
 - Windows host with Power BI Desktop installed.
 - No outbound internet; package registries (`registry.npmjs.org`) are unreachable.
 - `npx` / on-demand package download is unavailable or disallowed.
-- The Microsoft Power BI modeling MCP is delivered as a **bank-approved internal artifact** (a local executable), not fetched at runtime.
+- The Microsoft Power BI modeling MCP is delivered as an **approved internal artifact** (a local executable), not fetched at runtime.
 - Node.js (>= 20) is available, or the plugin is delivered as a self-contained bundle (see "Runtime bundle" below).
 
 ## What must be in the shipped package
@@ -45,7 +45,7 @@ $env:PBI_MODELING_MCP_ARGS    = "[\"--start\",\"--skipconfirmation\"]"
 - `PBI_MODELING_MCP_COMMAND` — absolute path to the approved executable (overrides the vendored auto-resolution).
 - `PBI_MODELING_MCP_ARGS` — a JSON array of string arguments. Defaults to `["--start","--skipconfirmation"]` for a vendored exe; set explicitly to match the approved executable's flags.
 
-Resolution order on native Windows: `PBI_MODELING_MCP_COMMAND` → vendored exe → **fail closed**. If neither a command nor a vendored exe is present, the wrapper raises a clear setup error instead of attempting an `npx` download. The legacy `npx` fallback exists only for networked development machines and must be explicitly opted into with `PBI_AGENT_KIT_ALLOW_NPX_MS_MCP=1`; **do not set that flag on the bank runtime.**
+Resolution order on native Windows: `PBI_MODELING_MCP_COMMAND` → vendored exe → **fail closed**. If neither a command nor a vendored exe is present, the wrapper raises a clear setup error instead of attempting an `npx` download. The legacy `npx` fallback exists only for networked development machines and must be explicitly opted into with `PBI_AGENT_KIT_ALLOW_NPX_MS_MCP=1`; **do not set that flag on the offline runtime.**
 
 ## Step 3 — Install the plugin from a local path
 
@@ -60,7 +60,7 @@ Install from the unpacked local checkout (no marketplace fetch):
 1. Run `/mcp` and confirm `pbi-modeling-beta` is listed and connected.
 2. Open a Power BI Desktop model and run a read-only model discovery to confirm the wrapper reaches the live model through the approved executable.
 
-If the compiled server is missing or stale, the launcher prints build instructions and exits. On the bank runtime this means the package was built incorrectly — rebuild and repackage on a staging machine; **do not** set `PBI_AGENT_KIT_ALLOW_RUNTIME_BUILD=1` on the offline host.
+If the compiled server is missing or stale, the launcher prints build instructions and exits. On the offline runtime this means the package was built incorrectly — rebuild and repackage on a staging machine; **do not** set `PBI_AGENT_KIT_ALLOW_RUNTIME_BUILD=1` on the offline host.
 
 ## Release verification (run before handover, on a staging machine)
 
@@ -73,7 +73,7 @@ node scripts/verify-release-artifact.mjs   # confirms the tag/zip would ship a r
 
 ## Environment variable reference
 
-| Variable | Purpose | Bank runtime |
+| Variable | Purpose | Offline runtime |
 |---|---|---|
 | _(none)_ | Vendored exe under `<plugin>/vendor/powerbi-modeling-mcp/` auto-resolves | **Recommended (Option A)** |
 | `PBI_MODELING_MCP_COMMAND` | Absolute path to the approved Microsoft MCP executable | Required only if not vendored (Option B) |

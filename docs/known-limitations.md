@@ -1,6 +1,6 @@
 # Known Limitations (v0.1.0)
 
-Disclosed-risk sheet for the bank handover. These are deliberate scope boundaries and known behavioral caveats of the modeling-only beta. Dataset-agnostic: none of these depend on a specific model.
+Disclosed-risk sheet for this release. These are deliberate scope boundaries and known behavioral caveats of the modeling-only beta. Dataset-agnostic: none of these depend on a specific model.
 
 ## Scope
 
@@ -18,8 +18,8 @@ Disclosed-risk sheet for the bank handover. These are deliberate scope boundarie
 ## Runtime dependencies
 
 - **Live Power BI Desktop dependency.** Live model reads and writes require an open Power BI Desktop instance reachable by the wrapper. There is an offline folder-read fallback, but live editing is not available offline.
-- **Windows + approved Microsoft MCP artifact.** The bank runtime is Windows-only with no internet. The Microsoft Power BI modeling MCP must be provided as a bank-approved local executable. The wrapper resolves it automatically when vendored under `<plugin>/vendor/powerbi-modeling-mcp/`, or from `PBI_MODELING_MCP_COMMAND`; if neither is present it fails closed (it does not fetch via `npx`). See `docs/install-offline-windows.md`.
-- **Microsoft MCP version.** Validated against Microsoft Power BI modeling MCP `0.5.0-beta.2`. The bank-approved internal artifact version governs the actual runtime; behavior may differ on other versions.
+- **Windows + approved Microsoft MCP artifact.** The runtime is Windows-only with no internet. The Microsoft Power BI modeling MCP must be provided as an approved local executable. The wrapper resolves it automatically when vendored under `<plugin>/vendor/powerbi-modeling-mcp/`, or from `PBI_MODELING_MCP_COMMAND`; if neither is present it fails closed (it does not fetch via `npx`). See `docs/install-offline-windows.md`.
+- **Microsoft MCP version.** Validated against Microsoft Power BI modeling MCP `0.5.0-beta.2`. The approved internal artifact version governs the actual runtime; behavior may differ on other versions.
 - **Prebuilt server required.** The plugin ships a prebuilt compiled server. The launcher fails closed on a missing/stale build rather than building on the runtime (an on-demand build is a dev-only opt-in via `PBI_AGENT_KIT_ALLOW_RUNTIME_BUILD=1`).
 
 ## Live-write caveats
@@ -34,4 +34,4 @@ These are handled defensively (proof-from-data, non-blocking degradation) so the
 
 ## Distribution
 
-- Some helper scripts in `scripts/` are development-only (macOS/Parallels bridge; an internet-dependent setup helper) and are not part of the supported offline bank install path. The offline path uses `PBI_MODELING_MCP_COMMAND` and never invokes them.
+- Some helper scripts in `scripts/` are development-only (macOS/Parallels bridge; an internet-dependent setup helper) and are not part of the supported offline install path. The offline path uses `PBI_MODELING_MCP_COMMAND` and never invokes them.
