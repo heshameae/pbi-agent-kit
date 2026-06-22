@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   type ClientFactory,
-  DEFAULT_MS_MCP_VERSION,
   type McpClientLike,
   MsMcpClient,
   defaultClientFactory,
@@ -52,17 +51,6 @@ describe('resolveSpawnConfig', () => {
     await expect(defaultClientFactory(cfg, () => undefined)).rejects.toThrow(/not configured/i);
   });
 
-  it('allows the npx fallback on Windows only behind the explicit opt-in', () => {
-    const cfg = resolveSpawnConfig(
-      { PBI_AGENT_KIT_ALLOW_NPX_MS_MCP: '1' },
-      'win32',
-      () => undefined,
-    );
-    expect(cfg.command).toBe('npx');
-    expect(cfg.args).toContain(`@microsoft/powerbi-modeling-mcp@${DEFAULT_MS_MCP_VERSION}`);
-    expect(cfg.args).toContain('--start');
-  });
-
   it('defaults to the Parallels bridge on macOS (no config needed)', () => {
     const cfg = resolveSpawnConfig({ CLAUDE_PLUGIN_ROOT: '/plug' }, 'darwin');
     expect(cfg.command).toBe('bash');
@@ -79,15 +67,6 @@ describe('resolveSpawnConfig', () => {
     );
     expect(cfg.command).toBe('bash');
     expect(cfg.args).toEqual(['scripts/pbi-mcp-bridge.sh']);
-  });
-
-  it('honors a version override on Windows behind the npx opt-in', () => {
-    const cfg = resolveSpawnConfig(
-      { PBI_AGENT_KIT_ALLOW_NPX_MS_MCP: '1', PBI_MODELING_MCP_VERSION: '9.9.9' },
-      'win32',
-      () => undefined,
-    );
-    expect(cfg.args).toContain('@microsoft/powerbi-modeling-mcp@9.9.9');
   });
 
   it('rejects malformed args JSON', () => {

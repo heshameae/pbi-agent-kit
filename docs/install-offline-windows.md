@@ -45,7 +45,7 @@ $env:PBI_MODELING_MCP_ARGS    = "[\"--start\",\"--skipconfirmation\"]"
 - `PBI_MODELING_MCP_COMMAND` — absolute path to the approved executable (overrides the vendored auto-resolution).
 - `PBI_MODELING_MCP_ARGS` — a JSON array of string arguments. Defaults to `["--start","--skipconfirmation"]` for a vendored exe; set explicitly to match the approved executable's flags.
 
-Resolution order on native Windows: `PBI_MODELING_MCP_COMMAND` → vendored exe → **fail closed**. If neither a command nor a vendored exe is present, the wrapper raises a clear setup error instead of attempting an `npx` download. The legacy `npx` fallback exists only for networked development machines and must be explicitly opted into with `PBI_AGENT_KIT_ALLOW_NPX_MS_MCP=1`; **do not set that flag on the offline runtime.**
+Resolution order on native Windows: `PBI_MODELING_MCP_COMMAND` → vendored exe → **fail closed** with a clear setup error. There is **no network fallback** — supply the exe or set `PBI_MODELING_MCP_COMMAND`.
 
 ## Step 3 — Install the plugin from a local path
 
@@ -78,6 +78,4 @@ node scripts/verify-release-artifact.mjs   # confirms the tag/zip would ship a r
 | _(none)_ | Vendored exe under `<plugin>/vendor/powerbi-modeling-mcp/` auto-resolves | **Recommended (Option A)** |
 | `PBI_MODELING_MCP_COMMAND` | Absolute path to the approved Microsoft MCP executable | Required only if not vendored (Option B) |
 | `PBI_MODELING_MCP_ARGS` | JSON array of args for that executable (default `["--start","--skipconfirmation"]`) | Optional |
-| `PBI_MODELING_MCP_VERSION` | Pins the `npx` fallback version (dev only) | Unused |
-| `PBI_AGENT_KIT_ALLOW_NPX_MS_MCP` | Opt in to the `npx` Microsoft-MCP fallback (dev only) | **Do not set** |
 | `PBI_AGENT_KIT_ALLOW_RUNTIME_BUILD` | Opt in to an on-demand `pnpm build` (dev only) | **Do not set** |

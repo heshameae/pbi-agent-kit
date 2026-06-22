@@ -22,7 +22,7 @@ Every write passes through deterministic gates in code before it reaches the mod
 
 ## Requirements
 
-- **Power BI Desktop** (Windows) with a model open, for live work.
+- **Power BI Desktop** (Windows) with a model open — the source of truth for live work. **No specific file format is required** to connect; the wrapper reads the live model. The **`.pbip` (Power BI Project) format** is recommended for source control, and is required only for the offline folder-read fallback (`folderPath` → a `.SemanticModel/definition` folder).
 - **Node.js ≥ 20** and **pnpm**.
 - The **Microsoft Power BI modeling MCP** executable. The **win32-arm64** build is bundled under `vendor/powerbi-modeling-mcp/`; on **x86-64**, supply the `win32-x64` build (same layout) or set `PBI_MODELING_MCP_COMMAND`. The wrapper spawns it internally — **do not** register the raw Microsoft MCP as a peer server.
 
@@ -82,7 +82,6 @@ The MCP launcher runs the prebuilt `packages/mcp/dist/server.js`. If it is missi
 | Variable | Purpose |
 |---|---|
 | `PBI_MODELING_MCP_COMMAND` / `PBI_MODELING_MCP_ARGS` | Point at an external Microsoft MCP executable (overrides the vendored one); args as a JSON array |
-| `PBI_AGENT_KIT_ALLOW_NPX_MS_MCP=1` | Dev only — allow the `npx` Microsoft-MCP fallback (needs internet) |
 | `PBI_AGENT_KIT_ALLOW_RUNTIME_BUILD=1` | Dev only — allow an on-demand `pnpm build` when `dist` is stale |
 | `PBI_AGENT_KIT_NO_DICT_REMINDER=1` | Silence the data-dictionary reminder |
 

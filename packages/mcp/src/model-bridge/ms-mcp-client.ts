@@ -14,11 +14,6 @@ import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 
-// Pinned version for the opt-in native-Windows npx fallback (dev machines only;
-// the offline bank runtime uses PBI_MODELING_MCP_COMMAND pointing at the approved
-// vendored exe). beta.2 is the reference-proven version validated against this kit.
-export const DEFAULT_MS_MCP_VERSION = '0.5.0-beta.2';
-
 export interface MsMcpSpawnConfig {
   readonly command: string;
   readonly args: readonly string[];
@@ -131,11 +126,9 @@ export function defaultVendoredExe(pluginRoot: string): string | undefined {
 //   1. PBI_MODELING_MCP_COMMAND / _ARGS (JSON array): explicit override — always wins.
 //   2. macOS: the MS MCP is a Windows-only exe, so go through the Parallels bridge
 //      automatically (no config needed). Live calls need it; folder reads don't use it.
-//   3. Windows/native: auto-resolve a locally vendored exe (no env var). This is the
-//      supported bank path — the wrapper resolves the approved local executable.
-//   4. Windows/native with no vendored exe: FAIL CLOSED (deferred to spawn time so the
-//      offline folder-read path is not blocked). The legacy npx fallback is available
-//      for a networked dev machine only behind an explicit PBI_AGENT_KIT_ALLOW_NPX_MS_MCP=1.
+//   3. Windows/native: auto-resolve a locally vendored exe under vendor/powerbi-modeling-mcp/.
+//   4. Otherwise: FAIL CLOSED (deferred to spawn time so the offline folder-read path is
+//      not blocked). There is NO network fallback — supply the exe or PBI_MODELING_MCP_COMMAND.
 export function resolveSpawnConfig(
   env: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform = process.platform,
@@ -164,27 +157,18 @@ export function resolveSpawnConfig(
     };
   }
 
-  // No vendored exe. Fail closed unless the npx fallback is explicitly opted into —
-  // never silently reach the forbidden network path. Deferred to spawn time so the
-  // offline folder-read path (builds the driver but never spawns) is not blocked.
-  if (env.PBI_AGENT_KIT_ALLOW_NPX_MS_MCP !== '1') {
-    return {
-      command: '',
-      args: [],
-      env: envStringRecord(env),
-      deferredError:
-        'Microsoft Power BI modeling MCP is not configured for this platform. ' +
-        'Place the approved powerbi-modeling-mcp executable under <plugin>/vendor/powerbi-modeling-mcp/ ' +
-        '(or set PBI_MODELING_MCP_COMMAND to its path, with optional PBI_MODELING_MCP_ARGS as a JSON array). ' +
-        'See docs/install-offline-windows.md. ' +
-        'For a networked development machine only, opt in to the npx fallback with PBI_AGENT_KIT_ALLOW_NPX_MS_MCP=1.',
-    };
-  }
-  const version = env.PBI_MODELING_MCP_VERSION?.trim() || DEFAULT_MS_MCP_VERSION;
+  // No vendored exe and no explicit command. Fail closed — there is NO network
+  // fallback. Deferred to spawn time so the offline folder-read path (which builds
+  // the driver but never spawns the MS MCP) is not blocked.
   return {
-    command: 'npx',
-    args: ['-y', `@microsoft/powerbi-modeling-mcp@${version}`, '--start'],
+    command: '',
+    args: [],
     env: envStringRecord(env),
+    deferredError:
+      'Microsoft Power BI modeling MCP is not configured for this platform. ' +
+      'Place the approved powerbi-modeling-mcp executable under <plugin>/vendor/powerbi-modeling-mcp/ ' +
+      '(or set PBI_MODELING_MCP_COMMAND to its path, with optional PBI_MODELING_MCP_ARGS as a JSON array). ' +
+      'See docs/install-offline-windows.md.',
   };
 }
 

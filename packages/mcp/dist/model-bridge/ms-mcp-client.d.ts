@@ -1,4 +1,3 @@
-export declare const DEFAULT_MS_MCP_VERSION = "0.5.0-beta.2";
 export interface MsMcpSpawnConfig {
     readonly command: string;
     readonly args: readonly string[];

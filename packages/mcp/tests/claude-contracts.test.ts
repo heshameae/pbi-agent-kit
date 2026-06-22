@@ -543,11 +543,11 @@ describe('Claude model-operation contracts', () => {
     expect(launcher).toContain('PBI_AGENT_KIT_ALLOW_RUNTIME_BUILD');
     expect(launcher).toContain('failClosedStale');
 
-    // The Microsoft MCP spawn must fail closed on native Windows when unconfigured
-    // (no silent npx); the offline runtime points PBI_MODELING_MCP_COMMAND at the exe.
+    // The Microsoft MCP spawn must fail closed on native Windows when unconfigured —
+    // no network fallback; the offline runtime resolves the vendored exe or PBI_MODELING_MCP_COMMAND.
     const msClient = readRepoFile('packages/mcp/src/model-bridge/ms-mcp-client.ts');
-    expect(msClient).toContain('PBI_AGENT_KIT_ALLOW_NPX_MS_MCP');
     expect(msClient).toContain('not configured for this platform');
+    expect(msClient).not.toContain('npx');
 
     // The offline-Windows install guide is a first-handoff deliverable and must
     // stay referenced from the README.
