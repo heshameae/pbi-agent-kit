@@ -4,32 +4,13 @@ A Claude Code plugin for building and reviewing Power BI data models.
 
 > Status: v0.1.0, modeling only. Report, page, and visual authoring are not available yet.
 
-## What you can do
+## Requirements
 
-Connect to a model open in Power BI Desktop and work on it in plain language:
-
-| Goal | Ask something like |
-|---|---|
-| Understand a model you didn't build | "Connect to my dashboard, then list the tables, measures, and relationships, and flag anything off." |
-| Add a correct measure | "Create a measure for total sales by segment." It confirms the intent and checks the fields exist first. |
-| Build or fix the date table | "Plan and create a proper Date table and wire up the relationships." |
-| Make actuals vs targets work | "Join actuals and targets on a shared calendar." |
-| Fix time intelligence | "Add a year-to-date sales measure." It caps to the last data period so it isn't blank. |
-| Review before handoff | "Run a model check and tell me what to fix." |
-| Check governance readiness | "Check RLS, sensitivity, and lineage evidence." |
-
-A typical first session:
-
-1. `connect to my dashboard`
-2. "List the tables and measures, and run a model check."
-3. "Create a measure for total sales by segment." Confirm the intent, and it writes the DAX into the live model.
-4. Press Ctrl+S in Power BI Desktop to save.
-
-Building reports, dashboards, and visuals is not part of this release. The plugin stays on the data model.
+- Power BI Desktop (Windows), with a model open for live work.
+- Node.js 20+ and pnpm.
+- Microsoft's Power BI modeling MCP executable. The `win32-arm64` build is bundled under `vendor/`; on Intel/AMD Windows, drop in the `win32-x64` build or set `PBI_MODELING_MCP_COMMAND`. The plugin spawns it for you, so don't register the raw Microsoft MCP as a peer server.
 
 ## Setup
-
-You need Power BI Desktop (Windows), Node.js 20+, and pnpm.
 
 ```bash
 pnpm install
@@ -41,7 +22,7 @@ Then in Claude Code:
 1. Install the plugin: `/plugin install <repo-path>`, then check it is enabled with `/plugin`.
 2. Check the server is up: run `/mcp` and confirm `pbi-modeling-beta` shows connected. If it doesn't, restart Claude Code and check again.
 
-The plugin drives Microsoft's Power BI modeling MCP, which is bundled for Windows on ARM (`win32-arm64`) under `vendor/`. On Intel/AMD Windows, drop in the `win32-x64` build or set `PBI_MODELING_MCP_COMMAND`. For air-gapped or Windows installs, see [docs/install-offline-windows.md](docs/install-offline-windows.md).
+For air-gapped or Windows installs, see [docs/install-offline-windows.md](docs/install-offline-windows.md).
 
 ## Connect first
 
@@ -71,17 +52,28 @@ These files give meaning only. The plugin still checks the live model to prove a
 - `/pbi-init-config`: config snippets to use the server from other tools (Cursor, VS Code, Cline, Windsurf, Zed).
 - `/pbi-init-data-dictionary`: create the data dictionary and fill it in by answering a few questions.
 
-## How it stays safe
+## What you can do
 
-The plugin runs checks in code before anything reaches your model, so it does not improvise:
+Connect to a model open in Power BI Desktop and work on it in plain language:
 
-- It does not write DAX from guesses. Measures come from intent you confirm, against fields the model proves exist.
-- It does not hardcode dates. Date tables come from your real fact dates, and year-to-date style measures are capped to the last data period so they do not go blank.
-- It checks before it writes, then confirms the change by re-reading the model.
-- It does not block your work. It only declines out-of-scope report building.
-- It works on any model. No table or column names are baked in.
+| Goal | Ask something like |
+|---|---|
+| Understand a model you didn't build | "Connect to my dashboard, then list the tables, measures, and relationships, and flag anything off." |
+| Add a correct measure | "Create a measure for total sales by segment." It confirms the intent and checks the fields exist first. |
+| Build or fix the date table | "Plan and create a proper Date table and wire up the relationships." |
+| Make actuals vs targets work | "Join actuals and targets on a shared calendar." |
+| Fix time intelligence | "Add a year-to-date sales measure." It caps to the last data period so it isn't blank. |
+| Review before handoff | "Run a model check and tell me what to fix." |
+| Check governance readiness | "Check RLS, sensitivity, and lineage evidence." |
 
-Readiness is not certification. A clean model check is not a compliance sign-off. See [docs/known-limitations.md](docs/known-limitations.md).
+A typical first session:
+
+1. `connect to my dashboard`
+2. "List the tables and measures, and run a model check."
+3. "Create a measure for total sales by segment." Confirm the intent, and it writes the DAX into the live model.
+4. Press Ctrl+S in Power BI Desktop to save.
+
+Building reports, dashboards, and visuals is not part of this release. The plugin stays on the data model.
 
 ## Troubleshooting
 
@@ -93,7 +85,11 @@ Readiness is not certification. A clean model check is not a compliance sign-off
 | "compiled MCP server unavailable" | The prebuilt server is missing. In a dev checkout, run `pnpm install && pnpm build`. |
 | It asks you to confirm a measure or date detail | Expected. It does not write from guesses. Confirm and it continues. |
 
-## For developers
+## How it stays safe
+
+Changes run through checks in code first, so the plugin does not improvise: it writes DAX only from intent you confirm against fields the model proves exist, builds Date tables from your real fact dates instead of hardcoded ranges, and re-reads the model to confirm every write. A clean model check is not a compliance sign-off; see [docs/known-limitations.md](docs/known-limitations.md).
+
+## Development
 
 This repo is both a Claude Code plugin and a small Node monorepo.
 
