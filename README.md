@@ -1,6 +1,6 @@
 # pbi-agent-kit
 
-A Claude Code assistant for building and checking Power BI data models.
+A Claude Code plugin for building and reviewing Power BI data models.
 
 > Status: v0.1.0, modeling only. Report, page, and visual authoring are not available yet.
 
@@ -25,7 +25,7 @@ A typical first session:
 3. "Create a measure for total sales by segment." Confirm the intent, and it writes the DAX into the live model.
 4. Press Ctrl+S in Power BI Desktop to save.
 
-Building reports, dashboards, and visuals is not part of this release. The assistant stays on the data model.
+Building reports, dashboards, and visuals is not part of this release. The plugin stays on the data model.
 
 ## Setup
 
@@ -45,11 +45,11 @@ The plugin drives Microsoft's Power BI modeling MCP, which is bundled for Window
 
 ## Connect first
 
-Open your model in Power BI Desktop, then make your first prompt `connect to my dashboard` (or `connect to my model`). The assistant works against the live model, so it has to attach before anything else. Any file format works to connect. The `.pbip` project format is recommended for source control and is only required for offline folder reads.
+Open your model in Power BI Desktop, then make your first prompt `connect to my dashboard` (or `connect to my model`). The plugin works against the live model, so it has to attach before anything else. Any file format works to connect. The `.pbip` project format is recommended for source control and is only required for offline folder reads.
 
 ## Give it business context (recommended)
 
-A model knows column names, not what your business means by them. Two optional files give the assistant that meaning, and it writes much better measures and checks when they exist. Create both in your project, then reference them from your project's `CLAUDE.md` so Claude Code loads them at the start of every session.
+A model knows column names, not what your business means by them. Two optional files give the plugin that meaning, and it writes much better measures and checks when they exist. Create both in your project, then reference them from your project's `CLAUDE.md` so Claude Code loads them at the start of every session.
 
 **`business-context.md`** (freeform): what the business does, who the audience is, the KPIs that matter and how you define them in plain words, terminology and acronyms, the fiscal calendar, and any data caveats. See [docs/business-context.md](docs/business-context.md) for a starter you can copy.
 
@@ -64,7 +64,7 @@ definitions are in .pbi-agent-kit/data-dictionary.yaml. Read both before
 proposing or writing measures.
 ```
 
-These files give meaning only. The assistant still checks the live model to prove a field exists before it uses it.
+These files give meaning only. The plugin still checks the live model to prove a field exists before it uses it.
 
 ## Commands
 
@@ -73,7 +73,7 @@ These files give meaning only. The assistant still checks the live model to prov
 
 ## How it stays safe
 
-The assistant runs checks in code before anything reaches your model, so it does not improvise:
+The plugin runs checks in code before anything reaches your model, so it does not improvise:
 
 - It does not write DAX from guesses. Measures come from intent you confirm, against fields the model proves exist.
 - It does not hardcode dates. Date tables come from your real fact dates, and year-to-date style measures are capped to the last data period so they do not go blank.
