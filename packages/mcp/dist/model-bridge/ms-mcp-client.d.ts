@@ -3,6 +3,7 @@ export interface MsMcpSpawnConfig {
     readonly command: string;
     readonly args: readonly string[];
     readonly env?: Readonly<Record<string, string>>;
+    readonly deferredError?: string;
 }
 export interface McpContentItem {
     readonly type: string;
@@ -29,7 +30,9 @@ export interface McpClientLike {
 }
 export declare const MS_MCP_CALL_TIMEOUT_MS = 30000;
 export type ClientFactory = (config: MsMcpSpawnConfig, onClose: () => void) => Promise<McpClientLike>;
-export declare function resolveSpawnConfig(env?: NodeJS.ProcessEnv, platform?: NodeJS.Platform): MsMcpSpawnConfig;
+export declare const DEFAULT_MS_MCP_EXE_ARGS: readonly string[];
+export declare function defaultVendoredExe(pluginRoot: string): string | undefined;
+export declare function resolveSpawnConfig(env?: NodeJS.ProcessEnv, platform?: NodeJS.Platform, findVendoredExe?: (pluginRoot: string) => string | undefined): MsMcpSpawnConfig;
 export declare const defaultClientFactory: ClientFactory;
 export declare class MsMcpClient {
     #private;

@@ -34,7 +34,7 @@ A Claude Code plugin that bundles:
 5. Optionally add business context at `.pbi-agent-kit/data-dictionary.yaml`. See `docs/data-dictionary.md` for the template. This file is agent context only; do not add it to MCP server config.
 6. Do not register the raw Microsoft Power BI modeling MCP as a peer server. The wrapper starts it internally so deterministic gates and live-model targeting run first.
 
-The default MCP launcher uses the compiled server at `packages/mcp/dist/server.js`. If `dist/` is missing but dependencies are already installed, it attempts a quiet one-time `pnpm build`; if that cannot run, it prints the build command to stderr and exits without writing to the MCP stdout protocol.
+The default MCP launcher uses the compiled server at `packages/mcp/dist/server.js`, which ships **prebuilt** with the plugin. If the compiled server is missing or stale the launcher **fails closed** — it prints build instructions to stderr and exits, and does **not** run a build on the runtime. For local development you can opt in to an automatic one-time `pnpm build` with `PBI_AGENT_KIT_ALLOW_RUNTIME_BUILD=1` (requires installed dependencies; never use on an offline/bank runtime).
 
 ## Modeling Beta Scope
 
@@ -45,6 +45,14 @@ In the modeling-only beta, dashboard/report/page/visual/PBIR authoring is unavai
 ## Install (other agents)
 
 Use `/pbi-init-config` for Cursor / VS Code Copilot / Cline / Windsurf / Zed config snippets.
+
+## Offline / Windows (bank) install
+
+For an air-gapped Windows install — no internet, no `npx` — see **[docs/install-offline-windows.md](docs/install-offline-windows.md)**. You must set `PBI_MODELING_MCP_COMMAND` to the approved local Power BI modeling MCP executable; the wrapper fails closed if it is unset, rather than reaching for `npx`.
+
+## Known limitations
+
+See **[docs/known-limitations.md](docs/known-limitations.md)** for modeling-only scope, readiness-vs-certification, the live-Desktop dependency, and live-write caveats — the disclosed-risk sheet for handover.
 
 ## Architecture
 

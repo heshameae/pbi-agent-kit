@@ -4,6 +4,7 @@ import {
   DEFAULT_MS_MCP_VERSION,
   type McpClientLike,
   MsMcpClient,
+  defaultClientFactory,
   resolveSpawnConfig,
 } from '../src/model-bridge/ms-mcp-client.js';
 
@@ -20,8 +21,43 @@ function mockClient(): McpClientLike & { closed: number } {
 }
 
 describe('resolveSpawnConfig', () => {
-  it('defaults to npx with the pinned version on Windows', () => {
-    const cfg = resolveSpawnConfig({}, 'win32');
+  it('auto-resolves a locally vendored exe on Windows without any env var', () => {
+    const exe = 'C:\\plugin\\vendor\\powerbi-modeling-mcp\\package\\dist\\powerbi-modeling-mcp.exe';
+    const cfg = resolveSpawnConfig({}, 'win32', () => exe);
+    expect(cfg.command).toBe(exe);
+    expect(cfg.args).toEqual(['--start', '--skipconfirmation']);
+    expect(cfg.deferredError).toBeUndefined();
+  });
+
+  it('honors PBI_MODELING_MCP_ARGS over the default for a vendored exe', () => {
+    const cfg = resolveSpawnConfig(
+      { PBI_MODELING_MCP_ARGS: '["--start"]' },
+      'win32',
+      () => '/x/mcp.exe',
+    );
+    expect(cfg.command).toBe('/x/mcp.exe');
+    expect(cfg.args).toEqual(['--start']);
+  });
+
+  it('fails closed on native Windows when unconfigured: no silent npx, deferred error, no throw at resolve', () => {
+    const cfg = resolveSpawnConfig({}, 'win32', () => undefined);
+    // Resolving must NOT throw — offline folder-only reads still build the driver.
+    expect(cfg.command).not.toBe('npx');
+    // ...but actually spawning must fail closed with an actionable message.
+    expect(cfg.deferredError).toMatch(/not configured/i);
+  });
+
+  it('defers the fail-closed throw to spawn time (defaultClientFactory)', async () => {
+    const cfg = resolveSpawnConfig({}, 'win32', () => undefined);
+    await expect(defaultClientFactory(cfg, () => undefined)).rejects.toThrow(/not configured/i);
+  });
+
+  it('allows the npx fallback on Windows only behind the explicit opt-in', () => {
+    const cfg = resolveSpawnConfig(
+      { PBI_AGENT_KIT_ALLOW_NPX_MS_MCP: '1' },
+      'win32',
+      () => undefined,
+    );
     expect(cfg.command).toBe('npx');
     expect(cfg.args).toContain(`@microsoft/powerbi-modeling-mcp@${DEFAULT_MS_MCP_VERSION}`);
     expect(cfg.args).toContain('--start');
@@ -45,8 +81,12 @@ describe('resolveSpawnConfig', () => {
     expect(cfg.args).toEqual(['scripts/pbi-mcp-bridge.sh']);
   });
 
-  it('honors a version override on Windows', () => {
-    const cfg = resolveSpawnConfig({ PBI_MODELING_MCP_VERSION: '9.9.9' }, 'win32');
+  it('honors a version override on Windows behind the npx opt-in', () => {
+    const cfg = resolveSpawnConfig(
+      { PBI_AGENT_KIT_ALLOW_NPX_MS_MCP: '1', PBI_MODELING_MCP_VERSION: '9.9.9' },
+      'win32',
+      () => undefined,
+    );
     expect(cfg.args).toContain('@microsoft/powerbi-modeling-mcp@9.9.9');
   });
 

@@ -546,6 +546,20 @@ describe('Claude model-operation contracts', () => {
     expect(launcher).toContain('isBuildStale');
     expect(launcher).toContain('build-fingerprint.mjs');
     expect(launcher).toContain('loaded build');
+    // Offline/bank safety: the runtime build is opt-in; a stale/missing build
+    // fails closed by default rather than shelling out to a network/devDep build.
+    expect(launcher).toContain('PBI_AGENT_KIT_ALLOW_RUNTIME_BUILD');
+    expect(launcher).toContain('failClosedStale');
+
+    // The Microsoft MCP spawn must fail closed on native Windows when unconfigured
+    // (no silent npx); the offline runtime points PBI_MODELING_MCP_COMMAND at the exe.
+    const msClient = readRepoFile('packages/mcp/src/model-bridge/ms-mcp-client.ts');
+    expect(msClient).toContain('PBI_AGENT_KIT_ALLOW_NPX_MS_MCP');
+    expect(msClient).toContain('not configured for this platform');
+
+    // The offline-Windows install guide is a first-handoff deliverable and must
+    // stay referenced from the README.
+    expect(readme).toContain('install-offline-windows');
 
     const fingerprint = readRepoFile('scripts/build-fingerprint.mjs');
     expect(fingerprint).toContain('packages/mcp/src');

@@ -34,10 +34,10 @@ bugs — all **dataset-agnostic**, all **verified against the live Claude Code d
 | PS-01/02 | low | plugin.json (284) + marketplace.json (330) descriptions exceeded 50–200 chars. | **FIXED** — shortened |
 | PS-06 | info | Windows runtime does **not** use the `.sh` scripts (darwin-only branch → `npx` on Windows). | confirmed OK |
 | PS-05 | info | Hooks/agents/skills auto-discover even though plugin.json omits the paths. | confirmed OK |
-| PS-04 | med | `packages/mcp/dist/server.js` is gitignored → fresh install needs runtime `pnpm build`. | **DECISION** |
+| PS-04 | med | `packages/mcp/dist/server.js` is gitignored → fresh install needs runtime `pnpm build`. | done → ship prebuilt `dist` (gitignore whitelist) + launcher fails closed; `pnpm verify:release` guards the tag. See system-improvements.md "Offline bank handover hardening". |
 | PS-07 | low | Stray `2026-05-week-1.pptx` + `.DS_Store` (gitignored; pollute local-path installs). | pending (pptx = user file) |
 | PS-08 | info | marketplace.json missing optional `$schema`/`category`. | optional |
-| SKILL-01 | high | `skills/pbi-init-config/SKILL.md` has no `name`, uses command frontmatter (`disable-model-invocation`), README invokes it as `/pbi-init-config` → it is a misplaced slash command. | planned → move to `commands/` |
+| SKILL-01 | high | `skills/pbi-init-config/SKILL.md` has no `name`, uses command frontmatter (`disable-model-invocation`), README invokes it as `/pbi-init-config` → it is a misplaced slash command. | done — now `commands/pbi-init-config.md` |
 | SKILL-02 | high | `skill-cleaner` lives under gitignored `.claude/skills/` → never shipped. | **DECISION** |
 | SKILL-03 | med | No modeling skill declares `allowed-tools` (extra portability; not required once settings allowlist lands). | planned |
 | SKILL-04 | low | `user-invocable: false` — **valid** per live skills docs; keep. | confirmed, kept |

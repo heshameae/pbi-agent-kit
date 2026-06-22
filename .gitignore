@@ -28,3 +28,7 @@ coverage/
 
 # hook sidecar state (project-scoped connection/uncommitted-measures registry)
 .pbi-agent-kit/
+
+# Vendored Microsoft Power BI modeling MCP executable (resolved at runtime by the
+# wrapper). The MS binary is NOT redistributed in this repo — placed locally only.
+vendor/
