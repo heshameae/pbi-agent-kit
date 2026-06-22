@@ -12,6 +12,7 @@
     "build": "pnpm -r build && node scripts/write-build-marker.mjs",
     "test": "pnpm -r test",
     "verify:release": "node scripts/verify-release-artifact.mjs",
+    "release": "node scripts/build-release.mjs",
     "lint": "biome check .",
     "format": "biome format --write ."
   },

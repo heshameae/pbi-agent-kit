@@ -32,3 +32,7 @@ coverage/
 # Vendored Microsoft Power BI modeling MCP executable (resolved at runtime by the
 # wrapper). The MS binary is NOT redistributed in this repo — placed locally only.
 vendor/
+
+# Generated release artifacts (zip, checksums, SBOM, test evidence) — produced by
+# `pnpm release`, never committed.
+release-artifacts/
