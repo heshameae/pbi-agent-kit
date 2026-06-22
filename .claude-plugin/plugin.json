@@ -1,7 +1,7 @@
 {
   "name": "pbi-agent-kit",
   "version": "0.1.0",
-  "description": "Power BI semantic-model beta for Claude Code — modeling-only MCP surface with deterministic modeling gates. Report, page, and visual authoring is unavailable in this beta.",
+  "description": "A Claude Code plugin for building and reviewing Power BI data models. Modeling only; report, page, and visual authoring are not available.",
   "author": { "name": "Hesham Eissa" },
   "license": "MIT",
   "mcpServers": "./.mcp.json"

@@ -9,7 +9,7 @@
       "name": "pbi-agent-kit",
       "source": "./",
       "version": "0.1.0",
-      "description": "Modeling-only Power BI beta for Claude Code: wrapper MCP server, skills, subagents, deterministic modeling gates, and live Desktop editing. Report/page/visual authoring is unavailable in this beta."
+      "description": "A Claude Code plugin for building and reviewing Power BI data models. Modeling only; report, page, and visual authoring are not available."
     }
   ]
 }
