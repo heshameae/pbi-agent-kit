@@ -174,5 +174,21 @@ describe('plugin effective-inventory launch gate', () => {
     it('no longer registers a PostToolUse block', () => {
       expect(Object.hasOwn(hookKeys, 'PostToolUse')).toBe(false);
     });
+
+    it('registers the SessionStart data-dictionary reminder (startup|resume|clear)', () => {
+      expect(Object.hasOwn(hookKeys, 'SessionStart')).toBe(true);
+      const serialized = JSON.stringify(hookKeys.SessionStart);
+      expect(serialized).toContain('remind-data-dictionary.mjs');
+      expect(serialized).toContain('startup|resume|clear');
+      expect(existsSync(repoPath('hooks', 'scripts', 'remind-data-dictionary.mjs'))).toBe(true);
+    });
+  });
+
+  describe('commands/ inventory', () => {
+    it('ships the pbi-init-config and pbi-init-data-dictionary commands', () => {
+      const commands = new Set(markdownNames('commands'));
+      expect(commands.has('pbi-init-config.md')).toBe(true);
+      expect(commands.has('pbi-init-data-dictionary.md')).toBe(true);
+    });
   });
 });

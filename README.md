@@ -31,7 +31,7 @@ A Claude Code plugin that bundles:
 
 3. Run `/mcp` and verify `pbi-modeling-beta` is listed.
 4. No dictionary path is required. If no data dictionary is provided, agents must use live MCP model discovery and ask concise clarifying questions when business meaning is ambiguous.
-5. Optionally add business context at `.pbi-agent-kit/data-dictionary.yaml`. See `docs/data-dictionary.md` for the template. This file is agent context only; do not add it to MCP server config.
+5. Optionally add business context at `.pbi-agent-kit/data-dictionary.yaml` — run `/pbi-init-data-dictionary` to create it from a template and fill it via clarifying questions (a non-blocking reminder also surfaces when it's absent in a Power BI project; opt out with `PBI_AGENT_KIT_NO_DICT_REMINDER=1`). See `docs/data-dictionary.md`. This file is agent context only; do not add it to MCP server config.
 6. Do not register the raw Microsoft Power BI modeling MCP as a peer server. The wrapper starts it internally so deterministic gates and live-model targeting run first.
 
 The default MCP launcher uses the compiled server at `packages/mcp/dist/server.js`, which ships **prebuilt** with the plugin. If the compiled server is missing or stale the launcher **fails closed** — it prints build instructions to stderr and exits, and does **not** run a build on the runtime. For local development you can opt in to an automatic one-time `pnpm build` with `PBI_AGENT_KIT_ALLOW_RUNTIME_BUILD=1` (requires installed dependencies; never use on an offline/bank runtime).
