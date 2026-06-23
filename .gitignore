@@ -29,9 +29,10 @@ coverage/
 # hook sidecar state (project-scoped connection/uncommitted-measures registry)
 .pbi-agent-kit/
 
-# The approved win32-x64 Microsoft Power BI modeling MCP is INTENTIONALLY
-# committed under vendor/powerbi-modeling-mcp/ (with its LICENSE) so offline Windows
-# installs need no runtime download. ARM (win32-arm64) machines supply their own build.
+# The Microsoft Power BI modeling MCP binary is NOT redistributed in this repo.
+# Provide the approved executable locally under vendor/powerbi-modeling-mcp/, or set
+# PBI_MODELING_MCP_COMMAND. The vendor/ directory is gitignored.
+vendor/
 
 # Generated release artifacts (zip, checksums, SBOM, test evidence) — produced by
 # `pnpm release`, never committed.

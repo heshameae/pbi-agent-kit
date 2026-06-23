@@ -11,5 +11,5 @@ For maintainers working in this repo. It does not load for end users, whose Clau
 ## Workflow
 - Tests: `pnpm -r test` runs both packages (core + mcp); keep all green. `pnpm lint` runs Biome.
 - Build marker: after editing anything under `packages/*/src` or the root `package.json`, run `pnpm build` (core builds before mcp) so `dist` and the build marker match the source; otherwise the offline launcher fails closed on a fresh checkout. Keep `packages/{core,mcp}/dist` and the marker committed.
-- ARM dev machine: `vendor/` ships the `win32-x64` Microsoft MCP (for the deployment fleet); on ARM, set `PBI_MODELING_MCP_COMMAND` to a local `win32-arm64` build (the env var overrides the bundled exe).
+- Microsoft MCP exe: `vendor/` is gitignored and not shipped. Put a local build matching your CPU under `vendor/powerbi-modeling-mcp/`, or set `PBI_MODELING_MCP_COMMAND` (it overrides the vendored path).
 - Commit only when asked.

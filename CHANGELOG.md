@@ -17,5 +17,5 @@ First release. **Scope: modeling workflows only.** Report, page, and visual auth
 
 ### Notes
 - **Readiness is not certification**; RLS is read/evidence-only. See `docs/known-limitations.md`.
-- The release zip (`git archive`) contains **source + compiled `dist` + the bundled win32-x64 Microsoft MCP** (`vendor/`). A runnable offline bundle additionally needs production `node_modules` (`pnpm install --prod`). ARM Windows machines must swap in the `win32-arm64` MS MCP build (or set `PBI_MODELING_MCP_COMMAND`); see `docs/install-offline-windows.md`.
-- Validated against Microsoft Power BI modeling MCP `0.5.0-beta.2`; bundled and confirmed on `0.5.10` (`win32-x64` shipped; `win32-arm64` confirmed on Apple Silicon / Parallels).
+- The release zip (`git archive`) contains **source + compiled `dist`**. The Microsoft MCP binary is **not included**; provide the approved build for your CPU under `vendor/powerbi-modeling-mcp/` or via `PBI_MODELING_MCP_COMMAND`. A runnable offline bundle also needs production `node_modules` (`pnpm install --prod`). See `docs/install-offline-windows.md`.
+- Validated against Microsoft Power BI modeling MCP `0.5.0-beta.2`; also exercised on `0.5.10` (`win32-x64` and `win32-arm64`). The MCP binary is provided separately, not shipped.

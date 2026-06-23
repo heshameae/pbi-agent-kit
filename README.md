@@ -8,7 +8,7 @@ A Claude Code plugin for building and reviewing Power BI data models.
 
 - Power BI Desktop (Windows), with a model open for live work.
 - Node.js 20+ and pnpm.
-- Microsoft's Power BI modeling MCP executable. The `win32-x64` build is bundled under `vendor/` (covers most Windows machines); on ARM Windows, drop in the `win32-arm64` build or set `PBI_MODELING_MCP_COMMAND`. The plugin spawns it for you, so don't register the raw Microsoft MCP as a peer server.
+- Microsoft's Power BI modeling MCP executable. It is **not included** in this repo; obtain the approved build for your CPU (`win32-x64` for Intel/AMD, `win32-arm64` for ARM) and either drop it under `vendor/powerbi-modeling-mcp/` (gitignored) or point `PBI_MODELING_MCP_COMMAND` at it. The plugin spawns it for you, so don't register the raw Microsoft MCP as a peer server.
 
 ## Setup
 
@@ -81,7 +81,7 @@ Building reports, dashboards, and visuals is not part of this release. The plugi
 |---|---|
 | `pbi-modeling-beta` not connected in `/mcp` | Check the plugin is enabled (`/plugin`), then restart Claude Code. |
 | "No open Power BI Desktop instance found" | Open your model in Power BI Desktop, then say `connect to my dashboard`. |
-| `spawn EFTYPE` on connect | The bundled exe (`win32-x64`) doesn't match this machine's CPU. On ARM Windows, swap the `win32-arm64` build into `vendor/powerbi-modeling-mcp/` or set `PBI_MODELING_MCP_COMMAND`. |
+| `spawn EFTYPE` on connect | The Microsoft MCP exe is the wrong CPU type. Use the matching build (`win32-x64` for Intel/AMD, `win32-arm64` for ARM) in `vendor/powerbi-modeling-mcp/` or via `PBI_MODELING_MCP_COMMAND`. |
 | "compiled MCP server unavailable" | The prebuilt server is missing. In a dev checkout, run `pnpm install && pnpm build`. |
 | It asks you to confirm a measure or date detail | Expected. It does not write from guesses. Confirm and it continues. |
 
@@ -101,7 +101,7 @@ skills/          Modeling skills
 agents/          Modeling subagents
 hooks/           Guardrails
 commands/        Slash commands
-vendor/          Bundled Microsoft MCP executable
+vendor/          Microsoft MCP executable (you provide it; gitignored)
 .mcp.json        MCP server registration
 packages/core    Modeling engine (checks, planners)
 packages/mcp     MCP server that wraps Microsoft's modeling MCP
@@ -128,4 +128,4 @@ Dev-only environment variables:
 
 ## License
 
-MIT. The bundled Microsoft Power BI modeling MCP under `vendor/` is Microsoft's software under its own license; see `vendor/powerbi-modeling-mcp/LICENSE.txt`.
+MIT. The Microsoft Power BI modeling MCP that the plugin launches is Microsoft's software under its own license and is provided separately (not included in this repo).
