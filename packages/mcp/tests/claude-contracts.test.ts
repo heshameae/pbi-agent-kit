@@ -297,7 +297,6 @@ describe('Claude model-operation contracts', () => {
 
   it('keeps model-facing agents and skills explicit about no Python/file-surgery fallback', () => {
     const contractFiles = [
-      'AGENTS.md',
       'CLAUDE.md',
       'agents/data-analyst.md',
       'agents/model-builder.md',

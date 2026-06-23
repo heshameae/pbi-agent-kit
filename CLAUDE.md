@@ -1,7 +1,13 @@
-DONT HARDCODE ANYTHING ESPECIALLY FIELDS FROM DATASETS OR ANYTHING - ALL OUR WORK SHOULD BE GENERALIZED AND SCALABLE AND SHOULD WORK FOR ANY DATASET OUT THERE. YOU AR FORBIDDEN FROM HARDCODING ANYTHING.
+# pbi-agent-kit — development notes
 
-The production fix MUST BE ALWAYS dataset-agnostic.
+For maintainers working in this repo. It does not load for end users, whose Claude Code runs in their own project folder.
 
-Never use Python for pbi-agent-kit operations. Do not use `python`, `python3`, `pip`, or Python one-liners to inspect data ranges, parse files, rewrite, patch CRLF, or mutate `.SemanticModel`, `.Report`, `.tmdl`, `.pbip`, CSV, or other Power BI project artifacts. Use the TypeScript MCP tools, deterministic planners, and repo-native Node/TypeScript tooling; if the tool surface cannot do it, stop and report the unsupported operation.
+## Rules
+- Dataset-agnostic: never hardcode table, column, measure, or value names. Everything must work against any model.
+- No Python for Power BI artifacts: do not use `python`/`pip` (or one-liners) to read, parse, or mutate `.SemanticModel`, `.tmdl`, `.pbip`, `.pbix`, or `.csv` files. Use the TypeScript MCP tools and repo-native Node tooling; if the tool surface cannot do something, stop and report it as unsupported.
+- Modeling-only scope: no report, page, or visual authoring.
 
-When behavior/logic hardening changes, deterministic gates, agent/skill rules, clarifying-question policy, or Power BI workflow learnings are added, changed, contradicted, or superseded, update `docs/system-improvements.md`. Keep entries short, dataset-agnostic, and reference-backed; update or delete stale rows instead of appending duplicates.
+## Workflow
+- Run `pnpm -r test` and `pnpm lint` before and after changes; keep them green.
+- `pnpm build` (core builds before mcp); keep `packages/{core,mcp}/dist` and the build marker committed and consistent so offline installs ship a runnable server.
+- Commit only when asked.
