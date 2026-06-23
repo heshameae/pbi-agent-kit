@@ -29,9 +29,9 @@ coverage/
 # hook sidecar state (project-scoped connection/uncommitted-measures registry)
 .pbi-agent-kit/
 
-# The approved win32-arm64 Microsoft Power BI modeling MCP is INTENTIONALLY
+# The approved win32-x64 Microsoft Power BI modeling MCP is INTENTIONALLY
 # committed under vendor/powerbi-modeling-mcp/ (with its LICENSE) so offline Windows
-# installs need no runtime download. x86-64 machines supply their own build.
+# installs need no runtime download. ARM (win32-arm64) machines supply their own build.
 
 # Generated release artifacts (zip, checksums, SBOM, test evidence) — produced by
 # `pnpm release`, never committed.

@@ -8,7 +8,7 @@ Use a data dictionary when the agent needs business meaning that is not reliably
 
 > **Quick start:** run `/pbi-init-data-dictionary` to create this file from the template below and fill it via clarifying questions. When the file is absent in a Power BI project, a non-blocking SessionStart reminder also points you to that command (silence it with `PBI_AGENT_KIT_NO_DICT_REMINDER=1`).
 >
-> **Governance:** treat the dictionary as governed business content — it can hold sensitive or PII-adjacent definitions. The plugin never commits it, and this repo's `.gitignore` does not travel to your project, so decide deliberately whether to commit `.pbi-agent-kit/data-dictionary.yaml` in your own source control, and avoid putting confidential values in it.
+> **Governance:** treat the dictionary as governed business content. It can hold sensitive or PII-adjacent definitions. The plugin never commits it, and this repo's `.gitignore` does not travel to your project, so decide deliberately whether to commit `.pbi-agent-kit/data-dictionary.yaml` in your own source control, and avoid putting confidential values in it.
 
 The file is optional. Do not block model discovery, analysis, or reporting work just because it is absent. When it is present, treat it as business context only: it can explain what a term means, who owns it, and whether an intended measure definition is draft or confirmed. It does not prove that a table, column, or measure exists. Live MCP model tools must still verify field existence and canonical refs before any write.
 

@@ -1,6 +1,6 @@
 # Offline Windows Install
 
-This guide covers installing `pbi-agent-kit` on a locked-down Windows machine with **no internet access** and **no `npx`** — the assumed offline runtime. It is dataset-agnostic: nothing here depends on a specific model, table, or field.
+This guide covers installing `pbi-agent-kit` on a locked-down Windows machine with **no internet access** and **no `npx`**. This is the assumed offline runtime. It is dataset-agnostic: nothing here depends on a specific model, table, or field.
 
 ## Assumptions
 
@@ -12,7 +12,7 @@ This guide covers installing `pbi-agent-kit` on a locked-down Windows machine wi
 
 ## What must be in the shipped package
 
-The handover artifact must contain a **prebuilt** server — the launcher does not build on the runtime:
+The handover artifact must contain a **prebuilt** server; the launcher does not build on the runtime:
 
 - `packages/core/dist/**` and `packages/mcp/dist/**` (compiled JavaScript)
 - `packages/mcp/dist/server.js` (the MCP entry point)
@@ -21,19 +21,19 @@ The handover artifact must contain a **prebuilt** server — the launcher does n
 
 Verify the package before handover with `node scripts/verify-release-artifact.mjs` (see "Release verification").
 
-## Step 1 — Place the approved Microsoft MCP executable
+## Step 1: place the approved Microsoft MCP executable
 
-**Option A — vendored drop-in (recommended; no environment variable).** Place the approved Power BI modeling MCP executable inside the plugin so the wrapper resolves it automatically. The npm `@microsoft/powerbi-modeling-mcp-win32-x64` tarball extracts to exactly this layout:
+**Option A: vendored drop-in (recommended, no environment variable).** Place the approved Power BI modeling MCP executable inside the plugin so the wrapper resolves it automatically. The npm `@microsoft/powerbi-modeling-mcp-win32-x64` tarball extracts to exactly this layout:
 
 ```text
 <plugin-root>\vendor\powerbi-modeling-mcp\package\dist\powerbi-modeling-mcp.exe
 ```
 
-`<plugin-root>` is the installed plugin directory (the value of `CLAUDE_PLUGIN_ROOT`). A flat `vendor\powerbi-modeling-mcp\powerbi-modeling-mcp.exe` is also accepted. **The `win32-arm64` build (v0.5.10) is bundled in this repo** under `vendor/powerbi-modeling-mcp/` (with Microsoft's `LICENSE.txt`), so an ARM Windows install needs no extra step. **x86-64 machines** must replace that folder's contents with the `win32-x64` build (same layout), or set `PBI_MODELING_MCP_COMMAND`. With the exe present, **no environment variable is needed** — the wrapper spawns it with `--start --skipconfirmation`.
+`<plugin-root>` is the installed plugin directory (the value of `CLAUDE_PLUGIN_ROOT`). A flat `vendor\powerbi-modeling-mcp\powerbi-modeling-mcp.exe` is also accepted. **The `win32-x64` build (v0.5.10) is bundled in this repo** under `vendor/powerbi-modeling-mcp/` (with Microsoft's `LICENSE.txt`), so a standard x64 Windows install needs no extra step. **ARM Windows machines** must replace that folder's contents with the `win32-arm64` build (same layout), or set `PBI_MODELING_MCP_COMMAND`. With the exe present, no environment variable is needed; the wrapper spawns it with `--start --skipconfirmation`.
 
-**Option B — explicit path.** If the exe lives outside the plugin, point the wrapper at it via `PBI_MODELING_MCP_COMMAND` (Step 2).
+**Option B: explicit path.** If the exe lives outside the plugin, point the wrapper at it via `PBI_MODELING_MCP_COMMAND` (Step 2).
 
-## Step 2 — (Option B only) Point the wrapper at the executable
+## Step 2: point the wrapper at the executable (Option B only)
 
 Skip this if you used the vendored layout in Step 1. Otherwise set these in the environment Claude Code (or the host MCP client) runs in:
 
@@ -42,12 +42,12 @@ $env:PBI_MODELING_MCP_COMMAND = "C:\path\to\powerbi-modeling-mcp.exe"
 $env:PBI_MODELING_MCP_ARGS    = "[\"--start\",\"--skipconfirmation\"]"
 ```
 
-- `PBI_MODELING_MCP_COMMAND` — absolute path to the approved executable (overrides the vendored auto-resolution).
-- `PBI_MODELING_MCP_ARGS` — a JSON array of string arguments. Defaults to `["--start","--skipconfirmation"]` for a vendored exe; set explicitly to match the approved executable's flags.
+- `PBI_MODELING_MCP_COMMAND`: absolute path to the approved executable (overrides the vendored auto-resolution).
+- `PBI_MODELING_MCP_ARGS`: a JSON array of string arguments. Defaults to `["--start","--skipconfirmation"]` for a vendored exe; set explicitly to match the approved executable's flags.
 
-Resolution order on native Windows: `PBI_MODELING_MCP_COMMAND` → vendored exe → **fail closed** with a clear setup error. There is **no network fallback** — supply the exe or set `PBI_MODELING_MCP_COMMAND`.
+Resolution order on native Windows: `PBI_MODELING_MCP_COMMAND`, then the vendored exe, then **fail closed** with a clear setup error. There is **no network fallback**: supply the exe or set `PBI_MODELING_MCP_COMMAND`.
 
-## Step 3 — Install the plugin from a local path
+## Step 3: install the plugin from a local path
 
 Install from the unpacked local checkout (no marketplace fetch):
 
@@ -55,12 +55,12 @@ Install from the unpacked local checkout (no marketplace fetch):
 /plugin install <absolute-path-to-unpacked-plugin>
 ```
 
-## Step 4 — Verify
+## Step 4: verify
 
 1. Run `/mcp` and confirm `pbi-modeling-beta` is listed and connected.
 2. Open a Power BI Desktop model and run a read-only model discovery to confirm the wrapper reaches the live model through the approved executable.
 
-If the compiled server is missing or stale, the launcher prints build instructions and exits. On the offline runtime this means the package was built incorrectly — rebuild and repackage on a staging machine; **do not** set `PBI_AGENT_KIT_ALLOW_RUNTIME_BUILD=1` on the offline host.
+If the compiled server is missing or stale, the launcher prints build instructions and exits. On the offline runtime this means the package was built incorrectly. Rebuild and repackage on a staging machine; **do not** set `PBI_AGENT_KIT_ALLOW_RUNTIME_BUILD=1` on the offline host.
 
 ## Release verification (run before handover, on a staging machine)
 

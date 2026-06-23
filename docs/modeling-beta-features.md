@@ -86,7 +86,7 @@ Includes:
 - RLS role metadata capture status and required RLS test-evidence gaps.
 - Clear distinction between readiness evidence and formal approval.
 
-> **Readiness is not proof.** A clean structural model check is *not* a bank-safe, compliance-approved, or RLS-leakage-proven launch signal. `pbi_model_regulated_check` captures evidence and blocks when evidence is missing; it does not certify compliance or prove that RLS prevents data leakage. The Copilot and AI-readiness signals above are structural/metadata-only — they are not evidence that the model is safe for Copilot or data-agent exposure, which additionally requires AI schema scope, RLS leakage tests, tenant settings, and approved instructions. See **Beta Boundaries** below for the full scope limits.
+> **Readiness is not proof.** A clean structural model check is *not* a bank-safe, compliance-approved, or RLS-leakage-proven launch signal. `pbi_model_regulated_check` captures evidence and blocks when evidence is missing; it does not certify compliance or prove that RLS prevents data leakage. The Copilot and AI-readiness signals above are structural/metadata-only; they are not evidence that the model is safe for Copilot or data-agent exposure, which additionally requires AI schema scope, RLS leakage tests, tenant settings, and approved instructions. See **Beta Boundaries** below for the full scope limits.
 
 ### 9. Live Power BI Desktop Workflow
 Work with the model already open in Power BI Desktop so supported changes can be reviewed in the same workflow.

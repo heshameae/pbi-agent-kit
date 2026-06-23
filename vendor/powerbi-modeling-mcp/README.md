@@ -5,10 +5,10 @@ This directory contains **Microsoft's** Power BI modeling MCP executable, bundle
 - **Product:** Microsoft Power BI modeling MCP (`powerbi-modeling-mcp`)
 - **Publisher:** analysis-services (Microsoft)
 - **Version:** 0.5.10
-- **Platform:** `win32-arm64` (Windows on ARM)
+- **Platform:** `win32-x64` (Intel/AMD Windows)
 - **Source:** VS Marketplace extension `analysis-services.powerbi-modeling-mcp`
-- **License:** see `LICENSE.txt` in this directory — **Microsoft's terms govern this binary.**
+- **License:** see `LICENSE.txt` in this directory. Microsoft's terms govern this binary.
 
-The wrapper auto-resolves `powerbi-modeling-mcp.exe` here at runtime (see `packages/mcp/src/model-bridge/ms-mcp-client.ts`). 
+The wrapper auto-resolves `powerbi-modeling-mcp.exe` here at runtime (see `packages/mcp/src/model-bridge/ms-mcp-client.ts`).
 
-For **x86-64** machines, replace this folder's contents with the `win32-x64` build (same layout), or set `PBI_MODELING_MCP_COMMAND` to an external executable. See `docs/install-offline-windows.md`.
+For **ARM Windows** machines, replace this folder's contents with the `win32-arm64` build (same layout), or set `PBI_MODELING_MCP_COMMAND` to an external executable. See `docs/install-offline-windows.md`.

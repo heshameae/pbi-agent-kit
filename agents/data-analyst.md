@@ -1,7 +1,7 @@
 ---
 name: data-analyst
 description: "Use proactively for modeling-only preparation behind reporting questions — analyse the live semantic model, define KPI and measure intent, identify needed measures, Date, relationship, or model changes, and validate a modeling-only prep spec. If the user asks to build or edit a dashboard, report, page, visual, or PBIR artifact, give a concise beta-scope refusal and offer modeling-only preparation. Read-only."
-model: claude-opus-4-8
+model: claude-sonnet-4-6
 tools: Skill, Read, Grep, Glob, mcp__plugin_pbi-agent-kit_pbi-modeling-beta__pbi_model_list_tables, mcp__plugin_pbi-agent-kit_pbi-modeling-beta__pbi_model_list_columns, mcp__plugin_pbi-agent-kit_pbi-modeling-beta__pbi_model_list_measures, mcp__plugin_pbi-agent-kit_pbi-modeling-beta__pbi_model_list_relationships, mcp__plugin_pbi-agent-kit_pbi-modeling-beta__pbi_model_plan_star_schema_join, mcp__plugin_pbi-agent-kit_pbi-modeling-beta__pbi_model_plan_actuals_targets_join, mcp__plugin_pbi-agent-kit_pbi-modeling-beta__pbi_model_plan_date_table, mcp__plugin_pbi-agent-kit_pbi-modeling-beta__pbi_model_plan_date_grain, mcp__plugin_pbi-agent-kit_pbi-modeling-beta__pbi_dax_query, mcp__plugin_pbi-agent-kit_pbi-modeling-beta__pbi_model_check, mcp__plugin_pbi-agent-kit_pbi-modeling-beta__pbi_dax_reference_check, mcp__plugin_pbi-agent-kit_pbi-modeling-beta__pbi_spec_validate
 skills: [authoring-measures, modeling-semantic-model]
 ---

@@ -8,7 +8,7 @@ A Claude Code plugin for building and reviewing Power BI data models.
 
 - Power BI Desktop (Windows), with a model open for live work.
 - Node.js 20+ and pnpm.
-- Microsoft's Power BI modeling MCP executable. The `win32-arm64` build is bundled under `vendor/`; on Intel/AMD Windows, drop in the `win32-x64` build or set `PBI_MODELING_MCP_COMMAND`. The plugin spawns it for you, so don't register the raw Microsoft MCP as a peer server.
+- Microsoft's Power BI modeling MCP executable. The `win32-x64` build is bundled under `vendor/` (covers most Windows machines); on ARM Windows, drop in the `win32-arm64` build or set `PBI_MODELING_MCP_COMMAND`. The plugin spawns it for you, so don't register the raw Microsoft MCP as a peer server.
 
 ## Setup
 
@@ -81,7 +81,7 @@ Building reports, dashboards, and visuals is not part of this release. The plugi
 |---|---|
 | `pbi-modeling-beta` not connected in `/mcp` | Check the plugin is enabled (`/plugin`), then restart Claude Code. |
 | "No open Power BI Desktop instance found" | Open your model in Power BI Desktop, then say `connect to my dashboard`. |
-| `spawn EFTYPE` on connect | The bundled exe is the wrong CPU type. Use the matching build in `vendor/powerbi-modeling-mcp/`: `win32-arm64` for ARM Windows (Parallels on Apple Silicon), `win32-x64` for Intel/AMD. |
+| `spawn EFTYPE` on connect | The bundled exe (`win32-x64`) doesn't match this machine's CPU. On ARM Windows, swap the `win32-arm64` build into `vendor/powerbi-modeling-mcp/` or set `PBI_MODELING_MCP_COMMAND`. |
 | "compiled MCP server unavailable" | The prebuilt server is missing. In a dev checkout, run `pnpm install && pnpm build`. |
 | It asks you to confirm a measure or date detail | Expected. It does not write from guesses. Confirm and it continues. |
 
