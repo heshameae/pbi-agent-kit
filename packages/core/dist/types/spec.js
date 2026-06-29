@@ -81,14 +81,17 @@ export const BusinessTermSchema = z.object({
     caveats: z.array(NonEmptyString).optional(),
 });
 export const MeasureTimeIntelligenceSchema = z.object({
-    dateRefs: z.array(ColumnFieldRef).optional(),
-    dateTable: NonEmptyString.optional(),
-    dateColumn: NonEmptyString.optional(),
-    period: NonEmptyString.optional(),
-    comparison: NonEmptyString.optional(),
-    grain: NonEmptyString.optional(),
-    calendarPolicy: NonEmptyString.optional(),
-    incompletePeriodBehavior: NonEmptyString.optional(),
+    dateRefs: z
+        .array(ColumnFieldRef)
+        .optional()
+        .describe('time-intelligence dateRefs: non-empty fact/source date column refs required when confirmed TI DAX is authored.'),
+    dateTable: NonEmptyString.optional().describe('time-intelligence dateTable: governed Date table name required when confirmed TI DAX is authored.'),
+    dateColumn: NonEmptyString.optional().describe('time-intelligence dateColumn: governed Date table key column required when confirmed TI DAX is authored.'),
+    period: NonEmptyString.optional().describe('time-intelligence period token, e.g. YTD/QTD/MTD.'),
+    comparison: NonEmptyString.optional().describe('time-intelligence comparison policy, if any.'),
+    grain: NonEmptyString.optional().describe('time-intelligence grain: proven Date/fact grain required when confirmed TI DAX is authored.'),
+    calendarPolicy: NonEmptyString.optional().describe('time-intelligence calendarPolicy: governed calendar range policy required when confirmed TI DAX is authored.'),
+    incompletePeriodBehavior: NonEmptyString.optional().describe('time-intelligence incompletePeriodBehavior: explicit incomplete-period policy required when confirmed TI DAX is authored.'),
 });
 export const MeasureIntentSchema = z.object({
     measureName: NonEmptyString,

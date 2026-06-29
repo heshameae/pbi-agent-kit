@@ -4,6 +4,7 @@ import {
   DashboardSpecSchema,
   FieldRefSchema,
   MeasureSpecSchema,
+  MeasureTimeIntelligenceSchema,
   QuestionSpecSchema,
   validateDashboardSpec,
 } from '../../src/types/spec.js';
@@ -242,6 +243,21 @@ describe('DashboardSpec', () => {
       ],
     });
     expect(withTimeEvidence.valid).toBe(true);
+  });
+
+  it('describes the fields required for confirmed time-intelligence measure intent', () => {
+    for (const field of [
+      'dateRefs',
+      'dateTable',
+      'dateColumn',
+      'grain',
+      'calendarPolicy',
+      'incompletePeriodBehavior',
+    ] as const) {
+      const schema = MeasureTimeIntelligenceSchema.shape[field];
+      expect(schema.description, `${field} should be self-describing`).toContain(field);
+      expect(schema.description?.toLowerCase()).toContain('time-intelligence');
+    }
   });
 });
 

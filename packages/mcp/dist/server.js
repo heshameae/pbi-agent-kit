@@ -132,6 +132,7 @@ const MODELING_SURFACE_TOOL_NAMES = new Set([
     'pbi_dax_query',
     'pbi_dax_reference_check',
     'pbi_measure_create',
+    'pbi_measure_create_batch',
     'pbi_measure_update',
     'pbi_measure_delete',
     'pbi_table_create',
@@ -398,7 +399,7 @@ const INCLUDE_MEASURES_FIELD = z
     .boolean()
     .optional()
     .describe("Include each table's full measure array. Defaults to false to keep table inventory fast and low-token; use pbi_model_list_measures for measure-focused work.");
-const MEASURE_INTENT_FIELD = MeasureIntentSchema.describe('Confirmed business intent evidence for this measure write. Required for create and update calls: status must be confirmed, sourceRefs must resolve in the target model, and time-intelligence DAX requires Date policy evidence.');
+const MEASURE_INTENT_FIELD = MeasureIntentSchema.describe('Confirmed business intent evidence for this measure write. Required for create and update calls: status must be confirmed, sourceRefs must resolve in the target model, and time-intelligence DAX requires Date policy evidence. When the DAX uses time intelligence, timeIntelligence must include dateRefs, dateTable, dateColumn, grain, calendarPolicy, and incompletePeriodBehavior.');
 const RELATIONSHIP_CARDINALITY_FIELD = z
     .literal('manyToOne')
     .optional()
@@ -542,6 +543,21 @@ function modelWithoutMeasures(model) {
         tables: model.tables.map((table) => ({ ...table, measures: [] })),
     };
 }
+function stageCreatedMeasure(model, def) {
+    const measure = {
+        table: def.tableName,
+        name: def.name,
+        expression: def.expression ?? '',
+        formatString: def.formatString,
+        isHidden: false,
+        description: def.description,
+        annotations: {},
+    };
+    return {
+        ...model,
+        tables: model.tables.map((table) => table.name === def.tableName ? { ...table, measures: [...table.measures, measure] } : table),
+    };
+}
 function tableInventory(model, opts = {}) {
     return (model.tables
         .map((table) => ({
@@ -632,6 +648,27 @@ function missingDaxReferenceTables(missing, model) {
             .filter((table) => table !== undefined && !existing.has(table))),
     ];
 }
+function daxReferenceCheckReport(input) {
+    const missingTables = missingDaxReferenceTables(input.check.missing, input.model);
+    return {
+        gate: 'dax-reference-check',
+        missing: input.check.missing,
+        ambiguous: input.check.ambiguous,
+        unsupported: input.check.unsupported,
+        ...(missingTables.length > 0
+            ? {
+                diagnostics: tableMissingDiagnostics({
+                    reason: 'dax-reference-table-not-found',
+                    mode: input.mode,
+                    model: input.model,
+                    connection: input.connection,
+                    modelSelector: input.modelSelector,
+                    requestedTables: missingTables,
+                }),
+            }
+            : {}),
+    };
+}
 function assertTableExistsForWrite(input) {
     if (input.model.tables.some((table) => table.name === input.tableName))
         return;
@@ -647,6 +684,27 @@ function assertTableExistsForWrite(input) {
             modelSelector: input.modelSelector,
             requestedTables: [input.tableName],
         }),
+    });
+}
+function normalizeModelObjectName(name) {
+    return name.trim().toLowerCase();
+}
+function assertMeasureNameDoesNotCollideWithColumn(input) {
+    const table = input.model.tables.find((candidate) => candidate.name === input.tableName);
+    if (!table)
+        return;
+    const normalizedMeasureName = normalizeModelObjectName(input.measureName);
+    const collision = table.columns.find((column) => normalizeModelObjectName(column.name) === normalizedMeasureName);
+    if (!collision)
+        return;
+    const suggestion = `Total ${input.measureName.trim()}`;
+    throwInputValidationError(`Measure write refused: measure "${input.measureName}" would collide with existing column "${collision.name}" on table "${input.tableName}". Rename the measure, e.g. "${suggestion}".`, {
+        tool: input.tool,
+        reason: 'measure-column-name-collision',
+        tableName: input.tableName,
+        measureName: input.measureName,
+        columnName: collision.name,
+        suggestedName: suggestion,
     });
 }
 async function tableInventoryForRead(folderPath, model, opts = {}) {
@@ -3172,6 +3230,111 @@ function hasMeasureIntentTimeEvidence(intent) {
         time.calendarPolicy !== undefined &&
         time.incompletePeriodBehavior !== undefined);
 }
+function dateEvidenceKey(fact) {
+    return `${fact.tableName}\u0000${fact.dateColumn}`;
+}
+function isDateTableLikeForBlankRisk(table) {
+    return isTimeDataCategory(table.dataCategory);
+}
+function deriveActiveDateAxisFactsForBlankRisk(model, dateTable, dateColumn) {
+    const tableByName = new Map(model.tables.map((table) => [table.name, table]));
+    const facts = new Map();
+    const addFact = (tableName, columnName) => {
+        const table = tableByName.get(tableName);
+        const column = table?.columns.find((candidate) => candidate.name === columnName);
+        if (!table || !column || !isTemporalType(column.dataType))
+            return;
+        if (table.name === dateTable || table.isAutoDateTable || isDateTableLikeForBlankRisk(table)) {
+            return;
+        }
+        const fact = { tableName, dateColumn: columnName };
+        facts.set(dateEvidenceKey(fact), fact);
+    };
+    for (const relationship of model.relationships) {
+        if (!relationship.isActive)
+            continue;
+        const fromIsDate = relationship.fromTable === dateTable && relationship.fromColumn === dateColumn;
+        const toIsDate = relationship.toTable === dateTable && relationship.toColumn === dateColumn;
+        if (fromIsDate)
+            addFact(relationship.toTable, relationship.toColumn);
+        if (toIsDate)
+            addFact(relationship.fromTable, relationship.fromColumn);
+    }
+    return [...facts.values()];
+}
+function modelForBlankRiskProbe(model, dateTable, dateColumn, facts) {
+    const factKeys = new Set(facts.map(dateEvidenceKey));
+    const tables = model.tables
+        .filter((table) => table.name === dateTable || facts.some((fact) => fact.tableName === table.name))
+        .map((table) => {
+        if (table.name === dateTable) {
+            return {
+                ...table,
+                columns: table.columns.filter((column) => column.name === dateColumn),
+                measures: [],
+            };
+        }
+        const factColumns = facts
+            .filter((fact) => fact.tableName === table.name)
+            .map((fact) => fact.dateColumn);
+        return {
+            ...table,
+            columns: table.columns.filter((column) => factColumns.includes(column.name)),
+            measures: [],
+        };
+    });
+    return {
+        ...model,
+        tables,
+        relationships: model.relationships.filter((relationship) => {
+            if (!relationship.isActive)
+                return false;
+            const fromIsDate = relationship.fromTable === dateTable && relationship.fromColumn === dateColumn;
+            const toIsDate = relationship.toTable === dateTable && relationship.toColumn === dateColumn;
+            if (fromIsDate) {
+                return factKeys.has(dateEvidenceKey({
+                    tableName: relationship.toTable,
+                    dateColumn: relationship.toColumn,
+                }));
+            }
+            if (toIsDate) {
+                return factKeys.has(dateEvidenceKey({
+                    tableName: relationship.fromTable,
+                    dateColumn: relationship.fromColumn,
+                }));
+            }
+            return false;
+        }),
+    };
+}
+function hasUsableMaxDate(value) {
+    if (value === undefined)
+        return false;
+    const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(value.trim());
+    if (!match)
+        return false;
+    const year = Number(match[1]);
+    const month = Number(match[2]);
+    const day = Number(match[3]);
+    const parsed = Date.UTC(year, month - 1, day);
+    if (!Number.isFinite(parsed))
+        return false;
+    const date = new Date(parsed);
+    return (date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day);
+}
+function refuseUnverifiedTimeIntelligenceBlankRisk(input) {
+    throwInputValidationError(`Measure write refused: "${input.measureName}" is a ${input.period} period-to-date measure, but the Date table "${input.dateTable}"[${input.dateColumn}] may extend past the related fact data and the blank-risk probe could not prove the relevant fact max date. Add a date slicer, fix the calendar to an observed-min-max policy, or supply the capped _AsOf pattern before writing this measure.`, {
+        tool: input.toolName,
+        reason: 'time-intelligence-blank-risk-unverified',
+        measureName: input.measureName,
+        period: input.period,
+        dateTable: input.dateTable,
+        dateColumn: input.dateColumn,
+        facts: input.facts,
+        unverifiedReason: input.unverifiedReason,
+        ...(input.probeError ? { probeError: input.probeError } : {}),
+    });
+}
 // Default-context BLANK guard for period-to-date measures. A bare
 // TOTALYTD/QTD/MTD over a Date table whose calendar extends past THIS measure's
 // own fact returns BLANK with no date slicer — the exact field failure, and the
@@ -3179,49 +3342,139 @@ function hasMeasureIntentTimeEvidence(intent) {
 // max-dates (observed-min-max cannot fix it; the calendar must still cover the
 // longer fact). Detect it with a live max-vs-max probe and refuse with the
 // deterministic capped (shape-B) expression, so a silently-blank measure is never
-// written. Dataset-agnostic: every name flows from the measure intent / probe.
-// A probe failure never blocks authoring — the honest write proceeds.
+// written. Dataset-agnostic: every name flows from the model relationships / probe.
+// A probe failure on a recognized period-to-date form fails closed.
 async function enforceTimeIntelligenceNotBlankInDefaultContext(connection, model, toolName, measureName, expression, intent) {
     if (!expressionUsesTimeIntelligence(expression))
         return undefined;
     const time = intent?.timeIntelligence;
     const bare = parseBarePeriodToDate(expression);
     // BOTH paths — the bare blank-risk rebuild AND the already-capped calendar-max-anchor
-    // refusal — require a declared TI date axis plus a live overshoot probe. Without the
-    // declared axis we can neither rebuild nor safely probe, so we do nothing.
-    if (time?.dateTable === undefined ||
-        time.dateColumn === undefined ||
-        (time.dateRefs?.length ?? 0) === 0) {
+    // advisory — require a declared TI date axis plus a live overshoot probe.
+    if (time?.dateTable === undefined || time.dateColumn === undefined) {
+        if (bare) {
+            refuseUnverifiedTimeIntelligenceBlankRisk({
+                toolName,
+                measureName,
+                period: bare.period,
+                dateTable: bare.datesRef,
+                dateColumn: bare.datesRef,
+                facts: [],
+                unverifiedReason: 'missing-declared-date-axis',
+            });
+        }
         return undefined;
     }
-    const facts = (time.dateRefs ?? []).map((ref) => ({
-        tableName: ref.table,
-        dateColumn: ref.column,
-    }));
-    const query = buildDateTableCoverageProbeQuery(model, {
+    // The measure's actual date axis must match the intent's declared Date axis. If a
+    // user authored the period-to-date over a DIFFERENT calendar than intent declares,
+    // rebuilding the cap on the intent's axis would silently swap the calendar and
+    // change every value. Check this before the live probe so missing proof cannot hide
+    // an axis mismatch.
+    const declaredDatesRef = `'${time.dateTable.replace(/'/g, "''")}'[${time.dateColumn}]`;
+    if (bare && normalizeDaxRef(bare.datesRef) !== normalizeDaxRef(declaredDatesRef)) {
+        throwInputValidationError(`Measure write refused: "${measureName}" applies ${bare.period} over ${bare.datesRef}, but its declared time-intelligence date axis is ${declaredDatesRef}. Re-point the measure to the declared Date axis, or correct the intent — the blank-risk cap will not silently swap the calendar.`, {
+            tool: toolName,
+            reason: 'time-intelligence-date-axis-mismatch',
+            measureName,
+            expressionDatesRef: bare.datesRef,
+            declaredDatesRef,
+        });
+    }
+    const facts = deriveActiveDateAxisFactsForBlankRisk(model, time.dateTable, time.dateColumn);
+    if (facts.length === 0) {
+        if (bare) {
+            refuseUnverifiedTimeIntelligenceBlankRisk({
+                toolName,
+                measureName,
+                period: bare.period,
+                dateTable: time.dateTable,
+                dateColumn: time.dateColumn,
+                facts,
+                unverifiedReason: 'no-active-fact-date-relationship',
+            });
+        }
+        return undefined;
+    }
+    const probeModel = modelForBlankRiskProbe(model, time.dateTable, time.dateColumn, facts);
+    const query = buildDateTableCoverageProbeQuery(probeModel, {
         dateTable: time.dateTable,
         dateColumn: time.dateColumn,
         facts,
     });
-    if (!query)
+    if (!query) {
+        if (bare) {
+            refuseUnverifiedTimeIntelligenceBlankRisk({
+                toolName,
+                measureName,
+                period: bare.period,
+                dateTable: time.dateTable,
+                dateColumn: time.dateColumn,
+                facts,
+                unverifiedReason: 'probe-query-unavailable',
+            });
+        }
         return undefined;
+    }
     let raw;
     try {
         raw = await getModelDriver().daxQuery(query, connection, { includeRawDiagnostics: true });
     }
     catch (err) {
-        // The probe could not run. NEVER fail closed (that would block legitimate authoring on
-        // a transient probe error). For a bare measure, surface a warning so the caller can
-        // distinguish "proven not-blank" from "could not prove"; for an already-capped measure
-        // we cannot prove an overshoot, so we leave it untouched rather than refuse blindly.
+        // The probe could not run. For a recognized bare period-to-date form, fail closed:
+        // writing uncapped would be silently wrong when the calendar outruns the fact.
         if (!bare)
             return undefined;
-        return `Could not verify default-context blank-risk for "${measureName}": the Date/fact max-date probe failed (${err instanceof Error ? err.message : String(err)}). The measure was written, but if the Date table extends past this measure's fact, a bare ${bare.period} will be BLANK without a date slicer — re-check, or use the per-fact upper-bound cap from buildTimeIntelligenceMeasureExpression.`;
+        refuseUnverifiedTimeIntelligenceBlankRisk({
+            toolName,
+            measureName,
+            period: bare.period,
+            dateTable: time.dateTable,
+            dateColumn: time.dateColumn,
+            facts,
+            unverifiedReason: 'probe-error',
+            probeError: err instanceof Error ? err.message : String(err),
+        });
     }
     const evidence = parseDateTableCoverageProbeResult(raw);
     const calendarMaxDate = evidence.dateTable?.maxDate;
+    if (!hasUsableMaxDate(calendarMaxDate)) {
+        if (bare) {
+            refuseUnverifiedTimeIntelligenceBlankRisk({
+                toolName,
+                measureName,
+                period: bare.period,
+                dateTable: time.dateTable,
+                dateColumn: time.dateColumn,
+                facts,
+                unverifiedReason: 'missing-date-table-evidence',
+            });
+        }
+        return undefined;
+    }
+    const factEvidenceByKey = new Map(evidence.facts.map((fact) => [
+        dateEvidenceKey({ tableName: fact.tableName, dateColumn: fact.dateColumn }),
+        fact,
+    ]));
+    const missingFacts = facts.filter((fact) => {
+        const factEvidence = factEvidenceByKey.get(dateEvidenceKey(fact));
+        return !hasUsableMaxDate(factEvidence?.maxDate);
+    });
+    if (missingFacts.length > 0) {
+        if (bare) {
+            refuseUnverifiedTimeIntelligenceBlankRisk({
+                toolName,
+                measureName,
+                period: bare.period,
+                dateTable: time.dateTable,
+                dateColumn: time.dateColumn,
+                facts,
+                unverifiedReason: 'missing-fact-evidence',
+            });
+        }
+        return undefined;
+    }
     const overshootFacts = facts.filter((fact) => {
-        const factEvidence = evidence.facts.find((candidate) => candidate.tableName === fact.tableName && candidate.dateColumn === fact.dateColumn);
+        const factEvidence = factEvidenceByKey.get(dateEvidenceKey(fact));
         return calendarOvershootsFactDay(calendarMaxDate, factEvidence?.maxDate);
     });
     // No overshoot → a bare period-to-date is safe in default context, AND a calendar-max
@@ -3249,20 +3502,6 @@ async function enforceTimeIntelligenceNotBlankInDefaultContext(connection, model
     const overshootFact = overshootFacts.find((fact) => baseExpressionReferencesTable(bare.baseExpression, fact.tableName)) ?? overshootFacts[0];
     if (!overshootFact)
         return;
-    // The measure's actual date axis must match the intent's declared Date axis. If a
-    // user authored the period-to-date over a DIFFERENT calendar than intent declares,
-    // rebuilding the cap on the intent's axis would silently swap the calendar and
-    // change every value — refuse instead of guessing.
-    const declaredDatesRef = `'${time.dateTable.replace(/'/g, "''")}'[${time.dateColumn}]`;
-    if (normalizeDaxRef(bare.datesRef) !== normalizeDaxRef(declaredDatesRef)) {
-        throwInputValidationError(`Measure write refused: "${measureName}" applies ${bare.period} over ${bare.datesRef}, but its declared time-intelligence date axis is ${declaredDatesRef}. Re-point the measure to the declared Date axis, or correct the intent — the blank-risk cap will not silently swap the calendar.`, {
-            tool: toolName,
-            reason: 'time-intelligence-date-axis-mismatch',
-            measureName,
-            expressionDatesRef: bare.datesRef,
-            declaredDatesRef,
-        });
-    }
     // Extra top-level TOTAL*TD args (a fiscal year_end_date and/or a filter predicate)
     // must NOT be silently dropped by the rebuild — that would change the result. Only a
     // recognized fiscal year-end literal (YTD) can be safely re-threaded; anything else
@@ -3870,30 +4109,24 @@ tool('pbi_measure_create', 'Create Measure (DAX-gated)', 'Create a measure on th
         connection,
         modelSelector: input.model,
     });
+    assertMeasureNameDoesNotCollideWithColumn({
+        tool: 'pbi_measure_create',
+        tableName: input.tableName,
+        measureName: input.name,
+        model,
+    });
     enforceMeasureIntentForWrite('pbi_measure_create', input.name, input.expression, input.measureIntent, model);
     const blankRiskWarning = await enforceTimeIntelligenceNotBlankInDefaultContext(connection, model, 'pbi_measure_create', input.name, input.expression, input.measureIntent);
     const check = daxReferenceCheck(input.expression, model, { hostTable: input.tableName });
     if (!check.valid) {
-        const missingTables = missingDaxReferenceTables(check.missing, model);
         const err = new Error(`Refused: measure "${input.name}" references fields not present in the model.`);
-        err.report = {
-            gate: 'dax-reference-check',
-            missing: check.missing,
-            ambiguous: check.ambiguous,
-            unsupported: check.unsupported,
-            ...(missingTables.length > 0
-                ? {
-                    diagnostics: tableMissingDiagnostics({
-                        reason: 'dax-reference-table-not-found',
-                        mode,
-                        model,
-                        connection,
-                        modelSelector: input.model,
-                        requestedTables: missingTables,
-                    }),
-                }
-                : {}),
-        };
+        err.report = daxReferenceCheckReport({
+            check,
+            mode,
+            model,
+            connection,
+            modelSelector: input.model,
+        });
         throw err;
     }
     const result = await drv.createMeasure({
@@ -3911,6 +4144,113 @@ tool('pbi_measure_create', 'Create Measure (DAX-gated)', 'Create a measure on th
         // (the gate returns it instead of failing open silently when the probe errors).
         ...(blankRiskWarning ? { blankRiskWarning } : {}),
         result,
+    };
+});
+tool('pbi_measure_create_batch', 'Create Measures Batch (DAX-gated)', 'Create multiple measures on the connected model in array order. Each measure runs the same table, confirmed intent, time-intelligence, and DAX-reference gate as pbi_measure_create; any measure that fails a gate is refused and reported without aborting later measures. Put base measures before dependent measures so intra-batch references can resolve. On success in live mode the measures appear in Desktop immediately; press Ctrl+S to persist live semantic-model metadata. In folder mode, call pbi_model_export.', {
+    measures: z
+        .array(z.object({
+        tableName: z.string().describe('Home table for the measure.'),
+        name: z.string().describe('Measure name (must be unique in the model).'),
+        expression: z.string().describe('DAX expression.'),
+        measureIntent: MEASURE_INTENT_FIELD,
+        formatString: z.string().optional().describe('Format string (bare TMDL backslash form).'),
+        description: z.string().optional().describe('Optional measure description.'),
+    }))
+        .min(1)
+        .describe('Measures to create, ordered with base measures before dependents.'),
+    folderPath: MODEL_FOLDER_FIELD,
+    model: MODEL_SELECT_FIELD,
+}, { destructiveHint: false, idempotentHint: false }, async (input) => {
+    const { mode, model, driver: drv, connection, } = await snapshotForWrite(input.folderPath, input.model, {
+        includeMeasures: true,
+        includeRoles: false,
+    });
+    let workingModel = model;
+    const seen = new Set();
+    const measuresCreated = [];
+    const measuresRefused = [];
+    for (const measure of input.measures) {
+        try {
+            const measureKey = `${normalizeModelObjectName(measure.tableName)}\u0000${normalizeModelObjectName(measure.name)}`;
+            if (seen.has(measureKey)) {
+                throwInputValidationError(`Measure create batch refused: duplicate measure "${measure.name}" in table "${measure.tableName}".`, {
+                    tool: 'pbi_measure_create_batch',
+                    reason: 'batch-duplicate-name',
+                    tableName: measure.tableName,
+                    measureName: measure.name,
+                });
+            }
+            assertTableExistsForWrite({
+                tool: 'pbi_measure_create_batch',
+                action: 'Measure create',
+                tableName: measure.tableName,
+                mode,
+                model: workingModel,
+                connection,
+                modelSelector: input.model,
+            });
+            assertMeasureNameDoesNotCollideWithColumn({
+                tool: 'pbi_measure_create_batch',
+                tableName: measure.tableName,
+                measureName: measure.name,
+                model: workingModel,
+            });
+            enforceMeasureIntentForWrite('pbi_measure_create_batch', measure.name, measure.expression, measure.measureIntent, workingModel);
+            const blankRiskWarning = await enforceTimeIntelligenceNotBlankInDefaultContext(connection, workingModel, 'pbi_measure_create_batch', measure.name, measure.expression, measure.measureIntent);
+            const check = daxReferenceCheck(measure.expression, workingModel, {
+                hostTable: measure.tableName,
+            });
+            if (!check.valid) {
+                const err = new Error(`Refused: measure "${measure.name}" references fields not present in the model.`);
+                err.report = daxReferenceCheckReport({
+                    check,
+                    mode,
+                    model: workingModel,
+                    connection,
+                    modelSelector: input.model,
+                });
+                throw err;
+            }
+            const definition = {
+                tableName: measure.tableName,
+                name: measure.name,
+                expression: measure.expression,
+                formatString: measure.formatString,
+                description: measure.description,
+            };
+            const result = await drv.createMeasure(definition, connection);
+            workingModel = stageCreatedMeasure(workingModel, definition);
+            seen.add(measureKey);
+            measuresCreated.push({
+                tableName: measure.tableName,
+                name: measure.name,
+                ...(blankRiskWarning ? { blankRiskWarning } : {}),
+                result,
+            });
+        }
+        catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            const report = err !== null && typeof err === 'object' && 'report' in err
+                ? err.report
+                : undefined;
+            if (report === undefined || report === null || typeof report !== 'object') {
+                throw err;
+            }
+            measuresRefused.push({
+                ...report,
+                tableName: measure.tableName,
+                name: measure.name,
+                error: message,
+            });
+        }
+    }
+    return {
+        created: measuresCreated.length,
+        refused: measuresRefused.length,
+        mode,
+        persist: mode === 'live' ? LIVE_MODEL_PERSISTENCE : FOLDER_MODEL_PERSISTENCE,
+        measuresCreated,
+        measuresRefused,
     };
 });
 tool('pbi_measure_update', 'Update Measure (DAX-gated)', 'Update an existing measure. Confirmed measure intent is required for every update, including metadata-only changes. If a new expression is supplied, time-intelligence DAX requires confirmed Date policy evidence and the expression passes the same in-code DAX-reference gate as create.', {

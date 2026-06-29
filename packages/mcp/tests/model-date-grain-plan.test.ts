@@ -17,6 +17,9 @@ type ToolInfo = {
 const MODELING_FIXTURE_ROOT = fileURLToPath(
   new URL('./fixtures/Minimal.SemanticModel', import.meta.url),
 );
+const BATCH_FIXTURE_ROOT = fileURLToPath(
+  new URL('./fixtures/Batch.SemanticModel/definition', import.meta.url),
+);
 
 afterEach(() => {
   // biome-ignore lint/performance/noDelete: tests must restore the process environment
@@ -2542,6 +2545,21 @@ describe('date grain planner tool', () => {
       incompletePeriodBehavior: 'show' as const,
     },
   };
+  const blankRiskIntentFor = (measureName: string, period = 'YTD') => ({
+    ...blankRiskIntent,
+    measureName,
+    timeIntelligence: {
+      ...blankRiskIntent.timeIntelligence,
+      period,
+    },
+  });
+  const blankRiskIntentWithCalendarDateRef = {
+    ...blankRiskIntent,
+    timeIntelligence: {
+      ...blankRiskIntent.timeIntelligence,
+      dateRefs: [{ table: 'Calendar', column: 'Date', kind: 'column' as const, isHidden: false }],
+    },
+  };
   // Calendar ends 2021-01-05 (overshoots), Actual ends 2020-12-30 — the multi-fact case
   // where a plain default-context TOTALYTD over Calendar would be BLANK for Actual.
   const overshootDriver = (onCreate: (def: { expression?: string }) => void) =>
@@ -2625,6 +2643,608 @@ describe('date grain planner tool', () => {
         "CALCULATE(TOTALYTD([Total Sales], 'Calendar'[Date]), 'Calendar'[Date] <= _AsOf)",
       ),
     );
+    expect(created).toBe(false);
+  });
+
+  it('derives the fact date from active relationships when intent dateRefs points at the calendar', async () => {
+    let created = false;
+    setModelDriverForTests(
+      overshootDriver(() => {
+        created = true;
+      }),
+    );
+    const result = await withClient((client) =>
+      client.callTool({
+        name: 'pbi_measure_create',
+        arguments: {
+          tableName: 'Actual',
+          name: 'Sales YTD',
+          expression: "TOTALYTD(SUM('Actual'[Date]), 'Calendar'[Date])",
+          measureIntent: blankRiskIntentWithCalendarDateRef,
+        },
+      }),
+    );
+    const payload = jsonPayload(result);
+    expect(result.isError).toBe(true);
+    expect(payload.reason).toBe('time-intelligence-default-context-blank-risk');
+    expect(payload.fact).toEqual({ tableName: 'Actual', dateColumn: 'Date' });
+    expect(payload.correctedExpression).toEqual(expect.stringContaining('_AsOf'));
+    expect(payload.correctedExpression).toEqual(
+      expect.stringContaining("NOT ISBLANK(CALCULATE(SUM('Actual'[Date])))"),
+    );
+    expect(created).toBe(false);
+  });
+
+  it('derives the fact date for CALCULATE plus DATESYTD when intent dateRefs points at the calendar', async () => {
+    let created = false;
+    setModelDriverForTests(
+      overshootDriver(() => {
+        created = true;
+      }),
+    );
+    const result = await withClient((client) =>
+      client.callTool({
+        name: 'pbi_measure_create',
+        arguments: {
+          tableName: 'Actual',
+          name: 'Sales YTD',
+          expression: "CALCULATE(SUM('Actual'[Date]), DATESYTD('Calendar'[Date]))",
+          measureIntent: blankRiskIntentWithCalendarDateRef,
+        },
+      }),
+    );
+    const payload = jsonPayload(result);
+    expect(result.isError).toBe(true);
+    expect(payload.reason).toBe('time-intelligence-default-context-blank-risk');
+    expect(payload.fact).toEqual({ tableName: 'Actual', dateColumn: 'Date' });
+    expect(payload.correctedExpression).toEqual(
+      expect.stringContaining(
+        "CALCULATE(TOTALYTD(SUM('Actual'[Date]), 'Calendar'[Date]), 'Calendar'[Date] <= _AsOf)",
+      ),
+    );
+    expect(created).toBe(false);
+  });
+
+  it('refuses commented bare period-to-date expressions instead of writing them uncapped', async () => {
+    for (const expression of [
+      "-- fiscal note\nTOTALYTD(SUM('Actual'[Date]), 'Calendar'[Date])",
+      "TOTALYTD(SUM('Actual'[Date]), 'Calendar'[Date]) -- trailing note",
+      "CALCULATE(SUM('Actual'[Date]), DATESYTD('Calendar'[Date])) -- trailing note",
+    ]) {
+      let created = false;
+      setModelDriverForTests(
+        overshootDriver(() => {
+          created = true;
+        }),
+      );
+      const result = await withClient((client) =>
+        client.callTool({
+          name: 'pbi_measure_create',
+          arguments: {
+            tableName: 'Actual',
+            name: 'Sales YTD',
+            expression,
+            measureIntent: blankRiskIntentWithCalendarDateRef,
+          },
+        }),
+      );
+      const payload = jsonPayload(result);
+      expect(result.isError).toBe(true);
+      expect(payload.reason).toBe('time-intelligence-default-context-blank-risk');
+      expect(payload.correctedExpression).toEqual(expect.stringContaining('_AsOf'));
+      expect(created).toBe(false);
+    }
+  });
+
+  it('fails closed when no active fact relationship can prove a period-to-date blank-risk decision', async () => {
+    let created = false;
+    setModelDriverForTests({
+      async ensureConnection() {
+        return { mode: 'live', connectionString: 'Data Source=localhost:61234;' };
+      },
+      async getModelSnapshot() {
+        return { ...liveSnapshot(), relationships: [] };
+      },
+      async daxQuery() {
+        throw new Error('probe should not run without a fact candidate');
+      },
+      async createMeasure() {
+        created = true;
+        return {};
+      },
+    } as unknown as Parameters<typeof setModelDriverForTests>[0]);
+    const result = await withClient((client) =>
+      client.callTool({
+        name: 'pbi_measure_create',
+        arguments: {
+          tableName: 'Actual',
+          name: 'Sales YTD',
+          expression: "TOTALYTD(SUM('Actual'[Date]), 'Calendar'[Date])",
+          measureIntent: blankRiskIntent,
+        },
+      }),
+    );
+    const payload = jsonPayload(result);
+    expect(result.isError).toBe(true);
+    expect(payload.reason).toBe('time-intelligence-blank-risk-unverified');
+    expect(payload.unverifiedReason).toBe('no-active-fact-date-relationship');
+    expect(created).toBe(false);
+  });
+
+  it('fails closed when the blank-risk probe returns no fact evidence for a related fact', async () => {
+    let created = false;
+    setModelDriverForTests({
+      async ensureConnection() {
+        return { mode: 'live', connectionString: 'Data Source=localhost:61234;' };
+      },
+      async getModelSnapshot() {
+        return liveSnapshot();
+      },
+      async daxQuery() {
+        return {
+          results: [
+            {
+              tables: [
+                {
+                  rows: [
+                    {
+                      '[__kind]': 'date-table',
+                      '[__table]': 'Calendar',
+                      '[__column]': 'Date',
+                      '[maxDate]': '2021-01-05T00:00:00',
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        };
+      },
+      async createMeasure() {
+        created = true;
+        return {};
+      },
+    } as unknown as Parameters<typeof setModelDriverForTests>[0]);
+    const result = await withClient((client) =>
+      client.callTool({
+        name: 'pbi_measure_create',
+        arguments: {
+          tableName: 'Actual',
+          name: 'Sales YTD',
+          expression: "TOTALYTD(SUM('Actual'[Date]), 'Calendar'[Date])",
+          measureIntent: blankRiskIntent,
+        },
+      }),
+    );
+    const payload = jsonPayload(result);
+    expect(result.isError).toBe(true);
+    expect(payload.reason).toBe('time-intelligence-blank-risk-unverified');
+    expect(payload.unverifiedReason).toBe('missing-fact-evidence');
+    expect(payload.facts).toEqual([{ tableName: 'Actual', dateColumn: 'Date' }]);
+    expect(created).toBe(false);
+  });
+
+  it('fails closed when the blank-risk probe errors for a recognized period-to-date measure', async () => {
+    let created = false;
+    setModelDriverForTests({
+      async ensureConnection() {
+        return { mode: 'live', connectionString: 'Data Source=localhost:61234;' };
+      },
+      async getModelSnapshot() {
+        return liveSnapshot();
+      },
+      async daxQuery() {
+        throw new Error('probe transport failed');
+      },
+      async createMeasure() {
+        created = true;
+        return {};
+      },
+    } as unknown as Parameters<typeof setModelDriverForTests>[0]);
+    const result = await withClient((client) =>
+      client.callTool({
+        name: 'pbi_measure_create',
+        arguments: {
+          tableName: 'Actual',
+          name: 'Sales YTD',
+          expression: "TOTALYTD(SUM('Actual'[Date]), 'Calendar'[Date])",
+          measureIntent: blankRiskIntent,
+        },
+      }),
+    );
+    const payload = jsonPayload(result);
+    expect(result.isError).toBe(true);
+    expect(payload.reason).toBe('time-intelligence-blank-risk-unverified');
+    expect(payload.unverifiedReason).toBe('probe-error');
+    expect(String(payload.probeError)).toContain('probe transport failed');
+    expect(created).toBe(false);
+  });
+
+  it('refuses an axis mismatch before relying on blank-risk proof', async () => {
+    let probeRan = false;
+    let created = false;
+    setModelDriverForTests({
+      async ensureConnection() {
+        return { mode: 'live', connectionString: 'Data Source=localhost:61234;' };
+      },
+      async getModelSnapshot() {
+        return liveSnapshot();
+      },
+      async daxQuery() {
+        probeRan = true;
+        throw new Error('probe should not run before axis validation');
+      },
+      async createMeasure() {
+        created = true;
+        return {};
+      },
+    } as unknown as Parameters<typeof setModelDriverForTests>[0]);
+    const result = await withClient((client) =>
+      client.callTool({
+        name: 'pbi_measure_create',
+        arguments: {
+          tableName: 'Actual',
+          name: 'Sales YTD',
+          expression: "CALCULATE(SUM('Actual'[Date]), DATESYTD('FiscalCalendar'[Date]))",
+          measureIntent: blankRiskIntent,
+        },
+      }),
+    );
+    const payload = jsonPayload(result);
+    expect(result.isError).toBe(true);
+    expect(payload.reason).toBe('time-intelligence-date-axis-mismatch');
+    expect(probeRan).toBe(false);
+    expect(created).toBe(false);
+  });
+
+  it('fails closed on measure update when period-to-date blank-risk proof is unavailable', async () => {
+    let updated = false;
+    setModelDriverForTests({
+      async ensureConnection() {
+        return { mode: 'live', connectionString: 'Data Source=localhost:61234;' };
+      },
+      async getModelSnapshot() {
+        return liveSnapshot();
+      },
+      async daxQuery() {
+        throw new Error('update probe transport failed');
+      },
+      async updateMeasure() {
+        updated = true;
+        return {};
+      },
+    } as unknown as Parameters<typeof setModelDriverForTests>[0]);
+    const result = await withClient((client) =>
+      client.callTool({
+        name: 'pbi_measure_update',
+        arguments: {
+          tableName: 'Actual',
+          name: 'Sales YTD',
+          expression: "TOTALYTD(SUM('Actual'[Date]), 'Calendar'[Date])",
+          measureIntent: blankRiskIntent,
+        },
+      }),
+    );
+    const payload = jsonPayload(result);
+    expect(result.isError).toBe(true);
+    expect(payload.reason).toBe('time-intelligence-blank-risk-unverified');
+    expect(payload.tool).toBe('pbi_measure_update');
+    expect(updated).toBe(false);
+  });
+
+  it('does not run the blank-risk fail-closed path for non-time-intelligence measures', async () => {
+    let createdExpression: string | undefined;
+    setModelDriverForTests({
+      async ensureConnection() {
+        return { mode: 'live', connectionString: 'Data Source=localhost:61234;' };
+      },
+      async getModelSnapshot() {
+        return { ...liveSnapshot(), relationships: [] };
+      },
+      async createMeasure(def: { expression?: string }) {
+        createdExpression = def.expression;
+        return {};
+      },
+    } as unknown as Parameters<typeof setModelDriverForTests>[0]);
+    const expression = "SUM('Actual'[Date])";
+    const result = await withClient((client) =>
+      client.callTool({
+        name: 'pbi_measure_create',
+        arguments: {
+          tableName: 'Actual',
+          name: 'Total Date',
+          expression,
+          measureIntent: {
+            ...blankRiskIntent,
+            measureName: 'Total Date',
+            timeIntelligence: undefined,
+          },
+        },
+      }),
+    );
+    const payload = jsonPayload(result);
+    expect(result.isError).not.toBe(true);
+    expect(payload.created).toBe(true);
+    expect(createdExpression).toBe(expression);
+  });
+
+  it('refuses and corrects CALCULATE plus DATESYTD when the calendar outruns the fact', async () => {
+    let created = false;
+    setModelDriverForTests(
+      overshootDriver(() => {
+        created = true;
+      }),
+    );
+    const result = await withClient((client) =>
+      client.callTool({
+        name: 'pbi_measure_create',
+        arguments: {
+          tableName: 'Actual',
+          name: 'Profit YTD',
+          expression: "CALCULATE(SUM('Actual'[Date]), DATESYTD('Calendar'[Date]))",
+          measureIntent: blankRiskIntentFor('Profit YTD'),
+        },
+      }),
+    );
+    const payload = jsonPayload(result);
+    expect(result.isError).toBe(true);
+    expect(payload.reason).toBe('time-intelligence-default-context-blank-risk');
+    expect(payload.correctedExpression).toEqual(expect.stringContaining('_AsOf'));
+    expect(payload.correctedExpression).toEqual(
+      expect.stringContaining("NOT ISBLANK(CALCULATE(SUM('Actual'[Date])))"),
+    );
+    expect(payload.correctedExpression).toEqual(
+      expect.stringContaining("VALUES('Calendar'[Date])"),
+    );
+    expect(payload.correctedExpression).toEqual(
+      expect.stringContaining(
+        "CALCULATE(TOTALYTD(SUM('Actual'[Date]), 'Calendar'[Date]), 'Calendar'[Date] <= _AsOf)",
+      ),
+    );
+    expect(created).toBe(false);
+  });
+
+  it('refuses and corrects CALCULATE plus DATESQTD and DATESMTD with matching TOTAL*TD caps', async () => {
+    for (const [name, expression, totalFn, period] of [
+      [
+        'Profit QTD',
+        "CALCULATE(SUM('Actual'[Date]), DATESQTD('Calendar'[Date]))",
+        'TOTALQTD',
+        'QTD',
+      ],
+      [
+        'Profit MTD',
+        "CALCULATE(SUM('Actual'[Date]), DATESMTD('Calendar'[Date]))",
+        'TOTALMTD',
+        'MTD',
+      ],
+    ] as const) {
+      let created = false;
+      setModelDriverForTests(
+        overshootDriver(() => {
+          created = true;
+        }),
+      );
+      const result = await withClient((client) =>
+        client.callTool({
+          name: 'pbi_measure_create',
+          arguments: {
+            tableName: 'Actual',
+            name,
+            expression,
+            measureIntent: blankRiskIntentFor(name, period),
+          },
+        }),
+      );
+      const payload = jsonPayload(result);
+      expect(result.isError).toBe(true);
+      expect(payload.reason).toBe('time-intelligence-default-context-blank-risk');
+      expect(payload.correctedExpression).toEqual(
+        expect.stringContaining(
+          `CALCULATE(${totalFn}(SUM('Actual'[Date]), 'Calendar'[Date]), 'Calendar'[Date] <= _AsOf)`,
+        ),
+      );
+      expect(created).toBe(false);
+    }
+  });
+
+  it('allows CALCULATE plus DATESYTD verbatim when the calendar ends at the fact max', async () => {
+    let createdExpression: string | undefined;
+    setModelDriverForTests({
+      async ensureConnection() {
+        return { mode: 'live', connectionString: 'Data Source=localhost:61234;' };
+      },
+      async getModelSnapshot() {
+        return liveSnapshot();
+      },
+      async daxQuery() {
+        return {
+          results: [
+            {
+              tables: [
+                {
+                  rows: [
+                    {
+                      '[__kind]': 'date-table',
+                      '[__table]': 'Calendar',
+                      '[__column]': 'Date',
+                      '[maxDate]': '2020-12-30T00:00:00',
+                    },
+                    {
+                      '[__kind]': 'fact',
+                      '[__table]': 'Actual',
+                      '[__column]': 'Date',
+                      '[maxDate]': '2020-12-30T00:00:00',
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        };
+      },
+      async createMeasure(def: { expression?: string }) {
+        createdExpression = def.expression;
+        return {};
+      },
+    } as unknown as Parameters<typeof setModelDriverForTests>[0]);
+    const expression = "CALCULATE(SUM('Actual'[Date]), DATESYTD('Calendar'[Date]))";
+    const result = await withClient((client) =>
+      client.callTool({
+        name: 'pbi_measure_create',
+        arguments: {
+          tableName: 'Actual',
+          name: 'Profit YTD',
+          expression,
+          measureIntent: blankRiskIntentFor('Profit YTD'),
+        },
+      }),
+    );
+    const payload = jsonPayload(result);
+    expect(result.isError).not.toBe(true);
+    expect(payload.created).toBe(true);
+    expect(createdExpression).toBe(expression);
+  });
+
+  it('does not double-cap canonical CALCULATE plus DATESYTD shape-B output', async () => {
+    let createdExpression: string | undefined;
+    setModelDriverForTests(
+      overshootDriver((def) => {
+        createdExpression = def.expression;
+      }),
+    );
+    const expression =
+      'VAR _LastData =\n' +
+      '    CALCULATE(\n' +
+      '        MAXX(\n' +
+      "            FILTER(VALUES('Calendar'[Date]), NOT ISBLANK(CALCULATE(SUM('Actual'[Date])))),\n" +
+      "            'Calendar'[Date]\n" +
+      '        ),\n' +
+      "        REMOVEFILTERS('Calendar')\n" +
+      '    )\n' +
+      "VAR _CtxMax = MAX('Calendar'[Date])\n" +
+      'VAR _AsOf = MIN(_CtxMax, _LastData)\n' +
+      "RETURN\n    CALCULATE(TOTALYTD(SUM('Actual'[Date]), 'Calendar'[Date]), 'Calendar'[Date] <= _AsOf)";
+    const result = await withClient((client) =>
+      client.callTool({
+        name: 'pbi_measure_create',
+        arguments: {
+          tableName: 'Actual',
+          name: 'Profit YTD',
+          expression,
+          measureIntent: blankRiskIntentFor('Profit YTD'),
+        },
+      }),
+    );
+    const payload = jsonPayload(result);
+    expect(result.isError).not.toBe(true);
+    expect(payload.created).toBe(true);
+    expect(createdExpression).toBe(expression);
+  });
+
+  it('refuses CALCULATE plus DATESYTD with extra filters without auto-rewrite', async () => {
+    let created = false;
+    setModelDriverForTests(
+      overshootDriver(() => {
+        created = true;
+      }),
+    );
+    const result = await withClient((client) =>
+      client.callTool({
+        name: 'pbi_measure_create',
+        arguments: {
+          tableName: 'Actual',
+          name: 'Profit YTD',
+          expression:
+            "CALCULATE(SUM('Actual'[Date]), DATESYTD('Calendar'[Date]), 'Actual'[Date] <= MAX('Actual'[Date]))",
+          measureIntent: blankRiskIntentFor('Profit YTD'),
+        },
+      }),
+    );
+    const payload = jsonPayload(result);
+    expect(result.isError).toBe(true);
+    expect(payload.reason).toBe('time-intelligence-default-context-blank-risk-manual');
+    expect(payload.correctedExpression).toBeUndefined();
+    expect(created).toBe(false);
+  });
+
+  it('refuses CALCULATE plus DATESYTD with a pre-DATES filter without auto-rewrite', async () => {
+    let created = false;
+    setModelDriverForTests(
+      overshootDriver(() => {
+        created = true;
+      }),
+    );
+    const result = await withClient((client) =>
+      client.callTool({
+        name: 'pbi_measure_create',
+        arguments: {
+          tableName: 'Actual',
+          name: 'Profit YTD',
+          expression:
+            "CALCULATE(SUM('Actual'[Date]), 'Actual'[Date] <= MAX('Actual'[Date]), DATESYTD('Calendar'[Date]))",
+          measureIntent: blankRiskIntentFor('Profit YTD'),
+        },
+      }),
+    );
+    const payload = jsonPayload(result);
+    expect(result.isError).toBe(true);
+    expect(payload.reason).toBe('time-intelligence-default-context-blank-risk-manual');
+    expect(payload.correctedExpression).toBeUndefined();
+    expect(created).toBe(false);
+  });
+
+  it('re-threads a CALCULATE plus DATESYTD fiscal year-end literal into the correction', async () => {
+    let created = false;
+    setModelDriverForTests(
+      overshootDriver(() => {
+        created = true;
+      }),
+    );
+    const result = await withClient((client) =>
+      client.callTool({
+        name: 'pbi_measure_create',
+        arguments: {
+          tableName: 'Actual',
+          name: 'Profit YTD',
+          expression: "CALCULATE(SUM('Actual'[Date]), DATESYTD('Calendar'[Date], \"06-30\"))",
+          measureIntent: blankRiskIntentFor('Profit YTD'),
+        },
+      }),
+    );
+    const payload = jsonPayload(result);
+    expect(result.isError).toBe(true);
+    expect(payload.reason).toBe('time-intelligence-default-context-blank-risk');
+    expect(payload.correctedExpression).toEqual(expect.stringContaining('"06-30"'));
+    expect(payload.correctedExpression).toEqual(
+      expect.stringContaining(
+        "CALCULATE(TOTALYTD(SUM('Actual'[Date]), 'Calendar'[Date], \"06-30\"), 'Calendar'[Date] <= _AsOf)",
+      ),
+    );
+    expect(created).toBe(false);
+  });
+
+  it('refuses to swap the calendar for CALCULATE plus DATESYTD axis mismatch', async () => {
+    let created = false;
+    setModelDriverForTests(
+      overshootDriver(() => {
+        created = true;
+      }),
+    );
+    const result = await withClient((client) =>
+      client.callTool({
+        name: 'pbi_measure_create',
+        arguments: {
+          tableName: 'Actual',
+          name: 'Profit YTD',
+          expression: "CALCULATE(SUM('Actual'[Date]), DATESYTD('FiscalCalendar'[Date]))",
+          measureIntent: blankRiskIntentFor('Profit YTD'),
+        },
+      }),
+    );
+    const payload = jsonPayload(result);
+    expect(result.isError).toBe(true);
+    expect(payload.reason).toBe('time-intelligence-date-axis-mismatch');
     expect(created).toBe(false);
   });
 
@@ -2943,6 +3563,493 @@ describe('date grain planner tool', () => {
     expect(result.isError).toBe(true);
     expect(payload.reason).toBe('time-intelligence-default-context-blank-risk');
     expect(created).toBe(false);
+  });
+
+  const basicMeasureIntent = (
+    measureName: string,
+    sourceRefs: ReadonlyArray<{
+      readonly table: string;
+      readonly column: string;
+      readonly kind: 'column' | 'measure';
+      readonly isHidden?: boolean;
+    }> = [{ table: 'Actual', column: 'Date', kind: 'column' as const, isHidden: false }],
+  ) => ({
+    measureName,
+    status: 'confirmed' as const,
+    owner: 'test',
+    definition: `Confirmed intent for ${measureName}.`,
+    sourceRefs,
+    grain: 'day',
+    additivity: 'additive',
+    filters: [],
+    format: '#,0',
+    unit: 'units',
+    caveats: [],
+  });
+
+  it('batch creates dependent measures in order by staging prior successful creates', async () => {
+    const created: Array<{ name?: string; expression?: string }> = [];
+    setModelDriverForTests({
+      async ensureConnection() {
+        return { mode: 'live', connectionString: 'Data Source=localhost:61234;' };
+      },
+      async getModelSnapshot() {
+        return liveSnapshot();
+      },
+      async createMeasure(def: { name?: string; expression?: string }) {
+        created.push(def);
+        return { ok: true };
+      },
+    } as unknown as Parameters<typeof setModelDriverForTests>[0]);
+
+    const result = await withClient((client) =>
+      client.callTool({
+        name: 'pbi_measure_create_batch',
+        arguments: {
+          measures: [
+            {
+              tableName: 'Actual',
+              name: 'Base Metric',
+              expression: "SUM('Actual'[Date])",
+              measureIntent: basicMeasureIntent('Base Metric'),
+            },
+            {
+              tableName: 'Actual',
+              name: 'Dependent Metric',
+              expression: '[Base Metric] + 1',
+              measureIntent: basicMeasureIntent('Dependent Metric', [
+                {
+                  table: 'Actual',
+                  column: 'Base Metric',
+                  kind: 'measure' as const,
+                  isHidden: false,
+                },
+              ]),
+            },
+          ],
+        },
+      }),
+    );
+
+    const payload = jsonPayload(result);
+    expect(result.isError).not.toBe(true);
+    expect(payload.created).toBe(2);
+    expect(payload.refused).toBe(0);
+    expect(created.map((measure) => measure.name)).toEqual(['Base Metric', 'Dependent Metric']);
+  });
+
+  it('batch resolves a bare dependent reference to a prior measure from another home table without false ambiguity', async () => {
+    const created: Array<{ tableName?: string; name?: string; expression?: string }> = [];
+    setModelDriverForTests({
+      async ensureConnection() {
+        return { mode: 'live', connectionString: 'Data Source=localhost:61234;' };
+      },
+      async getModelSnapshot() {
+        return liveSnapshot();
+      },
+      async createMeasure(def: { tableName?: string; name?: string; expression?: string }) {
+        created.push(def);
+        return { ok: true };
+      },
+    } as unknown as Parameters<typeof setModelDriverForTests>[0]);
+
+    const result = await withClient((client) =>
+      client.callTool({
+        name: 'pbi_measure_create_batch',
+        arguments: {
+          measures: [
+            {
+              tableName: 'Actual',
+              name: 'Base Metric',
+              expression: "SUM('Actual'[Date])",
+              measureIntent: basicMeasureIntent('Base Metric'),
+            },
+            {
+              tableName: 'Target',
+              name: 'Dependent Metric',
+              expression: '[Base Metric] + 1',
+              measureIntent: basicMeasureIntent('Dependent Metric', [
+                {
+                  table: 'Actual',
+                  column: 'Base Metric',
+                  kind: 'measure' as const,
+                  isHidden: false,
+                },
+              ]),
+            },
+          ],
+        },
+      }),
+    );
+
+    const payload = jsonPayload(result);
+    expect(result.isError).not.toBe(true);
+    expect(payload.created).toBe(2);
+    expect(payload.refused).toBe(0);
+    expect(created.map((measure) => `${measure.tableName}.${measure.name}`)).toEqual([
+      'Actual.Base Metric',
+      'Target.Dependent Metric',
+    ]);
+  });
+
+  it('batch returns partial failures without aborting later valid measures', async () => {
+    const created: Array<{ name?: string }> = [];
+    setModelDriverForTests({
+      async ensureConnection() {
+        return { mode: 'live', connectionString: 'Data Source=localhost:61234;' };
+      },
+      async getModelSnapshot() {
+        return liveSnapshot();
+      },
+      async createMeasure(def: { name?: string }) {
+        created.push(def);
+        return { ok: true };
+      },
+    } as unknown as Parameters<typeof setModelDriverForTests>[0]);
+
+    const result = await withClient((client) =>
+      client.callTool({
+        name: 'pbi_measure_create_batch',
+        arguments: {
+          measures: [
+            {
+              tableName: 'Actual',
+              name: 'Valid A',
+              expression: "SUM('Actual'[Date])",
+              measureIntent: basicMeasureIntent('Valid A'),
+            },
+            {
+              tableName: 'Actual',
+              name: 'Invalid',
+              expression: "SUM('Missing'[Value])",
+              measureIntent: basicMeasureIntent('Invalid'),
+            },
+            {
+              tableName: 'Actual',
+              name: 'Valid B',
+              expression: "SUM('Actual'[Date]) + 1",
+              measureIntent: basicMeasureIntent('Valid B'),
+            },
+          ],
+        },
+      }),
+    );
+
+    const payload = jsonPayload(result);
+    expect(result.isError).not.toBe(true);
+    expect(payload.created).toBe(2);
+    expect(payload.refused).toBe(1);
+    expect(created.map((measure) => measure.name)).toEqual(['Valid A', 'Valid B']);
+    expect(payload.measuresRefused).toEqual([
+      expect.objectContaining({
+        tableName: 'Actual',
+        name: 'Invalid',
+        gate: 'dax-reference-check',
+      }),
+    ]);
+  });
+
+  it('treats driver write failures as batch-fatal instead of continuing to later measures', async () => {
+    const attemptedWrites: string[] = [];
+    setModelDriverForTests({
+      async ensureConnection() {
+        return { mode: 'live', connectionString: 'Data Source=localhost:61234;' };
+      },
+      async getModelSnapshot() {
+        return liveSnapshot();
+      },
+      async createMeasure(def: { name?: string }) {
+        attemptedWrites.push(def.name ?? '');
+        throw new Error('host write failed');
+      },
+    } as unknown as Parameters<typeof setModelDriverForTests>[0]);
+
+    const result = await withClient((client) =>
+      client.callTool({
+        name: 'pbi_measure_create_batch',
+        arguments: {
+          measures: [
+            {
+              tableName: 'Actual',
+              name: 'First Metric',
+              expression: "SUM('Actual'[Date])",
+              measureIntent: basicMeasureIntent('First Metric'),
+            },
+            {
+              tableName: 'Actual',
+              name: 'Second Metric',
+              expression: "SUM('Actual'[Date]) + 1",
+              measureIntent: basicMeasureIntent('Second Metric'),
+            },
+          ],
+        },
+      }),
+    );
+
+    const payload = jsonPayload(result);
+    expect(result.isError).toBe(true);
+    expect(String(payload.error)).toContain('host write failed');
+    expect(attemptedWrites).toEqual(['First Metric']);
+  });
+
+  it('batch does not stage a refused base measure for later dependents', async () => {
+    const created: Array<{ name?: string }> = [];
+    setModelDriverForTests({
+      async ensureConnection() {
+        return { mode: 'live', connectionString: 'Data Source=localhost:61234;' };
+      },
+      async getModelSnapshot() {
+        return liveSnapshot();
+      },
+      async createMeasure(def: { name?: string }) {
+        created.push(def);
+        return { ok: true };
+      },
+    } as unknown as Parameters<typeof setModelDriverForTests>[0]);
+
+    const result = await withClient((client) =>
+      client.callTool({
+        name: 'pbi_measure_create_batch',
+        arguments: {
+          measures: [
+            {
+              tableName: 'Actual',
+              name: 'Rejected Base',
+              expression: "SUM('Missing'[Value])",
+              measureIntent: basicMeasureIntent('Rejected Base'),
+            },
+            {
+              tableName: 'Actual',
+              name: 'Dependent On Rejected',
+              expression: '[Rejected Base] + 1',
+              measureIntent: basicMeasureIntent('Dependent On Rejected'),
+            },
+          ],
+        },
+      }),
+    );
+
+    const payload = jsonPayload(result);
+    expect(result.isError).not.toBe(true);
+    expect(payload.created).toBe(0);
+    expect(payload.refused).toBe(2);
+    expect(created).toEqual([]);
+    expect(payload.measuresRefused).toEqual([
+      expect.objectContaining({ name: 'Rejected Base', gate: 'dax-reference-check' }),
+      expect.objectContaining({ name: 'Dependent On Rejected', gate: 'dax-reference-check' }),
+    ]);
+  });
+
+  it('batch refuses duplicate measure names within the same home table', async () => {
+    const created: Array<{ name?: string }> = [];
+    setModelDriverForTests({
+      async ensureConnection() {
+        return { mode: 'live', connectionString: 'Data Source=localhost:61234;' };
+      },
+      async getModelSnapshot() {
+        return liveSnapshot();
+      },
+      async createMeasure(def: { name?: string }) {
+        created.push(def);
+        return { ok: true };
+      },
+    } as unknown as Parameters<typeof setModelDriverForTests>[0]);
+
+    const result = await withClient((client) =>
+      client.callTool({
+        name: 'pbi_measure_create_batch',
+        arguments: {
+          measures: [
+            {
+              tableName: 'Actual',
+              name: 'Duplicate Metric',
+              expression: "SUM('Actual'[Date])",
+              measureIntent: basicMeasureIntent('Duplicate Metric'),
+            },
+            {
+              tableName: 'Actual',
+              name: 'Duplicate Metric',
+              expression: "SUM('Actual'[Date]) + 1",
+              measureIntent: basicMeasureIntent('Duplicate Metric'),
+            },
+          ],
+        },
+      }),
+    );
+
+    const payload = jsonPayload(result);
+    expect(result.isError).not.toBe(true);
+    expect(payload.created).toBe(1);
+    expect(payload.refused).toBe(1);
+    expect(created.map((measure) => measure.name)).toEqual(['Duplicate Metric']);
+    expect(payload.measuresRefused).toEqual([
+      expect.objectContaining({
+        name: 'Duplicate Metric',
+        reason: 'batch-duplicate-name',
+      }),
+    ]);
+  });
+
+  it('refuses single measure create when the measure name collides with a home-table column', async () => {
+    let created = false;
+    setModelDriverForTests({
+      async ensureConnection() {
+        return { mode: 'live', connectionString: 'Data Source=localhost:61234;' };
+      },
+      async getModelSnapshot() {
+        return liveSnapshot();
+      },
+      async createMeasure() {
+        created = true;
+        return { ok: true };
+      },
+    } as unknown as Parameters<typeof setModelDriverForTests>[0]);
+
+    const result = await withClient((client) =>
+      client.callTool({
+        name: 'pbi_measure_create',
+        arguments: {
+          tableName: 'Actual',
+          name: 'Date',
+          expression: "SUM('Actual'[Date])",
+          measureIntent: basicMeasureIntent('Date'),
+        },
+      }),
+    );
+
+    const payload = jsonPayload(result);
+    expect(result.isError).toBe(true);
+    expect(payload.reason).toBe('measure-column-name-collision');
+    expect(String(payload.error)).toMatch(/Total Date/);
+    expect(created).toBe(false);
+  });
+
+  it('batch refuses only the item whose measure name collides with a home-table column', async () => {
+    const created: Array<{ name?: string }> = [];
+    setModelDriverForTests({
+      async ensureConnection() {
+        return { mode: 'live', connectionString: 'Data Source=localhost:61234;' };
+      },
+      async getModelSnapshot() {
+        return liveSnapshot();
+      },
+      async createMeasure(def: { name?: string }) {
+        created.push(def);
+        return { ok: true };
+      },
+    } as unknown as Parameters<typeof setModelDriverForTests>[0]);
+
+    const result = await withClient((client) =>
+      client.callTool({
+        name: 'pbi_measure_create_batch',
+        arguments: {
+          measures: [
+            {
+              tableName: 'Actual',
+              name: 'Date',
+              expression: "SUM('Actual'[Date])",
+              measureIntent: basicMeasureIntent('Date'),
+            },
+            {
+              tableName: 'Actual',
+              name: 'Valid Total',
+              expression: "SUM('Actual'[Date]) + 1",
+              measureIntent: basicMeasureIntent('Valid Total'),
+            },
+          ],
+        },
+      }),
+    );
+
+    const payload = jsonPayload(result);
+    expect(result.isError).not.toBe(true);
+    expect(payload.created).toBe(1);
+    expect(payload.refused).toBe(1);
+    expect(created.map((measure) => measure.name)).toEqual(['Valid Total']);
+    expect(payload.measuresRefused).toEqual([
+      expect.objectContaining({
+        name: 'Date',
+        reason: 'measure-column-name-collision',
+      }),
+    ]);
+  });
+
+  it('batch returns blank-risk correctedExpression without creating the refused measure', async () => {
+    let created = false;
+    setModelDriverForTests(
+      overshootDriver(() => {
+        created = true;
+      }),
+    );
+
+    const result = await withClient((client) =>
+      client.callTool({
+        name: 'pbi_measure_create_batch',
+        arguments: {
+          measures: [
+            {
+              tableName: 'Actual',
+              name: 'Profit YTD',
+              expression: "CALCULATE(SUM('Actual'[Date]), DATESYTD('Calendar'[Date]))",
+              measureIntent: blankRiskIntentFor('Profit YTD'),
+            },
+          ],
+        },
+      }),
+    );
+
+    const payload = jsonPayload(result);
+    expect(result.isError).not.toBe(true);
+    expect(payload.created).toBe(0);
+    expect(payload.refused).toBe(1);
+    expect(created).toBe(false);
+    expect(payload.measuresCreated).toEqual([]);
+    expect(payload.measuresRefused).toEqual([
+      expect.objectContaining({
+        tableName: 'Actual',
+        name: 'Profit YTD',
+        reason: 'time-intelligence-default-context-blank-risk',
+        correctedExpression: expect.stringContaining('_AsOf'),
+      }),
+    ]);
+  });
+
+  it('batch creates measures in folder mode against the parsed TMDL folder model', async () => {
+    process.env.PBI_REPORT_MCP_DISABLE_LIVE_PROBE = '1';
+    const created: Array<{ name?: string }> = [];
+    setModelDriverForTests({
+      async ensureConnection() {
+        return { mode: 'folder', folderPath: BATCH_FIXTURE_ROOT };
+      },
+      async createMeasure(def: { name?: string }) {
+        created.push(def);
+        return { ok: true };
+      },
+    } as unknown as Parameters<typeof setModelDriverForTests>[0]);
+
+    const result = await withClient((client) =>
+      client.callTool({
+        name: 'pbi_measure_create_batch',
+        arguments: {
+          folderPath: BATCH_FIXTURE_ROOT,
+          measures: [
+            {
+              tableName: 'Actual',
+              name: 'Folder Metric',
+              expression: "SUM('Actual'[Date])",
+              measureIntent: basicMeasureIntent('Folder Metric'),
+            },
+          ],
+        },
+      }),
+    );
+
+    const payload = jsonPayload(result);
+    expect(result.isError).not.toBe(true);
+    expect(payload.mode).toBe('folder');
+    expect(payload.created).toBe(1);
+    expect(payload.refused).toBe(0);
+    expect(created.map((measure) => measure.name)).toEqual(['Folder Metric']);
   });
 
   it('refuses live model export because Desktop persistence is Ctrl+S', async () => {

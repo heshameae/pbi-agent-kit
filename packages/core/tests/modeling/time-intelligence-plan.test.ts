@@ -330,6 +330,27 @@ describe('parseBarePeriodToDate', () => {
     });
   });
 
+  it('does not split arguments on commas inside quoted DAX identifiers', () => {
+    expect(
+      parseBarePeriodToDate("TOTALYTD(SUM('Sales, Archive'[Amount]), 'Calendar, Fiscal'[Date])"),
+    ).toEqual({
+      period: 'YTD',
+      baseExpression: "SUM('Sales, Archive'[Amount])",
+      datesRef: "'Calendar, Fiscal'[Date]",
+      extraArgs: [],
+    });
+    expect(
+      parseBarePeriodToDate(
+        "CALCULATE(SUM('Sales, Archive'[Amount]), DATESYTD('Calendar, Fiscal'[Date]))",
+      ),
+    ).toEqual({
+      period: 'YTD',
+      baseExpression: "SUM('Sales, Archive'[Amount])",
+      datesRef: "'Calendar, Fiscal'[Date]",
+      extraArgs: [],
+    });
+  });
+
   it('does NOT false-flag a `<=` inside the base aggregate as already-capped', () => {
     // The old whole-string `<=` check wrongly returned null here, skipping the
     // blank-risk guard for a genuine bare YTD whose base just happens to filter rows.
@@ -368,11 +389,48 @@ describe('parseBarePeriodToDate', () => {
     expect(valueFilter?.extraArgs).toEqual(["'Product'[Price] <= 100"]);
   });
 
+  it('treats quoted and unquoted date-axis refs as the same existing cap', () => {
+    expect(
+      parseBarePeriodToDate("TOTALYTD([Sales], 'Date'[Date], Date[Date] <= _AsOf)"),
+    ).toBeNull();
+    expect(
+      parseBarePeriodToDate("CALCULATE([Sales], DATESYTD('Date'[Date]), Date[Date] <= _AsOf)"),
+    ).toBeNull();
+  });
+
   it('strips leading DAX comments before the bare-period anchor', () => {
     expect(parseBarePeriodToDate("// fiscal YTD\nTOTALYTD([Sales], 'Date'[Date])")?.period).toBe(
       'YTD',
     );
     expect(parseBarePeriodToDate("/* note */ TOTALQTD([Sales], 'Date'[Date])")?.period).toBe('QTD');
+  });
+
+  it('ignores DAX comments around period-to-date expressions', () => {
+    expect(parseBarePeriodToDate("-- fiscal YTD\nTOTALYTD([Sales], 'Date'[Date])")).toEqual({
+      period: 'YTD',
+      baseExpression: '[Sales]',
+      datesRef: "'Date'[Date]",
+      extraArgs: [],
+    });
+    expect(parseBarePeriodToDate("TOTALYTD([Sales], 'Date'[Date]) -- trailing note")).toEqual({
+      period: 'YTD',
+      baseExpression: '[Sales]',
+      datesRef: "'Date'[Date]",
+      extraArgs: [],
+    });
+    expect(
+      parseBarePeriodToDate("CALCULATE([Sales], DATESYTD('Date'[Date])) -- trailing note"),
+    ).toEqual({
+      period: 'YTD',
+      baseExpression: '[Sales]',
+      datesRef: "'Date'[Date]",
+      extraArgs: [],
+    });
+    expect(
+      parseBarePeriodToDate(
+        "TOTALYTD(SUM('Sales -- Archive'[Amount]), 'Date'[Date]) -- table name keeps dashes",
+      )?.baseExpression,
+    ).toBe("SUM('Sales -- Archive'[Amount])");
   });
 
   it('returns null for already-capped (shape-B) or guarded expressions', () => {
@@ -393,6 +451,102 @@ describe('parseBarePeriodToDate', () => {
     expect(parseBarePeriodToDate("CALCULATE([m], 'Date'[Date])")).toBeNull();
     expect(parseBarePeriodToDate("TOTALYTD([m], 'Date'[Date]) + 1")).toBeNull();
     expect(parseBarePeriodToDate('TOTALYTD([m])')).toBeNull();
+  });
+
+  it('normalizes CALCULATE plus DATES*TD filters into the bare period-to-date shape', () => {
+    expect(parseBarePeriodToDate("CALCULATE([Sales], DATESYTD('Date'[Date]))")).toEqual({
+      period: 'YTD',
+      baseExpression: '[Sales]',
+      datesRef: "'Date'[Date]",
+      extraArgs: [],
+    });
+    expect(parseBarePeriodToDate("CALCULATE([Sales], DATESQTD('Date'[Date]))")?.period).toBe('QTD');
+    expect(parseBarePeriodToDate("CALCULATE([Sales], DATESMTD('Date'[Date]))")?.period).toBe('MTD');
+  });
+
+  it('keeps nested CALCULATE bases intact when normalizing CALCULATE plus DATESYTD', () => {
+    expect(
+      parseBarePeriodToDate(
+        "CALCULATE(CALCULATE(SUM('Orders'[Amount]), 'Orders'[Qty] <= 100), DATESYTD('Date'[Date]))",
+      ),
+    ).toEqual({
+      period: 'YTD',
+      baseExpression: "CALCULATE(SUM('Orders'[Amount]), 'Orders'[Qty] <= 100)",
+      datesRef: "'Date'[Date]",
+      extraArgs: [],
+    });
+  });
+
+  it('surfaces DATESYTD year-end and extra CALCULATE filters as extraArgs', () => {
+    expect(
+      parseBarePeriodToDate('CALCULATE([Sales], DATESYTD(\'Date\'[Date], "06-30"))')?.extraArgs,
+    ).toEqual(['"06-30"']);
+    expect(
+      parseBarePeriodToDate("CALCULATE([Sales], DATESYTD('Date'[Date]), 'Product'[Cat]=\"A\")")
+        ?.extraArgs,
+    ).toEqual(['\'Product\'[Cat]="A"']);
+    expect(
+      parseBarePeriodToDate("CALCULATE([Sales], 'Product'[Cat]=\"A\", DATESYTD('Date'[Date]))"),
+    ).toEqual({
+      period: 'YTD',
+      baseExpression: '[Sales]',
+      datesRef: "'Date'[Date]",
+      extraArgs: ['\'Product\'[Cat]="A"'],
+    });
+  });
+
+  it('does not double-cap CALCULATE plus DATES*TD and only treats axis <= as a cap', () => {
+    expect(
+      parseBarePeriodToDate("CALCULATE([Sales], DATESYTD('Date'[Date]), 'Date'[Date] <= _AsOf)"),
+    ).toBeNull();
+    const valueFilter = parseBarePeriodToDate(
+      "CALCULATE([Sales], DATESYTD('Date'[Date]), 'Product'[Price] <= 100)",
+    );
+    expect(valueFilter).not.toBeNull();
+    expect(valueFilter?.extraArgs).toEqual(["'Product'[Price] <= 100"]);
+  });
+
+  it('leaves non-DATES*TD and non-spanning CALCULATE expressions untouched', () => {
+    expect(
+      parseBarePeriodToDate(
+        "CALCULATE([Sales], DATESINPERIOD('Date'[Date], MAX('Date'[Date]), -1, YEAR))",
+      ),
+    ).toBeNull();
+    expect(parseBarePeriodToDate("CALCULATE([Sales], DATESYTD('Date'[Date])) + 1")).toBeNull();
+    expect(
+      parseBarePeriodToDate("CALCULATE([Sales], FILTER(DATESYTD('Date'[Date]), TRUE()))"),
+    ).toBeNull();
+  });
+
+  it('feeds a DATESYTD-derived parse into the existing shape-B builder output', () => {
+    const parsed = parseBarePeriodToDate("CALCULATE(SUM('T'[Profit]), DATESYTD('Date'[Date]))");
+    expect(parsed).toEqual({
+      period: 'YTD',
+      baseExpression: "SUM('T'[Profit])",
+      datesRef: "'Date'[Date]",
+      extraArgs: [],
+    });
+    const built = buildTimeIntelligenceMeasureExpression({
+      period: parsed?.period ?? 'YTD',
+      baseExpression: parsed?.baseExpression ?? '',
+      dateTable: 'Date',
+      dateKeyColumn: 'Date',
+      capToLastDataPeriod: true,
+    });
+    expect(built).toBe(
+      'VAR _LastData =\n' +
+        '    CALCULATE(\n' +
+        '        MAXX(\n' +
+        "            FILTER(VALUES('Date'[Date]), NOT ISBLANK(CALCULATE(SUM('T'[Profit])))),\n" +
+        "            'Date'[Date]\n" +
+        '        ),\n' +
+        "        REMOVEFILTERS('Date')\n" +
+        '    )\n' +
+        "VAR _CtxMax = MAX('Date'[Date])\n" +
+        'VAR _AsOf = MIN(_CtxMax, _LastData)\n' +
+        'RETURN\n' +
+        "    CALCULATE(TOTALYTD(SUM('T'[Profit]), 'Date'[Date]), 'Date'[Date] <= _AsOf)",
+    );
   });
 });
 

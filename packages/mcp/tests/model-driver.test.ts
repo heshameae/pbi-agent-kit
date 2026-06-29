@@ -817,6 +817,272 @@ describe('ModelDriver.getModelSnapshot', () => {
     expect(model.relationships[0]?.toTable).toBe('DimShared');
   });
 
+  it('hydrates measures whose List payload names are keyed by id or displayName', async () => {
+    const client = makeClient({
+      'connection_operations/ListLocalInstances': json({
+        data: [{ connectionString: 'Data Source=localhost:1;' }],
+      }),
+      'table_operations/List': json({
+        data: [{ name: 'Sales', measureCount: 2 }],
+      }),
+      'column_operations/List': json({ data: [] }),
+      'measure_operations/List': json({
+        data: [{ displayName: 'Total Profit' }, { id: 'Order Count' }],
+      }),
+      'measure_operations/Get': json({
+        results: [
+          {
+            success: true,
+            data: {
+              tableName: 'Sales',
+              displayName: 'Total Profit',
+              expression: 'SUM(Sales[Profit])',
+            },
+          },
+          {
+            success: true,
+            data: {
+              table: 'Sales',
+              id: 'Order Count',
+              expression: 'COUNTROWS(Sales)',
+            },
+          },
+        ],
+      }),
+      'relationship_operations/List': json({ data: [] }),
+    });
+    const driver = new ModelDriver(client);
+
+    const model = await driver.getModelSnapshot();
+
+    expect(model.tables[0]?.measures).toEqual([
+      expect.objectContaining({
+        table: 'Sales',
+        name: 'Total Profit',
+        expression: 'SUM(Sales[Profit])',
+      }),
+      expect.objectContaining({
+        table: 'Sales',
+        name: 'Order Count',
+        expression: 'COUNTROWS(Sales)',
+      }),
+    ]);
+    const getCall = client.calls.find(
+      (call) =>
+        call.name === 'measure_operations' &&
+        (call.args as { request?: { operation?: string } }).request?.operation === 'Get',
+    );
+    expect((getCall?.args as { request?: { references?: unknown } }).request?.references).toEqual([
+      { name: 'Total Profit' },
+      { name: 'Order Count' },
+    ]);
+  });
+
+  it('falls back to nested table measures when measure List enumeration is empty', async () => {
+    const client = makeClient({
+      'connection_operations/ListLocalInstances': json({
+        data: [{ connectionString: 'Data Source=localhost:1;' }],
+      }),
+      'table_operations/List': json({
+        data: [
+          {
+            name: 'Sales',
+            measures: [
+              { displayName: 'Total Profit', expression: 'SUM(Sales[Profit])' },
+              { id: 'Order Count', expression: 'COUNTROWS(Sales)' },
+            ],
+          },
+        ],
+      }),
+      'column_operations/List': json({ data: [] }),
+      'measure_operations/List': json({ data: [] }),
+      'relationship_operations/List': json({ data: [] }),
+    });
+    const driver = new ModelDriver(client);
+
+    const model = await driver.getModelSnapshot();
+
+    expect(model.tables[0]?.measures.map((measure) => measure.name)).toEqual([
+      'Total Profit',
+      'Order Count',
+    ]);
+    expect(model.tables[0]?.measures.map((measure) => measure.expression)).toEqual([
+      'SUM(Sales[Profit])',
+      'COUNTROWS(Sales)',
+    ]);
+    expect(
+      client.calls.some(
+        (call) =>
+          call.name === 'measure_operations' &&
+          (call.args as { request?: { operation?: string } }).request?.operation === 'Get',
+      ),
+    ).toBe(false);
+  });
+
+  it('fails loud when table inventory proves measures exist but no source exposes usable names', async () => {
+    const client = makeClient({
+      'connection_operations/ListLocalInstances': json({
+        data: [{ connectionString: 'Data Source=localhost:1;' }],
+      }),
+      'table_operations/List': json({
+        data: [{ name: 'Sales', measureCount: 2 }],
+      }),
+      'column_operations/List': json({ data: [] }),
+      'measure_operations/List': json({
+        data: [{ objectId: 'm1' }, { objectId: 'm2' }],
+      }),
+      'relationship_operations/List': json({ data: [] }),
+    });
+    const driver = new ModelDriver(client);
+
+    await expect(driver.getModelSnapshot()).rejects.toThrow(
+      /measure_operations\/List returned no usable measure names/i,
+    );
+    await expect(driver.getModelSnapshot()).rejects.toThrow(/name, measureName, id, displayName/i);
+  });
+
+  it('uses table owner variants from enriched measures instead of dropping hydrated names', async () => {
+    const client = makeClient({
+      'connection_operations/ListLocalInstances': json({
+        data: [{ connectionString: 'Data Source=localhost:1;' }],
+      }),
+      'table_operations/List': json({
+        data: [{ id: 'tbl-sales', name: 'Sales', displayName: 'Sales', measureCount: 2 }],
+      }),
+      'column_operations/List': json({ data: [] }),
+      'measure_operations/List': json({
+        data: [{ displayName: 'Total Profit' }, { displayName: 'Order Count' }],
+      }),
+      'measure_operations/Get': json({
+        results: [
+          {
+            success: true,
+            data: {
+              displayName: 'Total Profit',
+              tableDisplayName: 'Sales',
+              expression: 'SUM(Sales[Profit])',
+            },
+          },
+          {
+            success: true,
+            data: {
+              displayName: 'Order Count',
+              tableId: 'tbl-sales',
+              expression: 'COUNTROWS(Sales)',
+            },
+          },
+        ],
+      }),
+      'relationship_operations/List': json({ data: [] }),
+    });
+    const driver = new ModelDriver(client);
+
+    const model = await driver.getModelSnapshot();
+
+    expect(model.tables[0]?.measures).toEqual([
+      expect.objectContaining({ table: 'Sales', name: 'Total Profit' }),
+      expect.objectContaining({ table: 'Sales', name: 'Order Count' }),
+    ]);
+  });
+
+  it('dedupes enriched and nested measures after table-owner alias canonicalization', async () => {
+    const client = makeClient({
+      'connection_operations/ListLocalInstances': json({
+        data: [{ connectionString: 'Data Source=localhost:1;' }],
+      }),
+      'table_operations/List': json({
+        data: [
+          {
+            id: 'tbl-sales',
+            name: 'Sales',
+            measureCount: 1,
+            measures: [
+              { tableName: 'Sales', name: 'Total Profit', expression: 'SUM(Sales[Profit])' },
+            ],
+          },
+        ],
+      }),
+      'column_operations/List': json({ data: [] }),
+      'measure_operations/List': json({
+        data: [{ displayName: 'Total Profit' }],
+      }),
+      'measure_operations/Get': json({
+        results: [
+          {
+            success: true,
+            data: {
+              displayName: 'Total Profit',
+              tableId: 'tbl-sales',
+              expression: 'SUM(Sales[Profit])',
+            },
+          },
+        ],
+      }),
+      'relationship_operations/List': json({ data: [] }),
+    });
+    const driver = new ModelDriver(client);
+
+    const model = await driver.getModelSnapshot();
+
+    expect(model.tables[0]?.measures).toHaveLength(1);
+    expect(model.tables[0]?.measures[0]).toEqual(
+      expect.objectContaining({ table: 'Sales', name: 'Total Profit' }),
+    );
+  });
+
+  it('fails loud when measure Get returns no usable hydrated measures despite table counts', async () => {
+    const client = makeClient({
+      'connection_operations/ListLocalInstances': json({
+        data: [{ connectionString: 'Data Source=localhost:1;' }],
+      }),
+      'table_operations/List': json({
+        data: [{ name: 'Sales', measureCount: 1 }],
+      }),
+      'column_operations/List': json({ data: [] }),
+      'measure_operations/List': json({
+        data: [{ displayName: 'Total Profit' }],
+      }),
+      'measure_operations/Get': json({
+        results: [{ success: false, error: 'not found' }],
+      }),
+      'relationship_operations/List': json({ data: [] }),
+    });
+    const driver = new ModelDriver(client);
+
+    await expect(driver.getModelSnapshot()).rejects.toThrow(/expected 1 measure/i);
+  });
+
+  it('fails loud when enriched measures enumerate fewer usable records than table counts', async () => {
+    const client = makeClient({
+      'connection_operations/ListLocalInstances': json({
+        data: [{ connectionString: 'Data Source=localhost:1;' }],
+      }),
+      'table_operations/List': json({
+        data: [{ name: 'Sales', measureCount: 2 }],
+      }),
+      'column_operations/List': json({ data: [] }),
+      'measure_operations/List': json({
+        data: [{ displayName: 'Total Profit' }],
+      }),
+      'measure_operations/Get': json({
+        results: [
+          {
+            success: true,
+            data: {
+              tableName: 'Sales',
+              displayName: 'Total Profit',
+              expression: 'SUM(Sales[Profit])',
+            },
+          },
+        ],
+      }),
+      'relationship_operations/List': json({ data: [] }),
+    });
+    const driver = new ModelDriver(client);
+
+    await expect(driver.getModelSnapshot()).rejects.toThrow(/expected 2 measure/i);
+  });
+
   it('captures column dataCategory + formatString and a precise relationship cardinality', async () => {
     const client = makeClient({
       'connection_operations/ListLocalInstances': json({
@@ -2148,6 +2414,85 @@ describe('ModelDriver writes', () => {
     expect(measureInclusive.tables[0]?.measures).toEqual([
       expect.objectContaining({ name: 'Total', expression: '1' }),
     ]);
+  });
+
+  it('patches a measure-inclusive cached snapshot after createMeasure without re-listing', async () => {
+    const client = makeClient({
+      'connection_operations/ListLocalInstances': json({
+        data: [{ connectionString: 'Data Source=localhost:1;' }],
+      }),
+      'table_operations/List': json({ data: [{ name: 'Measures' }] }),
+      'column_operations/List': json({ data: [] }),
+      'measure_operations/List': json({ data: [] }),
+      'relationship_operations/List': json({ data: [] }),
+      'measure_operations/Create': json({ ok: true }),
+    });
+    const driver = new ModelDriver(client);
+    await driver.getCachedSnapshot(undefined, { includeMeasures: true, includeRoles: false });
+    const listsBefore = client.calls.filter(
+      (c) => (c.args as { request?: { operation?: string } }).request?.operation === 'List',
+    ).length;
+
+    await driver.createMeasure({
+      tableName: 'Measures',
+      name: 'Gross Margin',
+      expression: '1',
+      formatString: '0.0%',
+      description: 'Created in this batch',
+    });
+    const afterCreateLists = client.calls.filter(
+      (c) => (c.args as { request?: { operation?: string } }).request?.operation === 'List',
+    ).length;
+    const snapshot = await driver.getCachedSnapshot(undefined, {
+      includeMeasures: true,
+      includeRoles: false,
+    });
+    const listsAfter = client.calls.filter(
+      (c) => (c.args as { request?: { operation?: string } }).request?.operation === 'List',
+    ).length;
+
+    expect(afterCreateLists).toBe(listsBefore);
+    expect(listsAfter).toBe(listsBefore);
+    expect(snapshot.tables[0]?.measures).toEqual([
+      expect.objectContaining({
+        table: 'Measures',
+        name: 'Gross Margin',
+        expression: '1',
+        formatString: '0.0%',
+        description: 'Created in this batch',
+        isHidden: false,
+        annotations: {},
+      }),
+    ]);
+  });
+
+  it('invalidates instead of patching createMeasure into a structure-only cached snapshot', async () => {
+    const client = makeClient({
+      'connection_operations/ListLocalInstances': json({
+        data: [{ connectionString: 'Data Source=localhost:1;' }],
+      }),
+      'table_operations/List': json({ data: [{ name: 'Measures' }] }),
+      'column_operations/List': json({ data: [] }),
+      'relationship_operations/List': json({ data: [] }),
+      'measure_operations/Create': json({ ok: true }),
+    });
+    const driver = new ModelDriver(client);
+    await driver.getCachedSnapshot(undefined, { includeMeasures: false, includeRoles: false });
+    const listsBefore = client.calls.filter(
+      (c) => (c.args as { request?: { operation?: string } }).request?.operation === 'List',
+    ).length;
+
+    await driver.createMeasure({
+      tableName: 'Measures',
+      name: 'Gross Margin',
+      expression: '1',
+    });
+    await driver.getCachedSnapshot(undefined, { includeMeasures: false, includeRoles: false });
+    const listsAfter = client.calls.filter(
+      (c) => (c.args as { request?: { operation?: string } }).request?.operation === 'List',
+    ).length;
+
+    expect(listsAfter).toBeGreaterThan(listsBefore);
   });
 });
 

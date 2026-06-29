@@ -29,6 +29,7 @@ Some live property writes are **best-effort and not asserted on read-back**, bec
 - `isKey` and `isHidden` column writes are never asserted on read-back (Import-mode List can omit the key, which reads back as `false` even when the write landed). Date-key readiness is proven from probe **data**, not the `isKey` metadata flag.
 - Marking a table as a Date table (`dataCategory:Time`) can silently no-op on an Import model; the date key is proven from data, so the mark is treated as best-effort and never deadlocks downstream work.
 - The governed Date-table policy annotation write/read wire shape is unverified against the live Microsoft MCP; it is gated behind try/catch, reported as `verified:false`, and degrades to prior behavior without blocking.
+- For pure measure-add flows, a successful `pbi_measure_create` and individual `pbi_measure_create_batch.measuresCreated` entries are authoritative. Do not re-issue writes because a later `pbi_model_list_measures` read is delayed, incomplete, or stale. If a batch response has `refused > 0`, report the refused items as incomplete/blocking instead of treating the whole request as done.
 
 These are handled defensively (proof-from-data, non-blocking degradation) so they do not produce wrong numbers, but they are disclosed here because the tool mutates regulated semantic models.
 

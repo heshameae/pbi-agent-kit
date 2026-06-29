@@ -611,6 +611,130 @@ function snapshotOptionsKey(options = {}) {
         includeRoles: options.includeRoles !== false,
     });
 }
+const MEASURE_NAME_FIELDS = ['name', 'measureName', 'id', 'displayName'];
+const MEASURE_TABLE_FIELDS = [
+    'tableName',
+    'table',
+    'tableDisplayName',
+    'tableId',
+    'parentTable',
+];
+const TABLE_ALIAS_FIELDS = ['name', 'tableName', 'displayName', 'id'];
+function measureName(record) {
+    return str(record, ...MEASURE_NAME_FIELDS);
+}
+function buildTableAliasMap(tables) {
+    const aliases = new Map();
+    for (const table of tables) {
+        const canonical = str(table, 'name', 'tableName', 'displayName', 'id');
+        if (!canonical)
+            continue;
+        for (const key of TABLE_ALIAS_FIELDS) {
+            const alias = str(table, key);
+            if (alias)
+                aliases.set(alias.trim().toLowerCase(), canonical);
+        }
+    }
+    return aliases;
+}
+function canonicalTableName(value, tableAliases) {
+    if (!value)
+        return undefined;
+    return tableAliases.get(value.trim().toLowerCase()) ?? value;
+}
+function measureTableName(record, tableAliases = new Map()) {
+    return canonicalTableName(str(record, ...MEASURE_TABLE_FIELDS), tableAliases);
+}
+function knownMeasureCountFromTables(tables) {
+    let total = 0;
+    for (const table of tables) {
+        const nestedMeasures = table.measures;
+        const count = num(table, 'measureCount', 'measuresCount') ??
+            (Array.isArray(nestedMeasures) ? nestedMeasures.length : undefined);
+        if (count !== undefined)
+            total += count;
+    }
+    return total;
+}
+function nestedMeasureRecordsFromTables(tables) {
+    const out = [];
+    const tableAliases = buildTableAliasMap(tables);
+    for (const table of tables) {
+        const tableName = canonicalTableName(str(table, 'name', 'tableName'), tableAliases);
+        const nestedMeasures = table.measures;
+        if (!Array.isArray(nestedMeasures))
+            continue;
+        for (const measure of nestedMeasures) {
+            if (!isRecord(measure))
+                continue;
+            const nestedTable = measureTableName(measure, tableAliases) ?? tableName;
+            if (!nestedTable)
+                continue;
+            out.push({ ...measure, tableName: nestedTable });
+        }
+    }
+    return out;
+}
+function usableMeasureRecords(records, tableAliases = new Map()) {
+    const out = [];
+    for (const record of records) {
+        const name = measureName(record);
+        const tableName = measureTableName(record, tableAliases);
+        if (!name || !tableName)
+            continue;
+        out.push({ ...record, name, tableName });
+    }
+    return out;
+}
+function measureRecordKey(record, tableAliases = new Map()) {
+    const table = measureTableName(record, tableAliases);
+    const name = measureName(record);
+    return table && name ? `${table}\u0000${name}` : undefined;
+}
+function mergeMeasureRecords(primary, fallback, tableAliases = new Map()) {
+    const out = [...primary];
+    const seen = new Set(primary
+        .map((record) => measureRecordKey(record, tableAliases))
+        .filter((key) => key !== undefined));
+    for (const record of fallback) {
+        const key = measureRecordKey(record, tableAliases);
+        if (!key || seen.has(key))
+            continue;
+        out.push(record);
+        seen.add(key);
+    }
+    return out;
+}
+function unwrapMeasureGetRecord(record) {
+    if (record.success === false)
+        return null;
+    return isRecord(record.data) ? record.data : record;
+}
+function measureEnumerationError(input) {
+    return new Error(`measure_operations/List returned no usable measure names or fewer usable measures than table_operations/List reported: expected ${input.expectedCount} measure(s), List exposed ${input.listNameCount} name(s), Get yielded ${input.usableEnrichedCount} usable measure(s), and table-nested fallback yielded ${input.usableNestedCount}. Tried measure name fields: ${MEASURE_NAME_FIELDS.join(', ')}. Tried table owner fields: ${MEASURE_TABLE_FIELDS.join(', ')}. The wrapped Microsoft Power BI modeling MCP payload shape may have changed; update the driver extraction before trusting pbi_model_list_measures.`);
+}
+function appendMeasureToModel(model, def) {
+    const table = model.tables.find((candidate) => candidate.name === def.tableName);
+    if (!table)
+        return null;
+    if (table.measures.some((measure) => measure.name === def.name))
+        return null;
+    const measure = {
+        table: def.tableName,
+        name: def.name,
+        expression: def.expression ?? '',
+        formatString: def.formatString,
+        isHidden: false,
+        description: def.description,
+        annotations: {},
+    };
+    return {
+        ...model,
+        tables: model.tables.map((candidate) => candidate.name === def.tableName
+            ? { ...candidate, measures: [...candidate.measures, measure] }
+            : candidate),
+    };
+}
 function liveInstanceMatchesHint(inst, normalizedHint) {
     const candidates = [inst.name, inst.databaseName, inst.initialCatalog, inst.port]
         .filter((c) => typeof c === 'string' && c.length > 0)
@@ -1113,10 +1237,14 @@ export class ModelDriver {
     async #getModelSnapshotUnlocked(modelPath = '(live)', options = {}) {
         const includeMeasures = options.includeMeasures !== false;
         const includeRoles = options.includeRoles !== false;
+        const rawTablesPromise = this.#listTablesRawUnlocked();
+        const rawMeasuresPromise = includeMeasures
+            ? rawTablesPromise.then((tables) => this.#listMeasuresEnrichedUnlocked(tables))
+            : Promise.resolve([]);
         const [rawTables, rawColumns, rawMeasures, rawRels] = await Promise.all([
-            this.#listTablesRawUnlocked(),
+            rawTablesPromise,
             this.#listColumnsRawUnlocked(),
-            includeMeasures ? this.#listMeasuresEnrichedUnlocked() : Promise.resolve([]),
+            rawMeasuresPromise,
             this.#listRelationshipsRawUnlocked(),
         ]);
         // UNVERIFIED: RLS-roles read op is unconfirmed. Best-effort: a failure (op
@@ -1188,8 +1316,8 @@ export class ModelDriver {
         }
         const measuresByTable = new Map();
         for (const m of rawMeasures) {
-            const table = str(m, 'tableName', 'table') ?? '';
-            const name = str(m, 'name', 'measureName') ?? '';
+            const table = measureTableName(m) ?? '';
+            const name = measureName(m) ?? '';
             if (!table || !name)
                 continue;
             const measure = {
@@ -1317,20 +1445,49 @@ export class ModelDriver {
     async #listMeasuresRawUnlocked() {
         return pickArray(await this.call(MS_TOOLS.measures, 'List')).filter(isRecord);
     }
-    async #listMeasuresEnrichedUnlocked() {
-        const names = (await this.#listMeasuresRawUnlocked())
-            .map((m) => str(m, 'name', 'measureName'))
+    async #listMeasuresEnrichedUnlocked(knownTables) {
+        const tables = knownTables ?? (await this.#listTablesRawUnlocked());
+        const tableAliases = buildTableAliasMap(tables);
+        const knownMeasureCount = knownMeasureCountFromTables(tables);
+        const nestedMeasures = usableMeasureRecords(nestedMeasureRecordsFromTables(tables), tableAliases);
+        const rawMeasures = await this.#listMeasuresRawUnlocked();
+        const names = rawMeasures
+            .map((m) => measureName(m))
             .filter((n) => typeof n === 'string' && n.length > 0);
-        if (names.length === 0)
+        if (names.length === 0) {
+            if (nestedMeasures.length > 0 && nestedMeasures.length >= knownMeasureCount) {
+                return nestedMeasures;
+            }
+            if (knownMeasureCount > 0) {
+                throw measureEnumerationError({
+                    expectedCount: knownMeasureCount,
+                    listNameCount: names.length,
+                    usableEnrichedCount: 0,
+                    usableNestedCount: nestedMeasures.length,
+                });
+            }
             return [];
+        }
         const got = await this.call(MS_TOOLS.measures, 'Get', {
             references: names.map((name) => ({ name })),
         });
         // Batched Get returns { results: [{ success, data: { ...measure } }, ...] }.
         // pickArray grabs `results`; unwrap each item's `data`. Tolerate a flat shape.
-        return pickArray(got)
-            .map((r) => (isRecord(r) && isRecord(r.data) ? r.data : r))
-            .filter(isRecord);
+        const enriched = pickArray(got)
+            .map((r) => (isRecord(r) ? unwrapMeasureGetRecord(r) : null))
+            .filter((record) => record !== null);
+        const usableEnriched = usableMeasureRecords(enriched, tableAliases);
+        const merged = mergeMeasureRecords(enriched, nestedMeasures, tableAliases);
+        const usableMerged = usableMeasureRecords(merged, tableAliases);
+        if (knownMeasureCount > 0 && usableMerged.length < knownMeasureCount) {
+            throw measureEnumerationError({
+                expectedCount: knownMeasureCount,
+                listNameCount: names.length,
+                usableEnrichedCount: usableEnriched.length,
+                usableNestedCount: nestedMeasures.length,
+            });
+        }
+        return usableMerged;
     }
     async #listRelationshipsRawUnlocked() {
         return pickArray(await this.call(MS_TOOLS.relationships, 'List')).filter(isRecord);
@@ -1412,9 +1569,35 @@ export class ModelDriver {
             return result;
         });
     }
+    async #writeThenPatchSnapshot(fn, patchFn, expectedConnection, options = {}) {
+        const { requireOptionsKey, ...writeOpts } = options;
+        return this.#withOperationLock(async () => {
+            const result = await this.#liveUnlocked(fn, expectedConnection, writeOpts);
+            assertNoBatchFailure(result, writeOpts.operationLabel);
+            const cache = this.#snapshot;
+            const connectionKey = connectionCacheKey(this.#connection);
+            if (cache &&
+                connectionKey !== null &&
+                cache.connectionKey === connectionKey &&
+                (requireOptionsKey === undefined || cache.optionsKey === requireOptionsKey)) {
+                const patched = patchFn(cache.model);
+                if (patched !== null) {
+                    this.#snapshot = { ...cache, model: patched, at: Date.now() };
+                    this.#snapshotPending = null;
+                    return result;
+                }
+            }
+            this.#invalidateSnapshot();
+            return result;
+        });
+    }
     // --- writes ------------------------------------------------------------
     async createMeasure(def, expectedConnection) {
-        return this.#write(() => this.call(MS_TOOLS.measures, 'Create', { definitions: [def] }), expectedConnection, { retryOnConnectionDrop: false, operationLabel: 'measure create' });
+        return this.#writeThenPatchSnapshot(() => this.call(MS_TOOLS.measures, 'Create', { definitions: [def] }), (model) => appendMeasureToModel(model, def), expectedConnection, {
+            retryOnConnectionDrop: false,
+            operationLabel: 'measure create',
+            requireOptionsKey: snapshotOptionsKey({ includeMeasures: true, includeRoles: false }),
+        });
     }
     async updateMeasure(def, expectedConnection) {
         // A measure update mutates expression/formatString/description — properties that

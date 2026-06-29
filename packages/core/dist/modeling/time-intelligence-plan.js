@@ -47,27 +47,66 @@ export function parseTimeIntelligencePeriod(period) {
         return 'MTD';
     return undefined;
 }
-// Strip leading DAX line (`// … EOL`) and block (`/* … */`) comments plus
-// surrounding whitespace, so a comment preceding the call does not defeat the
-// bare-period anchor below. Pure string handling; loops to clear stacked comments.
-function stripLeadingDaxComments(expression) {
-    let s = expression.trim();
-    for (;;) {
-        if (s.startsWith('//')) {
-            const nl = s.indexOf('\n');
-            s = nl === -1 ? '' : s.slice(nl + 1).trim();
+// Strip DAX comments outside string literals / quoted identifiers, so comments
+// around a bare call do not defeat the period-to-date anchor below.
+function stripDaxComments(expression) {
+    let out = '';
+    let inString = false;
+    let inQuotedIdentifier = false;
+    for (let i = 0; i < expression.length; i++) {
+        const ch = expression[i];
+        const next = expression[i + 1];
+        if (inString) {
+            out += ch;
+            if (ch === '"' && next === '"') {
+                out += next;
+                i++;
+                continue;
+            }
+            if (ch === '"')
+                inString = false;
             continue;
         }
-        if (s.startsWith('/*')) {
-            const close = s.indexOf('*/');
+        if (inQuotedIdentifier) {
+            out += ch;
+            if (ch === "'" && next === "'") {
+                out += next;
+                i++;
+                continue;
+            }
+            if (ch === "'")
+                inQuotedIdentifier = false;
+            continue;
+        }
+        if (ch === '"') {
+            inString = true;
+            out += ch;
+            continue;
+        }
+        if (ch === "'") {
+            inQuotedIdentifier = true;
+            out += ch;
+            continue;
+        }
+        if ((ch === '/' && next === '/') || (ch === '-' && next === '-')) {
+            const nl = expression.indexOf('\n', i + 2);
+            if (nl === -1)
+                break;
+            out += '\n';
+            i = nl;
+            continue;
+        }
+        if (ch === '/' && next === '*') {
+            const close = expression.indexOf('*/', i + 2);
             if (close === -1)
                 break;
-            s = s.slice(close + 2).trim();
+            out += ' ';
+            i = close + 1;
             continue;
         }
-        break;
+        out += ch;
     }
-    return s;
+    return out.trim();
 }
 // True when a TOTALYTD third argument is a fiscal year_end_date literal — a quoted
 // "MM-DD"/"MM/DD" month-day boundary, never a dataset field. Lets the blank-risk
@@ -80,6 +119,96 @@ const BARE_TOTAL_FN = {
     TOTALQTD: 'QTD',
     TOTALMTD: 'MTD',
 };
+const BARE_DATES_FN = {
+    DATESYTD: 'YTD',
+    DATESQTD: 'QTD',
+    DATESMTD: 'MTD',
+};
+function splitTopLevelArgs(s, openParenIdx) {
+    const args = [];
+    let depth = 0;
+    let start = openParenIdx + 1;
+    let inString = false;
+    let inQuotedIdentifier = false;
+    let end = -1;
+    for (let i = openParenIdx; i < s.length; i++) {
+        const ch = s[i];
+        const next = s[i + 1];
+        if (inString) {
+            if (ch === '"' && next === '"') {
+                i++;
+                continue;
+            }
+            if (ch === '"')
+                inString = false;
+            continue;
+        }
+        if (inQuotedIdentifier) {
+            if (ch === "'" && next === "'") {
+                i++;
+                continue;
+            }
+            if (ch === "'")
+                inQuotedIdentifier = false;
+            continue;
+        }
+        if (ch === '"') {
+            inString = true;
+            continue;
+        }
+        if (ch === "'") {
+            inQuotedIdentifier = true;
+            continue;
+        }
+        if (ch === '(') {
+            depth++;
+            continue;
+        }
+        if (ch === ')') {
+            depth--;
+            if (depth === 0) {
+                args.push(s.slice(start, i));
+                end = i;
+                break;
+            }
+            continue;
+        }
+        if (ch === ',' && depth === 1) {
+            args.push(s.slice(start, i));
+            start = i + 1;
+        }
+    }
+    if (end === -1)
+        return null;
+    return { args, end };
+}
+function hasDateAxisUpperBoundArg(extraArgs, datesRef) {
+    const collapse = (s) => s.replace(/\s+/g, '').replace(/'/g, '').toLowerCase();
+    const datesRefCollapsed = collapse(datesRef);
+    return extraArgs.some((arg) => /<=/.test(arg) && collapse(arg).includes(datesRefCollapsed));
+}
+function parseDatesPeriodToDateArg(arg) {
+    const datesHead = /^DATES(?:YTD|QTD|MTD)\s*\(/i.exec(arg);
+    if (!datesHead)
+        return null;
+    const datesFnName = arg.slice(0, arg.toUpperCase().indexOf('(')).trim().toUpperCase();
+    const period = BARE_DATES_FN[datesFnName];
+    if (period === undefined)
+        return null;
+    const datesSplit = splitTopLevelArgs(arg, datesHead[0].length - 1);
+    if (!datesSplit)
+        return null;
+    if (arg.slice(datesSplit.end + 1).trim() !== '')
+        return null;
+    const datesRef = datesSplit.args[0]?.trim();
+    if (!datesRef)
+        return null;
+    const extraArgs = datesSplit.args
+        .slice(1)
+        .map((candidate) => candidate.trim())
+        .filter((candidate) => candidate !== '');
+    return { period, datesRef, extraArgs };
+}
 // Parse a "bare" period-to-date measure body — a single
 // TOTALYTD/TOTALQTD/TOTALMTD(<base>, <dates>[, ...]) call spanning the whole
 // expression — into its parts. Returns null when the expression is not exactly
@@ -88,7 +217,7 @@ const BARE_TOTAL_FN = {
 // Used to detect the default-context BLANK risk and rebuild the capped form
 // deterministically. No model/dataset assumptions; pure string parsing.
 export function parseBarePeriodToDate(expression) {
-    const trimmed = stripLeadingDaxComments(expression);
+    const trimmed = stripDaxComments(expression);
     // An explicit as-of cap VAR means an upper bound was already applied by hand.
     // We intentionally do NOT scan the whole string for `<=` here: a `<=` inside the
     // base aggregate's own filter (e.g. CALCULATE(SUM(...), Qty <= 100)) must not be
@@ -96,72 +225,81 @@ export function parseBarePeriodToDate(expression) {
     if (/_AsOf\b/.test(trimmed))
         return null;
     const head = /^TOTAL(?:YTD|QTD|MTD)\s*\(/i.exec(trimmed);
-    if (!head)
-        return null;
-    const fnName = trimmed.slice(0, trimmed.toUpperCase().indexOf('(')).trim().toUpperCase();
-    const period = BARE_TOTAL_FN[fnName];
-    if (period === undefined)
-        return null;
-    // Walk from the opening paren, tracking depth and string literals, to find the
-    // matching close and the top-level (depth-1) argument boundaries.
-    const open = head[0].length - 1;
-    const args = [];
-    let depth = 0;
-    let start = open + 1;
-    let inString = false;
-    let end = -1;
-    for (let i = open; i < trimmed.length; i++) {
-        const ch = trimmed[i];
-        if (ch === '"') {
-            inString = !inString;
-            continue;
+    if (head) {
+        const fnName = trimmed.slice(0, trimmed.toUpperCase().indexOf('(')).trim().toUpperCase();
+        const period = BARE_TOTAL_FN[fnName];
+        if (period === undefined)
+            return null;
+        // Walk from the opening paren, tracking depth and string literals, to find the
+        // matching close and the top-level (depth-1) argument boundaries.
+        const open = head[0].length - 1;
+        const split = splitTopLevelArgs(trimmed, open);
+        if (!split)
+            return null;
+        const { args, end } = split;
+        // The call must span the entire expression — a compound expression is not a bare
+        // period-to-date measure and must not be rewritten.
+        if (trimmed.slice(end + 1).trim() !== '')
+            return null;
+        const baseExpression = args[0]?.trim();
+        const datesRef = args[1]?.trim();
+        if (!baseExpression || !datesRef)
+            return null;
+        const extraArgs = args
+            .slice(2)
+            .map((arg) => arg.trim())
+            .filter((arg) => arg !== '');
+        // A top-level `<=` arg is treated as an existing upper-bound DATE cap (so the measure
+        // is already guarded — leave it alone) ONLY when it filters the DATE column itself.
+        // A `<=` over a non-date value (e.g. 'Product'[Price] <= 100) is NOT a cap: it stays
+        // in extraArgs so the blank-risk gate still evaluates it (and refuses to auto-rewrite
+        // rather than silently dropping the filter). This is the precise, depth-1 + axis-aware
+        // version of the old whole-string `<=` check.
+        if (hasDateAxisUpperBoundArg(extraArgs, datesRef)) {
+            return null;
         }
-        if (inString)
-            continue;
-        if (ch === '(') {
-            depth++;
-            continue;
-        }
-        if (ch === ')') {
-            depth--;
-            if (depth === 0) {
-                args.push(trimmed.slice(start, i));
-                end = i;
-                break;
-            }
-            continue;
-        }
-        if (ch === ',' && depth === 1) {
-            args.push(trimmed.slice(start, i));
-            start = i + 1;
-        }
+        return { period, baseExpression, datesRef, extraArgs };
     }
-    if (end === -1)
+    const calculateHead = /^CALCULATE\s*\(/i.exec(trimmed);
+    if (!calculateHead)
         return null;
-    // The call must span the entire expression — a compound expression is not a bare
-    // period-to-date measure and must not be rewritten.
-    if (trimmed.slice(end + 1).trim() !== '')
+    const calculateOpen = calculateHead[0].length - 1;
+    const calculateSplit = splitTopLevelArgs(trimmed, calculateOpen);
+    if (!calculateSplit)
         return null;
-    const baseExpression = args[0]?.trim();
-    const datesRef = args[1]?.trim();
-    if (!baseExpression || !datesRef)
+    if (trimmed.slice(calculateSplit.end + 1).trim() !== '')
         return null;
-    const extraArgs = args
-        .slice(2)
+    const calculateArgs = calculateSplit.args;
+    const baseExpression = calculateArgs[0]?.trim();
+    const datesArg = calculateArgs[1]?.trim();
+    if (!baseExpression || !datesArg)
+        return null;
+    let datesArgIndex = -1;
+    let datesPeriod;
+    let datesRef;
+    let datesExtraArgs = [];
+    for (let i = 1; i < calculateArgs.length; i++) {
+        const parsed = parseDatesPeriodToDateArg(calculateArgs[i]?.trim() ?? '');
+        if (!parsed)
+            continue;
+        datesArgIndex = i;
+        datesPeriod = parsed.period;
+        datesRef = parsed.datesRef;
+        datesExtraArgs = parsed.extraArgs;
+        break;
+    }
+    if (datesArgIndex === -1 || datesPeriod === undefined || datesRef === undefined)
+        return null;
+    const extraArgs = [
+        ...datesExtraArgs,
+        ...calculateArgs.filter((_, index) => index > 0 && index !== datesArgIndex),
+    ]
         .map((arg) => arg.trim())
         .filter((arg) => arg !== '');
-    // A top-level `<=` arg is treated as an existing upper-bound DATE cap (so the measure
-    // is already guarded — leave it alone) ONLY when it filters the DATE column itself.
-    // A `<=` over a non-date value (e.g. 'Product'[Price] <= 100) is NOT a cap: it stays
-    // in extraArgs so the blank-risk gate still evaluates it (and refuses to auto-rewrite
-    // rather than silently dropping the filter). This is the precise, depth-1 + axis-aware
-    // version of the old whole-string `<=` check.
-    const collapse = (s) => s.replace(/\s+/g, '');
-    const datesRefCollapsed = collapse(datesRef);
-    if (extraArgs.some((arg) => /<=/.test(arg) && collapse(arg).includes(datesRefCollapsed))) {
+    if (hasDateAxisUpperBoundArg(extraArgs, datesRef)) {
         return null;
     }
-    return { period, baseExpression, datesRef, extraArgs };
+    return { period: datesPeriod, baseExpression, datesRef, extraArgs };
 }
 // Parse the day-grain ordinal from an ISO date or dateTime string (the leading
 // YYYY-MM-DD), or undefined when unparseable. Local helper so callers need not

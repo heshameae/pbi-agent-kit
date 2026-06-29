@@ -170,6 +170,7 @@ describe('modeling-only server surface', () => {
     'pbi_dax_query',
     'pbi_dax_reference_check',
     'pbi_measure_create',
+    'pbi_measure_create_batch',
     'pbi_measure_update',
     'pbi_measure_delete',
     'pbi_table_create',
@@ -524,9 +525,45 @@ describe('date-table modeling params', () => {
     const required = requiredOf('pbi_measure_create');
     expect(props.measureIntent, 'pbi_measure_create should accept measureIntent').toBeDefined();
     expect(required).toContain('measureIntent');
+    const measureIntentSchemaText = JSON.stringify(props.measureIntent);
+    const measureIntentDescription = String(
+      (props.measureIntent as { description?: unknown }).description ?? '',
+    );
+    for (const field of [
+      'dateRefs',
+      'dateTable',
+      'dateColumn',
+      'grain',
+      'calendarPolicy',
+      'incompletePeriodBehavior',
+    ]) {
+      expect(measureIntentSchemaText).toContain(field);
+      expect(measureIntentDescription).toContain(field);
+    }
     const desc = byName('pbi_measure_create')?.description?.toLowerCase() ?? '';
     expect(desc).toContain('confirmed measure intent');
     expect(desc).toContain('time-intelligence');
+  });
+
+  it('registers batch measure creation with gated refusal semantics', async () => {
+    const props = paramsOf('pbi_measure_create_batch');
+    const required = requiredOf('pbi_measure_create_batch');
+    expect(props.measures, 'pbi_measure_create_batch should accept measures').toBeDefined();
+    expect(props.folderPath, 'pbi_measure_create_batch should accept folderPath').toBeDefined();
+    expect(props.model, 'pbi_measure_create_batch should accept model').toBeDefined();
+    expect(required).toContain('measures');
+    const measuresSchema = props.measures as {
+      readonly items?: { readonly properties?: Record<string, unknown> };
+    };
+    expect(measuresSchema.items?.properties?.measureIntent).toBeDefined();
+    const desc = byName('pbi_measure_create_batch')?.description?.toLowerCase() ?? '';
+    expect(desc).toContain('gate');
+    expect(desc).toContain('refused');
+    expect(byName('pbi_measure_create_batch')?.annotations?.destructiveHint).toBe(false);
+    expect(byName('pbi_measure_create_batch')?.annotations?.idempotentHint).toBe(false);
+
+    const result = await callTool('pbi_measure_create_batch', { measures: [] });
+    expect(result.isError).toBe(true);
   });
 
   it('refuses measure metadata updates without confirmed measure intent at the tool boundary', async () => {
@@ -710,6 +747,7 @@ describe('model selector threading', () => {
     'pbi_model_plan_date_table',
     'pbi_dax_query',
     'pbi_measure_create',
+    'pbi_measure_create_batch',
     'pbi_measure_update',
     'pbi_measure_delete',
     'pbi_model_export',
