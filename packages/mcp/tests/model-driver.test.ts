@@ -919,7 +919,10 @@ describe('ModelDriver.getModelSnapshot', () => {
     ).toBe(false);
   });
 
-  it('fails loud when table inventory proves measures exist but no source exposes usable names', async () => {
+  it('degrades (does not throw) and flags measuresCaptured:false when measure names are unparseable', async () => {
+    // Table inventory proves 2 measures exist, but the measure-list payload uses
+    // an unrecognized name key. Enumeration must NOT throw (that would block all
+    // writes); it degrades to an empty measure set flagged measuresCaptured:false.
     const client = makeClient({
       'connection_operations/ListLocalInstances': json({
         data: [{ connectionString: 'Data Source=localhost:1;' }],
@@ -935,10 +938,89 @@ describe('ModelDriver.getModelSnapshot', () => {
     });
     const driver = new ModelDriver(client);
 
-    await expect(driver.getModelSnapshot()).rejects.toThrow(
-      /measure_operations\/List returned no usable measure names/i,
+    const model = await driver.getModelSnapshot();
+    expect(model.measuresCaptured).toBe(false);
+    expect(model.tables.flatMap((t) => t.measures)).toEqual([]);
+  });
+
+  it('falls back to INFO.VIEW.MEASURES() (DAX) when the measure payload is unparseable', async () => {
+    // measure_operations/List names cannot be parsed, but the version-independent
+    // DAX INFO query returns the measures with bracketed column keys.
+    const measuresEnvelope = {
+      success: true,
+      data: {
+        columns: [{ name: '[Name]' }, { name: '[Table]' }, { name: '[Expression]' }],
+        rows: [
+          ['Total Profit', 'Sales', "SUM('Sales'[Profit])"],
+          ['Profit YTD', 'Sales', "CALCULATE([Total Profit], DATESYTD('Date'[Date]))"],
+        ],
+        rowCount: 2,
+      },
+    };
+    const client = makeClient({
+      'connection_operations/ListLocalInstances': json({
+        data: [{ connectionString: 'Data Source=localhost:1;' }],
+      }),
+      'table_operations/List': json({ data: [{ name: 'Sales', measureCount: 2 }] }),
+      'column_operations/List': json({ data: [] }),
+      'measure_operations/List': json({ data: [{ objectId: 'm1' }, { objectId: 'm2' }] }),
+      'dax_query_operations/Execute': {
+        content: [{ type: 'text', text: JSON.stringify(measuresEnvelope) }],
+      },
+      'relationship_operations/List': json({ data: [] }),
+    });
+    const driver = new ModelDriver(client);
+
+    const model = await driver.getModelSnapshot();
+    expect(model.measuresCaptured).toBe(true);
+    const sales = model.tables.find((t) => t.name === 'Sales');
+    expect(sales?.measures.map((m) => m.name).sort()).toEqual(['Profit YTD', 'Total Profit']);
+    expect(sales?.measures.find((m) => m.name === 'Total Profit')?.expression).toBe(
+      "SUM('Sales'[Profit])",
     );
-    await expect(driver.getModelSnapshot()).rejects.toThrow(/name, measureName, id, displayName/i);
+  });
+
+  it('degrades to measuresCaptured:false when both the payload and the DAX fallback fail', async () => {
+    const client = makeClient({
+      'connection_operations/ListLocalInstances': json({
+        data: [{ connectionString: 'Data Source=localhost:1;' }],
+      }),
+      'table_operations/List': json({ data: [{ name: 'Sales', measureCount: 2 }] }),
+      'column_operations/List': json({ data: [] }),
+      'measure_operations/List': json({ data: [{ objectId: 'm1' }, { objectId: 'm2' }] }),
+      'dax_query_operations/Execute': {
+        isError: true,
+        content: [{ type: 'text', text: 'no INFO' }],
+      },
+      'relationship_operations/List': json({ data: [] }),
+    });
+    const driver = new ModelDriver(client);
+
+    const model = await driver.getModelSnapshot();
+    expect(model.measuresCaptured).toBe(false);
+    expect(model.tables.flatMap((t) => t.measures)).toEqual([]);
+  });
+
+  it('flags measuresCaptured:true when every reported measure is enumerated', async () => {
+    const client = makeClient({
+      'connection_operations/ListLocalInstances': json({
+        data: [{ connectionString: 'Data Source=localhost:1;' }],
+      }),
+      'table_operations/List': json({ data: [{ name: 'Sales', measureCount: 1 }] }),
+      'column_operations/List': json({ data: [] }),
+      'measure_operations/List': json({ data: [{ name: 'Total', tableName: 'Sales' }] }),
+      'measure_operations/Get': json({
+        results: [{ success: true, data: { name: 'Total', tableName: 'Sales', expression: '1' } }],
+      }),
+      'relationship_operations/List': json({ data: [] }),
+    });
+    const driver = new ModelDriver(client);
+
+    const model = await driver.getModelSnapshot();
+    expect(model.measuresCaptured).toBe(true);
+    expect(model.tables.find((t) => t.name === 'Sales')?.measures.map((m) => m.name)).toEqual([
+      'Total',
+    ]);
   });
 
   it('uses table owner variants from enriched measures instead of dropping hydrated names', async () => {
@@ -1030,7 +1112,7 @@ describe('ModelDriver.getModelSnapshot', () => {
     );
   });
 
-  it('fails loud when measure Get returns no usable hydrated measures despite table counts', async () => {
+  it('degrades (measuresCaptured:false) when measure Get yields no usable hydrated measures', async () => {
     const client = makeClient({
       'connection_operations/ListLocalInstances': json({
         data: [{ connectionString: 'Data Source=localhost:1;' }],
@@ -1049,10 +1131,11 @@ describe('ModelDriver.getModelSnapshot', () => {
     });
     const driver = new ModelDriver(client);
 
-    await expect(driver.getModelSnapshot()).rejects.toThrow(/expected 1 measure/i);
+    const model = await driver.getModelSnapshot();
+    expect(model.measuresCaptured).toBe(false);
   });
 
-  it('fails loud when enriched measures enumerate fewer usable records than table counts', async () => {
+  it('degrades (measuresCaptured:false) when fewer usable measures enumerate than table counts', async () => {
     const client = makeClient({
       'connection_operations/ListLocalInstances': json({
         data: [{ connectionString: 'Data Source=localhost:1;' }],
@@ -1080,7 +1163,12 @@ describe('ModelDriver.getModelSnapshot', () => {
     });
     const driver = new ModelDriver(client);
 
-    await expect(driver.getModelSnapshot()).rejects.toThrow(/expected 2 measure/i);
+    // One of two measures hydrated: best-effort returns it, flagged incomplete.
+    const model = await driver.getModelSnapshot();
+    expect(model.measuresCaptured).toBe(false);
+    expect(model.tables.find((t) => t.name === 'Sales')?.measures.map((m) => m.name)).toEqual([
+      'Total Profit',
+    ]);
   });
 
   it('captures column dataCategory + formatString and a precise relationship cardinality', async () => {

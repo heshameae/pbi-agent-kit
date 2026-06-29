@@ -71,6 +71,7 @@ export interface TMDLModel {
     readonly tables: ReadonlyArray<TMDLTable>;
     readonly relationships: ReadonlyArray<TMDLRelationship>;
     readonly roles?: ReadonlyArray<TMDLRole>;
+    readonly measuresCaptured?: boolean;
     readonly rolesCaptured?: boolean;
     readonly objectLevelSecurityCaptured?: boolean;
     readonly calculationGroupsCaptured?: boolean;

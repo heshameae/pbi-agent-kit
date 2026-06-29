@@ -4068,7 +4068,20 @@ tool('pbi_model_list_measures', 'List Measures', 'List the measures in the model
         includeMeasures: true,
         includeRoles: false,
     });
-    return { mode, measures: model.tables.flatMap((t) => t.measures) };
+    const measures = model.tables.flatMap((t) => t.measures);
+    // The live measure-list payload could not be fully parsed on this MS-MCP
+    // version. Report the gap explicitly so callers do NOT treat an empty/partial
+    // list as "the model has no measures" or "a prior write failed" — measures
+    // exist and writes still work (the engine validates references).
+    if (model.measuresCaptured === false) {
+        return {
+            mode,
+            measures,
+            measuresCaptured: false,
+            warning: 'Measure enumeration is incomplete: the Microsoft modeling MCP measure-list payload could not be fully parsed on this version, so some or all existing measures are not listed by name. This does NOT mean the model is empty or that a write failed. Measure writes still work and are validated by the engine; do not retry writes or re-list to "verify".',
+        };
+    }
+    return { mode, measures };
 });
 tool('pbi_model_list_relationships', 'List Relationships', 'List the relationships in the model (live Desktop instance, else folder). Read-only.', { folderPath: MODEL_FOLDER_FIELD, model: MODEL_SELECT_FIELD }, { readOnlyHint: true, idempotentHint: true }, async (input) => {
     const { mode, model } = await snapshotModel(input.folderPath, input.model, {
@@ -4117,7 +4130,10 @@ tool('pbi_measure_create', 'Create Measure (DAX-gated)', 'Create a measure on th
     });
     enforceMeasureIntentForWrite('pbi_measure_create', input.name, input.expression, input.measureIntent, model);
     const blankRiskWarning = await enforceTimeIntelligenceNotBlankInDefaultContext(connection, model, 'pbi_measure_create', input.name, input.expression, input.measureIntent);
-    const check = daxReferenceCheck(input.expression, model, { hostTable: input.tableName });
+    const check = daxReferenceCheck(input.expression, model, {
+        hostTable: input.tableName,
+        assumeUnknownMeasuresExist: model.measuresCaptured === false,
+    });
     if (!check.valid) {
         const err = new Error(`Refused: measure "${input.name}" references fields not present in the model.`);
         err.report = daxReferenceCheckReport({
@@ -4199,6 +4215,7 @@ tool('pbi_measure_create_batch', 'Create Measures Batch (DAX-gated)', 'Create mu
             const blankRiskWarning = await enforceTimeIntelligenceNotBlankInDefaultContext(connection, workingModel, 'pbi_measure_create_batch', measure.name, measure.expression, measure.measureIntent);
             const check = daxReferenceCheck(measure.expression, workingModel, {
                 hostTable: measure.tableName,
+                assumeUnknownMeasuresExist: workingModel.measuresCaptured === false,
             });
             if (!check.valid) {
                 const err = new Error(`Refused: measure "${measure.name}" references fields not present in the model.`);

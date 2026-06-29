@@ -11,6 +11,7 @@ export interface UncommittedMeasureRef {
 export interface DaxReferenceCheckOptions {
     readonly hostTable?: string;
     readonly uncommittedMeasures?: readonly UncommittedMeasureRef[];
+    readonly assumeUnknownMeasuresExist?: boolean;
 }
 export interface DaxReferenceCheckResult {
     readonly valid: boolean;

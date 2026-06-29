@@ -964,15 +964,30 @@ function unwrapMeasureGetRecord(record: Record<string, unknown>): Record<string,
   return isRecord(record.data) ? record.data : record;
 }
 
-function measureEnumerationError(input: {
-  readonly expectedCount: number;
-  readonly listNameCount: number;
-  readonly usableEnrichedCount: number;
-  readonly usableNestedCount: number;
-}): Error {
-  return new Error(
-    `measure_operations/List returned no usable measure names or fewer usable measures than table_operations/List reported: expected ${input.expectedCount} measure(s), List exposed ${input.listNameCount} name(s), Get yielded ${input.usableEnrichedCount} usable measure(s), and table-nested fallback yielded ${input.usableNestedCount}. Tried measure name fields: ${MEASURE_NAME_FIELDS.join(', ')}. Tried table owner fields: ${MEASURE_TABLE_FIELDS.join(', ')}. The wrapped Microsoft Power BI modeling MCP payload shape may have changed; update the driver extraction before trusting pbi_model_list_measures.`,
-  );
+// Read a field from a normalized DAX row whose keys are bracketed column names
+// (e.g. "[Name]"). Matches candidates case-insensitively after stripping brackets.
+function daxRowField(
+  row: Record<string, unknown>,
+  candidates: readonly string[],
+): string | undefined {
+  for (const [key, value] of Object.entries(row)) {
+    const norm = key.replace(/[[\]]/g, '').trim().toLowerCase();
+    if (!candidates.includes(norm)) continue;
+    if (typeof value === 'string' && value.length > 0) return value;
+    if (typeof value === 'number') return String(value);
+  }
+  return undefined;
+}
+
+function daxRowBool(row: Record<string, unknown>, candidates: readonly string[]): boolean {
+  for (const [key, value] of Object.entries(row)) {
+    const norm = key.replace(/[[\]]/g, '').trim().toLowerCase();
+    if (!candidates.includes(norm)) continue;
+    if (typeof value === 'boolean') return value;
+    if (typeof value === 'number') return value !== 0;
+    if (typeof value === 'string') return /^(true|1)$/i.test(value.trim());
+  }
+  return false;
 }
 
 function appendMeasureToModel(model: TMDLModel, def: MeasureWrite): TMDLModel | null {
@@ -1507,7 +1522,10 @@ export class ModelDriver {
   async listMeasuresEnriched(
     expectedConnection?: ConnectionInfo,
   ): Promise<Record<string, unknown>[]> {
-    return this.#live(() => this.#listMeasuresEnrichedUnlocked(), expectedConnection);
+    return this.#live(
+      async () => (await this.#listMeasuresEnrichedUnlocked()).records,
+      expectedConnection,
+    );
   }
   async listRelationshipsRaw(
     expectedConnection?: ConnectionInfo,
@@ -1527,24 +1545,37 @@ export class ModelDriver {
     options: DaxQueryOptions = {},
   ): Promise<unknown> {
     return this.#live(async () => {
-      let result: McpToolResult;
-      try {
-        result = await this.#client.callTool(MS_TOOLS.dax, operationArgs('Execute', { query }));
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        throw new Error(redactConnectionSecrets(`${MS_TOOLS.dax}/Execute failed: ${msg}`));
-      }
-      if (result.isError) {
-        const text =
-          result.content?.find((c) => c.type === 'text')?.text ?? `${MS_TOOLS.dax}/Execute errored`;
-        throw new Error(redactConnectionSecrets(text));
-      }
-      const raw = parseDaxToolResult(result);
-      const normalized = normalizeDaxResult(raw.payload);
+      const { normalized, rawPayload, source } = await this.#daxExecUnlocked(query);
       return options.includeRawDiagnostics
-        ? attachDaxRawDiagnostics(normalized, raw.payload, raw.source)
+        ? attachDaxRawDiagnostics(normalized, rawPayload, source)
         : normalized;
     }, expectedConnection);
+  }
+
+  // Execute DAX WITHOUT acquiring the operation lock or re-ensuring the
+  // connection. Callers that already hold the lock / a live connection (e.g. the
+  // snapshot assembly) use this directly; `daxQuery` wraps it in `#live`.
+  async #daxExecUnlocked(
+    query: string,
+  ): Promise<{ normalized: unknown; rawPayload: unknown; source: string }> {
+    let result: McpToolResult;
+    try {
+      result = await this.#client.callTool(MS_TOOLS.dax, operationArgs('Execute', { query }));
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new Error(redactConnectionSecrets(`${MS_TOOLS.dax}/Execute failed: ${msg}`));
+    }
+    if (result.isError) {
+      const text =
+        result.content?.find((c) => c.type === 'text')?.text ?? `${MS_TOOLS.dax}/Execute errored`;
+      throw new Error(redactConnectionSecrets(text));
+    }
+    const raw = parseDaxToolResult(result);
+    return {
+      normalized: normalizeDaxResult(raw.payload),
+      rawPayload: raw.payload,
+      source: raw.source,
+    };
   }
 
   async refreshModel(
@@ -1585,15 +1616,20 @@ export class ModelDriver {
     const includeMeasures = options.includeMeasures !== false;
     const includeRoles = options.includeRoles !== false;
     const rawTablesPromise = this.#listTablesRawUnlocked();
-    const rawMeasuresPromise = includeMeasures
+    const measuresPromise = includeMeasures
       ? rawTablesPromise.then((tables) => this.#listMeasuresEnrichedUnlocked(tables))
-      : Promise.resolve([]);
-    const [rawTables, rawColumns, rawMeasures, rawRels] = await Promise.all([
+      : Promise.resolve({
+          records: [] as Record<string, unknown>[],
+          complete: true,
+          knownCount: 0,
+        });
+    const [rawTables, rawColumns, measuresResult, rawRels] = await Promise.all([
       rawTablesPromise,
       this.#listColumnsRawUnlocked(),
-      rawMeasuresPromise,
+      measuresPromise,
       this.#listRelationshipsRawUnlocked(),
     ]);
+    const rawMeasures = measuresResult.records;
 
     // UNVERIFIED: RLS-roles read op is unconfirmed. Best-effort: a failure (op
     // not supported / errored) degrades to NO `roles` key so the snapshot — which
@@ -1780,6 +1816,7 @@ export class ModelDriver {
       modelPath,
       tables,
       relationships,
+      ...(includeMeasures ? { measuresCaptured: measuresResult.complete } : {}),
       ...(rolesCaptured ? { rolesCaptured: true, roles } : {}),
     };
   }
@@ -1796,9 +1833,16 @@ export class ModelDriver {
     return pickArray(await this.call(MS_TOOLS.measures, 'List')).filter(isRecord);
   }
 
+  // Best-effort measure enumeration. NEVER throws: a measure-list payload the
+  // driver cannot parse (e.g. an MS-MCP shape change) must NOT block writes — the
+  // write path only needs columns for the reference gate and the Microsoft engine
+  // validates measure references at commit time. `complete` is false when table
+  // inventory proves more measures exist than we could enumerate by name, so the
+  // snapshot can be flagged `measuresCaptured: false` and consumers degrade
+  // gracefully instead of treating the model as empty.
   async #listMeasuresEnrichedUnlocked(
     knownTables?: ReadonlyArray<Record<string, unknown>>,
-  ): Promise<Record<string, unknown>[]> {
+  ): Promise<{ records: Record<string, unknown>[]; complete: boolean; knownCount: number }> {
     const tables = knownTables ?? (await this.#listTablesRawUnlocked());
     const tableAliases = buildTableAliasMap(tables);
     const knownMeasureCount = knownMeasureCountFromTables(tables);
@@ -1810,40 +1854,82 @@ export class ModelDriver {
     const names = rawMeasures
       .map((m) => measureName(m))
       .filter((n): n is string => typeof n === 'string' && n.length > 0);
+    let payloadRecords: Record<string, unknown>[];
     if (names.length === 0) {
-      if (nestedMeasures.length > 0 && nestedMeasures.length >= knownMeasureCount) {
-        return nestedMeasures;
-      }
-      if (knownMeasureCount > 0) {
-        throw measureEnumerationError({
-          expectedCount: knownMeasureCount,
-          listNameCount: names.length,
-          usableEnrichedCount: 0,
-          usableNestedCount: nestedMeasures.length,
-        });
-      }
+      // measure_operations/List exposed no parseable names — fall back to whatever
+      // the table-nested source yielded.
+      payloadRecords = nestedMeasures;
+    } else {
+      const got = await this.call(MS_TOOLS.measures, 'Get', {
+        references: names.map((name) => ({ name })),
+      });
+      // Batched Get returns { results: [{ success, data: { ...measure } }, ...] }.
+      // pickArray grabs `results`; unwrap each item's `data`. Tolerate a flat shape.
+      const enriched = pickArray(got)
+        .map((r) => (isRecord(r) ? unwrapMeasureGetRecord(r) : null))
+        .filter((record): record is Record<string, unknown> => record !== null);
+      payloadRecords = usableMeasureRecords(
+        mergeMeasureRecords(enriched, nestedMeasures, tableAliases),
+        tableAliases,
+      );
+    }
+
+    // Fast path: the measure_operations payload covered every measure table
+    // inventory reports — trust it, no extra round-trip.
+    if (knownMeasureCount === 0 || payloadRecords.length >= knownMeasureCount) {
+      return { records: payloadRecords, complete: true, knownCount: knownMeasureCount };
+    }
+
+    // Payload enumeration is short of the proven count — likely an MS-MCP
+    // measure-list payload-shape change. Fall back to a version-INDEPENDENT DAX
+    // INFO query that reads measures straight from the engine, decoupled from the
+    // measure_operations payload keys. Best-effort: never throws.
+    const daxRecords = await this.#listMeasuresViaDaxUnlocked(tableAliases);
+    if (daxRecords.length >= Math.max(payloadRecords.length, knownMeasureCount)) {
+      return { records: daxRecords, complete: true, knownCount: knownMeasureCount };
+    }
+    if (daxRecords.length > payloadRecords.length) {
+      return { records: daxRecords, complete: false, knownCount: knownMeasureCount };
+    }
+    return { records: payloadRecords, complete: false, knownCount: knownMeasureCount };
+  }
+
+  // Version-independent measure enumeration via the engine's INFO.VIEW.MEASURES()
+  // function. Returns records shaped like the measure_operations payload (name,
+  // tableName, expression, formatString, ...) so the snapshot assembler consumes
+  // them unchanged. Never throws — a failed/absent INFO query degrades to [].
+  async #listMeasuresViaDaxUnlocked(
+    tableAliases: ReadonlyMap<string, string>,
+  ): Promise<Record<string, unknown>[]> {
+    let normalized: unknown;
+    try {
+      ({ normalized } = await this.#daxExecUnlocked('EVALUATE INFO.VIEW.MEASURES()'));
+    } catch {
       return [];
     }
-    const got = await this.call(MS_TOOLS.measures, 'Get', {
-      references: names.map((name) => ({ name })),
-    });
-    // Batched Get returns { results: [{ success, data: { ...measure } }, ...] }.
-    // pickArray grabs `results`; unwrap each item's `data`. Tolerate a flat shape.
-    const enriched = pickArray(got)
-      .map((r) => (isRecord(r) ? unwrapMeasureGetRecord(r) : null))
-      .filter((record): record is Record<string, unknown> => record !== null);
-    const usableEnriched = usableMeasureRecords(enriched, tableAliases);
-    const merged = mergeMeasureRecords(enriched, nestedMeasures, tableAliases);
-    const usableMerged = usableMeasureRecords(merged, tableAliases);
-    if (knownMeasureCount > 0 && usableMerged.length < knownMeasureCount) {
-      throw measureEnumerationError({
-        expectedCount: knownMeasureCount,
-        listNameCount: names.length,
-        usableEnrichedCount: usableEnriched.length,
-        usableNestedCount: nestedMeasures.length,
+    const rows =
+      isRecord(normalized) && Array.isArray((normalized as { rows?: unknown }).rows)
+        ? (normalized as { rows: unknown[] }).rows.filter(isRecord)
+        : [];
+    const out: Record<string, unknown>[] = [];
+    for (const row of rows) {
+      const name = daxRowField(row, ['name']);
+      const table = canonicalTableName(daxRowField(row, ['table', 'tablename']), tableAliases);
+      if (!name || !table) continue;
+      const formatString = daxRowField(row, ['formatstring', 'formatstringdefinition']);
+      const description = daxRowField(row, ['description']);
+      const displayFolder = daxRowField(row, ['displayfolder']);
+      out.push({
+        name,
+        tableName: table,
+        expression: daxRowField(row, ['expression']) ?? '',
+        ...(formatString !== undefined ? { formatString } : {}),
+        ...(description !== undefined ? { description } : {}),
+        ...(displayFolder !== undefined ? { displayFolder } : {}),
+        isHidden: daxRowBool(row, ['ishidden', 'hidden']),
       });
     }
-    return usableMerged;
+    return out;
   }
 
   async #listRelationshipsRawUnlocked(): Promise<Record<string, unknown>[]> {

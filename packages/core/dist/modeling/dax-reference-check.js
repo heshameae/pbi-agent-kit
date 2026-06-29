@@ -35,7 +35,10 @@ export function daxReferenceCheck(expression, model, options = {}) {
         const hasColumn = tableEntry.columns.some((column) => column.name === name);
         const hasMeasure = tableEntry.measures.some((measure) => measure.name === name) ||
             uncommittedMeasures.some((uncommitted) => uncommitted.table === table && uncommitted.name === name);
-        if (!hasColumn && !hasMeasure)
+        // Table resolves but the member does not. When measures are un-enumerable,
+        // this may be an existing measure we cannot see — assume valid (engine is
+        // the backstop). The table existence check above still catches bad tables.
+        if (!hasColumn && !hasMeasure && !options.assumeUnknownMeasuresExist)
             missing.push(ref);
     }
     const withoutQualified = stripped.replace(QUALIFIED_REF_RE, ' ');
@@ -61,6 +64,11 @@ export function daxReferenceCheck(expression, model, options = {}) {
             ambiguous.push(ref);
             continue;
         }
+        // count === 0: unknown bare reference. When measures are un-enumerable the
+        // count map is incomplete, so assume it is an existing measure (engine is
+        // the backstop) rather than blocking the write.
+        if (options.assumeUnknownMeasuresExist)
+            continue;
         missing.push(ref);
     }
     const valid = missing.length === 0 && ambiguous.length === 0 && unsupported.length === 0;

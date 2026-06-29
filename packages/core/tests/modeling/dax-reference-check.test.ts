@@ -63,6 +63,31 @@ function model(): TMDLModel {
   };
 }
 
+describe('daxReferenceCheck assumeUnknownMeasuresExist', () => {
+  it('allows an unknown measure reference when measures are not enumerable', () => {
+    // [Total Profit] is not in the (incompletely enumerated) model.
+    const lenient = daxReferenceCheck('CALCULATE([Total Profit], ALL(FactPrimary))', model(), {
+      hostTable: 'FactPrimary',
+      assumeUnknownMeasuresExist: true,
+    });
+    expect(lenient.valid).toBe(true);
+    // Without the flag, the same unknown measure ref is refused (default behavior).
+    const strict = daxReferenceCheck('CALCULATE([Total Profit], ALL(FactPrimary))', model(), {
+      hostTable: 'FactPrimary',
+    });
+    expect(strict.valid).toBe(false);
+  });
+
+  it('still catches a missing TABLE even when measures are not enumerable', () => {
+    const result = daxReferenceCheck("SUM('NoSuchTable'[X])", model(), {
+      hostTable: 'FactPrimary',
+      assumeUnknownMeasuresExist: true,
+    });
+    expect(result.valid).toBe(false);
+    expect(result.missing.some((m) => m.raw === 'NoSuchTable[X]')).toBe(true);
+  });
+});
+
 describe('daxReferenceCheck', () => {
   it('passes existing qualified columns and same-table bare measures', () => {
     expect(

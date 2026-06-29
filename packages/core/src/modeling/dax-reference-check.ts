@@ -14,6 +14,13 @@ export interface UncommittedMeasureRef {
 export interface DaxReferenceCheckOptions {
   readonly hostTable?: string;
   readonly uncommittedMeasures?: readonly UncommittedMeasureRef[];
+  // When the live model snapshot could not enumerate measures (measuresCaptured
+  // === false), a reference that resolves to neither a known column nor a known
+  // measure may be an existing measure the enumeration simply could not see.
+  // Set this true to treat such unresolved references as assumed-valid measures
+  // (the Microsoft engine still rejects genuinely bad refs at write time).
+  // Column resolution is unaffected — columns enumerate reliably.
+  readonly assumeUnknownMeasuresExist?: boolean;
 }
 
 export interface DaxReferenceCheckResult {
@@ -72,7 +79,10 @@ export function daxReferenceCheck(
       uncommittedMeasures.some(
         (uncommitted) => uncommitted.table === table && uncommitted.name === name,
       );
-    if (!hasColumn && !hasMeasure) missing.push(ref);
+    // Table resolves but the member does not. When measures are un-enumerable,
+    // this may be an existing measure we cannot see — assume valid (engine is
+    // the backstop). The table existence check above still catches bad tables.
+    if (!hasColumn && !hasMeasure && !options.assumeUnknownMeasuresExist) missing.push(ref);
   }
 
   const withoutQualified = stripped.replace(QUALIFIED_REF_RE, ' ');
@@ -101,6 +111,10 @@ export function daxReferenceCheck(
       ambiguous.push(ref);
       continue;
     }
+    // count === 0: unknown bare reference. When measures are un-enumerable the
+    // count map is incomplete, so assume it is an existing measure (engine is
+    // the backstop) rather than blocking the write.
+    if (options.assumeUnknownMeasuresExist) continue;
     missing.push(ref);
   }
 

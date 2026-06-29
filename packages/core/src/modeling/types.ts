@@ -81,6 +81,10 @@ export interface TMDLModel {
   readonly tables: ReadonlyArray<TMDLTable>;
   readonly relationships: ReadonlyArray<TMDLRelationship>;
   readonly roles?: ReadonlyArray<TMDLRole>;
+  // false when live measure enumeration could not parse the full measure set
+  // (e.g. an MS-MCP payload-shape change): some measures exist but are not
+  // listed by name. undefined/true means the measure set is trustworthy.
+  readonly measuresCaptured?: boolean;
   readonly rolesCaptured?: boolean;
   readonly objectLevelSecurityCaptured?: boolean;
   readonly calculationGroupsCaptured?: boolean;
