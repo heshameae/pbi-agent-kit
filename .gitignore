@@ -35,7 +35,7 @@ coverage/
 vendor/
 
 # Generated release artifacts (zip, checksums, SBOM, test evidence) — produced by
-# `pnpm release`, never committed.
+# `npm run release`, never committed.
 release-artifacts/
 
 # Internal AA CoE dev docs — kept LOCAL, not shipped.

@@ -43,8 +43,8 @@ function isBuildStale() {
 }
 
 // Offline/bank safety: a stale or missing build must NOT trigger a network /
-// devDep `pnpm build` on the locked-down Windows runtime (no internet, no npx,
-// possibly no prior `pnpm install`). The plugin ships a prebuilt server, so the
+// devDep `npm run build` on the locked-down Windows runtime (no internet, no npx,
+// possibly no prior `npm install`). The plugin ships a prebuilt server, so the
 // DEFAULT on any staleness is to fail closed with exact remediation. The
 // runtime rebuild stays available for local development behind an explicit
 // opt-in env flag only.
@@ -54,7 +54,7 @@ function failClosedStale(reason) {
   stderr(`pbi-agent-kit: compiled MCP server unavailable (${reason}).`);
   stderr('The shipped plugin must include a prebuilt packages/mcp/dist/server.js.');
   stderr(
-    'To fix: run `pnpm install` and `pnpm build` in the plugin repository, then restart Claude Code.',
+    'To fix: run `npm install` and `npm run build` in the plugin repository, then restart Claude Code.',
   );
   stderr(
     `Local development only: set ${RUNTIME_BUILD_ENV}=1 to allow an automatic build (requires installed dependencies; never use on an offline/bank runtime).`,
@@ -64,12 +64,12 @@ function failClosedStale(reason) {
 
 function runtimeBuild(reason) {
   stderr(
-    `pbi-agent-kit: compiled MCP server stale (${reason}); ${RUNTIME_BUILD_ENV}=1 set, running \`pnpm build\`.`,
+    `pbi-agent-kit: compiled MCP server stale (${reason}); ${RUNTIME_BUILD_ENV}=1 set, running \`npm run build\`.`,
   );
-  // shell:true on Windows so the `pnpm` shim (pnpm.cmd) resolves — bare
-  // spawnSync('pnpm', …) throws ENOENT on Windows because Node won't run a
+  // shell:true on Windows so the `npm` shim (npm.cmd) resolves — bare
+  // spawnSync('npm', …) throws ENOENT on Windows because Node won't run a
   // .cmd without a shell. Harmless on macOS/Linux.
-  const build = spawnSync('pnpm', ['build'], {
+  const build = spawnSync('npm', ['run', 'build'], {
     cwd: pluginRoot,
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -85,7 +85,9 @@ function runtimeBuild(reason) {
   }
 
   stderr('pbi-agent-kit: could not build the MCP server.');
-  stderr('Run `pnpm install` and `pnpm build` in the plugin repository, then restart Claude Code.');
+  stderr(
+    'Run `npm install` and `npm run build` in the plugin repository, then restart Claude Code.',
+  );
   if (build.error) stderr(String(build.error.message));
   if (String(build.stdout ?? '').trim()) stderr(String(build.stdout).trim());
   if (String(build.stderr ?? '').trim()) stderr(String(build.stderr).trim());

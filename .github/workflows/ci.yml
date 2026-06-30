@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [master, main]
+    branches: [master, main, development]
   pull_request:
 
 jobs:
@@ -11,23 +11,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 9
-
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: pnpm
+          cache: npm
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: npm ci
 
       - name: Build
-        run: pnpm -r build
+        run: npm run build
 
       - name: Test
-        run: pnpm -r test
+        run: npm test
 
       - name: Lint
-        run: pnpm biome check .
+        run: npm run lint

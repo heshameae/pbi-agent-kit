@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 // Deterministic, OFFLINE release-artifact builder. Writes under release-artifacts/:
 //   - pbi-agent-kit-<version>.zip      git archive of the ref (source + committed dist)
-//   - pnpm-lock-<version>.yaml         the authoritative pinned dependency manifest (SBOM)
+//   - package-lock-<version>.json      the authoritative pinned dependency manifest (SBOM)
 //   - sbom-<version>.json              best-effort resolved prod dependency tree
-//   - test-evidence-<version>.txt      `pnpm -r test` output + exit code
+//   - test-evidence-<version>.txt      `npm test` output + exit code
 //   - SHA256SUMS-<version>.txt         checksums of every artifact above
 //
 // No network. Usage: node scripts/build-release.mjs [ref]
@@ -11,7 +11,15 @@
 
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { copyFileSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import path from 'node:path';
 
 const root = process.cwd();
@@ -59,23 +67,26 @@ process.stdout.write(`  wrote ${zipName}\n`);
 
 // 3. Dependency manifest: the pinned lockfile is the authoritative SBOM; add a
 //    best-effort resolved prod tree alongside it.
-copyFileSync(path.join(root, 'pnpm-lock.yaml'), path.join(OUT, `pnpm-lock-${version}.yaml`));
-process.stdout.write(`  wrote pnpm-lock-${version}.yaml\n`);
+const lockPath = path.join(root, 'package-lock.json');
+if (!existsSync(lockPath)) {
+  fail('package-lock.json is missing — run `npm install` and commit it before cutting a release.');
+}
+copyFileSync(lockPath, path.join(OUT, `package-lock-${version}.json`));
+process.stdout.write(`  wrote package-lock-${version}.json\n`);
 
-const sbom = run('pnpm', ['list', '--prod', '--json'], { shell: winShell });
-const sbomContent =
-  sbom.status === 0 && sbom.stdout.trim()
-    ? sbom.stdout
-    : JSON.stringify(
-        { note: 'pnpm list unavailable; pnpm-lock.yaml is the authoritative manifest', version },
-        null,
-        2,
-      );
+const sbom = run('npm', ['ls', '--all', '--omit=dev', '--json'], { shell: winShell });
+const sbomContent = sbom.stdout.trim()
+  ? sbom.stdout
+  : JSON.stringify(
+      { note: 'npm ls unavailable; package-lock.json is the authoritative manifest', version },
+      null,
+      2,
+    );
 writeFileSync(path.join(OUT, `sbom-${version}.json`), sbomContent);
 process.stdout.write(`  wrote sbom-${version}.json\n`);
 
 // 4. Test evidence.
-const test = run('pnpm', ['-r', 'test'], { shell: winShell });
+const test = run('npm', ['test'], { shell: winShell });
 writeFileSync(
   path.join(OUT, `test-evidence-${version}.txt`),
   `pbi-agent-kit ${version} — test evidence (ref ${ref})\nexit code: ${test.status}\n\n${test.stdout || ''}\n${test.stderr || ''}`,

@@ -7,14 +7,14 @@ A Claude Code plugin for building and reviewing Power BI data models.
 ## Requirements
 
 - Power BI Desktop (Windows), with a model open for live work.
-- Node.js 20+ and pnpm.
+- Node.js 20+ and npm (npm ships with Node).
 - Microsoft's Power BI modeling MCP executable. It is **not included** in this repo; obtain the approved build for your CPU (`win32-x64` for Intel/AMD, `win32-arm64` for ARM) and either drop it under `vendor/powerbi-modeling-mcp/` (gitignored) or point `PBI_MODELING_MCP_COMMAND` at it. The plugin spawns it for you, so don't register the raw Microsoft MCP as a peer server.
 
 ## Setup
 
 ```bash
-pnpm install
-pnpm build
+npm install
+npm run build
 ```
 
 Then in Claude Code:
@@ -82,7 +82,7 @@ Building reports, dashboards, and visuals is not part of this release. The plugi
 | `pbi-modeling-beta` not connected in `/mcp` | Check the plugin is enabled (`/plugin`), then restart Claude Code. |
 | "No open Power BI Desktop instance found" | Open your model in Power BI Desktop, then say `connect to my dashboard`. |
 | `spawn EFTYPE` on connect | The Microsoft MCP exe is the wrong CPU type. Use the matching build (`win32-x64` for Intel/AMD, `win32-arm64` for ARM) in `vendor/powerbi-modeling-mcp/` or via `PBI_MODELING_MCP_COMMAND`. |
-| "compiled MCP server unavailable" | The prebuilt server is missing. In a dev checkout, run `pnpm install && pnpm build`. |
+| "compiled MCP server unavailable" | The prebuilt server is missing. In a dev checkout, run `npm install && npm run build`. |
 | It asks you to confirm a measure or date detail | Expected. It does not write from guesses. Confirm and it continues. |
 
 ## How it stays safe
@@ -91,7 +91,7 @@ Changes run through checks in code first, so the plugin does not improvise: it w
 
 ## Development
 
-Prerequisites: Node.js 20+ and pnpm 9 (the repo pins `pnpm@9.15.0` via `packageManager`; run `corepack enable` to use it). `pnpm install` brings the toolchain (TypeScript, Biome, Vitest).
+Prerequisites: Node.js 20+ and npm (npm ships with Node; this is a standard npm workspaces monorepo). `npm install` brings the toolchain (TypeScript, Biome, Vitest).
 
 This repo is both a Claude Code plugin and a small Node monorepo.
 
@@ -111,11 +111,11 @@ docs/            Install, data dictionary, limitations
 Three subagents do the work, and prompts route to them automatically: `data-analyst` plans (read only), `model-builder` makes the changes, `model-reviewer` runs checks (read only). The skills (`authoring-measures`, `modeling-semantic-model`, `power-query`, `reviewing-models`) hold the know-how they apply.
 
 ```bash
-pnpm build           # build and stamp the build marker
-pnpm test            # run the tests
-pnpm lint            # biome
-pnpm verify:release  # check a tag would ship a runnable server
-pnpm release         # build the release artifacts
+npm run build           # build and stamp the build marker
+npm test                # run the tests
+npm run lint            # biome
+npm run verify:release  # check a tag would ship a runnable server
+npm run release         # build the release artifacts
 ```
 
 Dev-only environment variables:

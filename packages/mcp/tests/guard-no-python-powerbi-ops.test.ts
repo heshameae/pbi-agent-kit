@@ -65,7 +65,7 @@ describe('guard-no-python-powerbi-ops', () => {
   });
 
   it('allows ordinary development commands', () => {
-    const result = runBash('pnpm test');
+    const result = runBash('npm test');
     expect(result.status).toBe(0);
     expect(result.stderr).toBe('');
   });

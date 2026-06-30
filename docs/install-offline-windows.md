@@ -17,7 +17,9 @@ The handover artifact must contain a **prebuilt** server; the launcher does not 
 - `packages/core/dist/**` and `packages/mcp/dist/**` (compiled JavaScript)
 - `packages/mcp/dist/server.js` (the MCP entry point)
 - `packages/mcp/dist/pbi-agent-kit-build.json` (the build marker)
-- Production `node_modules` for the compiled server (it imports `@modelcontextprotocol/sdk`, `zod`, and the built `pbi-core`). Vendor these or run a one-time `pnpm install --prod --offline` from a local store on a staging machine before packaging.
+- Production `node_modules` for the compiled server (it imports `@modelcontextprotocol/sdk`, `zod`, and the built `pbi-core`). Vendor these or run a one-time `npm install --omit=dev` from a local store on a staging machine before packaging.
+
+**Workspace link caveat (`pbi-core`).** The compiled server imports `pbi-core` as a bare specifier, resolved through the `node_modules/pbi-core` workspace link that npm creates. **Run `npm install --omit=dev` ON the destination host** so npm recreates that link locally. Do not just copy a `node_modules/` tree built on another machine — the `pbi-core` link can dangle across hosts (especially Windows), causing a raw `MODULE_NOT_FOUND` at startup that bypasses the launcher's friendly diagnostics. A `git clone` (or unzipped release) followed by `npm ci` (or `npm install --omit=dev`) and `npm run build` on the destination always produces a correct link.
 
 Verify the package before handover with `node scripts/verify-release-artifact.mjs` (see "Release verification").
 
@@ -65,9 +67,9 @@ If the compiled server is missing or stale, the launcher prints build instructio
 ## Release verification (run before handover, on a staging machine)
 
 ```bash
-pnpm install
-pnpm build                       # builds core then mcp, writes the build marker
-pnpm -r test                     # full suite must be green
+npm install
+npm run build                    # builds core then mcp, writes the build marker
+npm test                         # full suite must be green
 node scripts/verify-release-artifact.mjs   # confirms the tag/zip would ship a runnable server
 ```
 
@@ -78,4 +80,4 @@ node scripts/verify-release-artifact.mjs   # confirms the tag/zip would ship a r
 | _(none)_ | Vendored exe under `<plugin>/vendor/powerbi-modeling-mcp/` auto-resolves | **Recommended (Option A)** |
 | `PBI_MODELING_MCP_COMMAND` | Absolute path to the approved Microsoft MCP executable | Required only if not vendored (Option B) |
 | `PBI_MODELING_MCP_ARGS` | JSON array of args for that executable (default `["--start","--skipconfirmation"]`) | Optional |
-| `PBI_AGENT_KIT_ALLOW_RUNTIME_BUILD` | Opt in to an on-demand `pnpm build` (dev only) | **Do not set** |
+| `PBI_AGENT_KIT_ALLOW_RUNTIME_BUILD` | Opt in to an on-demand `npm run build` (dev only) | **Do not set** |

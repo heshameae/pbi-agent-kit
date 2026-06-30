@@ -15,6 +15,10 @@ const REQUIRED = [
   'packages/mcp/dist/server.js',
   'packages/mcp/dist/pbi-agent-kit-build.json',
   'packages/core/dist/index.js',
+  // The npm lockfile must be committed so a fresh clone can `npm ci` reproducibly.
+  // It is intentionally NOT a build-fingerprint input (see scripts/build-fingerprint.mjs),
+  // but it must still ship in the tree/zip.
+  'package-lock.json',
 ];
 
 function trackedFiles(gitRef) {
@@ -41,7 +45,7 @@ so a tag/zip handover would ship a non-starting MCP server. Missing tracked file
 ${missingList}
 
 Fix: build, then commit the compiled output, e.g.
-  pnpm install && pnpm build
+  npm install && npm run build
   git add -f packages/core/dist packages/mcp/dist
   git commit -m "build: commit compiled dist for offline handover"
 `,

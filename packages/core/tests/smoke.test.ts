@@ -28,19 +28,24 @@ function readPackageJson(relativePath: string): { version: string } {
 
 function workspacePackageJsonPaths(): string[] {
   const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
-  const workspaceYaml = readFileSync(resolve(repoRoot, 'pnpm-workspace.yaml'), 'utf8');
-  const patterns = workspaceYaml
-    .split(/\r?\n/)
-    .map((line) => /^-\s*['"]?([^'"]+)['"]?\s*$/.exec(line.trim())?.[1])
-    .filter((pattern): pattern is string => pattern !== undefined);
+  const rootPackage = JSON.parse(readFileSync(resolve(repoRoot, 'package.json'), 'utf8')) as {
+    workspaces?: string[];
+  };
+  const patterns = rootPackage.workspaces ?? [];
   const packageJsonPaths = [resolve(repoRoot, 'package.json')];
   for (const pattern of patterns) {
-    if (!pattern.endsWith('/*')) continue;
-    const directory = resolve(repoRoot, pattern.slice(0, -2));
-    if (!existsSync(directory)) continue;
-    for (const entry of readdirSync(directory, { withFileTypes: true })) {
-      if (!entry.isDirectory()) continue;
-      const packageJsonPath = resolve(directory, entry.name, 'package.json');
+    if (pattern.endsWith('/*')) {
+      // glob form, e.g. "packages/*"
+      const directory = resolve(repoRoot, pattern.slice(0, -2));
+      if (!existsSync(directory)) continue;
+      for (const entry of readdirSync(directory, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        const packageJsonPath = resolve(directory, entry.name, 'package.json');
+        if (existsSync(packageJsonPath)) packageJsonPaths.push(packageJsonPath);
+      }
+    } else {
+      // explicit directory form, e.g. "packages/core"
+      const packageJsonPath = resolve(repoRoot, pattern, 'package.json');
       if (existsSync(packageJsonPath)) packageJsonPaths.push(packageJsonPath);
     }
   }

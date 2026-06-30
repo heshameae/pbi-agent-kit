@@ -53,6 +53,6 @@ Add a new MCP server named `pbi-modeling-beta` with command `node` and arg `<abs
 
 4. Remind the user:
    - This plugin's `.mcp.json` registers `pbi-modeling-beta` automatically inside Claude Code.
-   - Run `pnpm install` and `pnpm build` in the plugin repository before first use; the launcher can attempt a quiet build only when dependencies are already installed.
+   - Run `npm install` and `npm run build` in the plugin repository before first use; the launcher can attempt a quiet build only when dependencies are already installed.
    - Do not register the raw Microsoft Power BI modeling MCP as a peer server; the wrapper starts it internally so deterministic gates run first.
    - Optional data dictionaries such as `.pbi-agent-kit/data-dictionary.yaml` are context files, not MCP config. They provide business meaning only; live MCP tools still prove field existence.

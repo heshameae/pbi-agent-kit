@@ -28,8 +28,12 @@ export function buildInputPaths(pluginRoot) {
     path.join(pluginRoot, 'packages/mcp/tsconfig.json'),
     path.join(pluginRoot, 'packages/core/tsconfig.json'),
     path.join(pluginRoot, 'package.json'),
-    path.join(pluginRoot, 'pnpm-lock.yaml'),
-    path.join(pluginRoot, 'pnpm-workspace.yaml'),
+    // NOTE: the lockfile is deliberately NOT a fingerprint input. The marker
+    // exists to detect stale `dist` vs its sources; `dist/*.js` bytes are
+    // determined by src + tsconfig + the pinned TypeScript version (all inputs
+    // above/below), never by the lockfile. Including package-lock.json would add
+    // false-stale risk (npm can rewrite it across npm versions/OSes), which on
+    // the offline runtime would fail the launcher closed on a correct bundle.
     path.join(pluginRoot, 'tsconfig.base.json'),
     path.join(pluginRoot, 'scripts/build-fingerprint.mjs'),
     path.join(pluginRoot, 'scripts/write-build-marker.mjs'),

@@ -2,15 +2,19 @@
   "name": "pbi-agent-kit",
   "version": "0.1.0",
   "private": true,
-  "description": "Power BI semantic-model beta for Claude Code — modeling MCP server, skills, subagents, and guardrails.",
+  "description": "Power BI semantic-model beta for Claude Code: modeling MCP server, skills, subagents, and guardrails.",
   "license": "MIT",
   "type": "module",
   "engines": {
     "node": ">=20"
   },
+  "workspaces": [
+    "packages/core",
+    "packages/mcp"
+  ],
   "scripts": {
-    "build": "pnpm -r build && node scripts/write-build-marker.mjs",
-    "test": "pnpm -r test",
+    "build": "npm run build --workspace=packages/core && npm run build --workspace=packages/mcp && node scripts/write-build-marker.mjs",
+    "test": "npm run test --workspace=packages/core && npm run test --workspace=packages/mcp",
     "verify:release": "node scripts/verify-release-artifact.mjs",
     "release": "node scripts/build-release.mjs",
     "lint": "biome check .",
@@ -21,6 +25,5 @@
     "@types/node": "^22.10.2",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"
-  },
-  "packageManager": "pnpm@9.15.0"
+  }
 }

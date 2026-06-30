@@ -6,28 +6,28 @@ export declare const FieldRefSchema: z.ZodEffects<z.ZodObject<{
     aggregation: z.ZodOptional<z.ZodEnum<["sum", "avg", "count", "min", "max"]>>;
     isHidden: z.ZodBoolean;
 }, "strip", z.ZodTypeAny, {
-    table: string;
-    column: string;
     kind: "column" | "measure";
     isHidden: boolean;
+    table: string;
+    column: string;
     aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
 }, {
-    table: string;
-    column: string;
     kind: "column" | "measure";
     isHidden: boolean;
+    table: string;
+    column: string;
     aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
 }>, {
-    table: string;
-    column: string;
     kind: "column" | "measure";
     isHidden: boolean;
+    table: string;
+    column: string;
     aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
 }, {
-    table: string;
-    column: string;
     kind: "column" | "measure";
     isHidden: boolean;
+    table: string;
+    column: string;
     aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
 }>;
 export declare const MeasureSpecSchema: z.ZodEffects<z.ZodObject<{
@@ -46,92 +46,92 @@ export declare const MeasureSpecSchema: z.ZodEffects<z.ZodObject<{
         aggregation: z.ZodOptional<z.ZodEnum<["sum", "avg", "count", "min", "max"]>>;
         isHidden: z.ZodBoolean;
     }, "strip", z.ZodTypeAny, {
-        table: string;
-        column: string;
         kind: "column" | "measure";
         isHidden: boolean;
+        table: string;
+        column: string;
         aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
     }, {
-        table: string;
-        column: string;
         kind: "column" | "measure";
         isHidden: boolean;
+        table: string;
+        column: string;
         aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
     }>, {
-        table: string;
-        column: string;
         kind: "column" | "measure";
         isHidden: boolean;
+        table: string;
+        column: string;
         aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
     }, {
-        table: string;
-        column: string;
         kind: "column" | "measure";
         isHidden: boolean;
+        table: string;
+        column: string;
         aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
     }>, "many">>;
 }, "strip", z.ZodTypeAny, {
-    table: string;
     name: string;
     expression: string;
+    table: string;
     formatString: string;
     description?: string | undefined;
     bridgeFrom?: string | undefined;
     bridgeTo?: string | undefined;
-    bridgeVia?: "TREATAS" | "USERELATIONSHIP" | undefined;
+    bridgeVia?: "USERELATIONSHIP" | "TREATAS" | undefined;
     bridgeCovers?: {
-        table: string;
-        column: string;
         kind: "column" | "measure";
         isHidden: boolean;
+        table: string;
+        column: string;
         aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
     }[] | undefined;
 }, {
-    table: string;
     name: string;
     expression: string;
+    table: string;
     formatString: string;
     description?: string | undefined;
     bridgeFrom?: string | undefined;
     bridgeTo?: string | undefined;
-    bridgeVia?: "TREATAS" | "USERELATIONSHIP" | undefined;
+    bridgeVia?: "USERELATIONSHIP" | "TREATAS" | undefined;
     bridgeCovers?: {
-        table: string;
-        column: string;
         kind: "column" | "measure";
         isHidden: boolean;
+        table: string;
+        column: string;
         aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
     }[] | undefined;
 }>, {
-    table: string;
     name: string;
     expression: string;
+    table: string;
     formatString: string;
     description?: string | undefined;
     bridgeFrom?: string | undefined;
     bridgeTo?: string | undefined;
-    bridgeVia?: "TREATAS" | "USERELATIONSHIP" | undefined;
+    bridgeVia?: "USERELATIONSHIP" | "TREATAS" | undefined;
     bridgeCovers?: {
-        table: string;
-        column: string;
         kind: "column" | "measure";
         isHidden: boolean;
+        table: string;
+        column: string;
         aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
     }[] | undefined;
 }, {
-    table: string;
     name: string;
     expression: string;
+    table: string;
     formatString: string;
     description?: string | undefined;
     bridgeFrom?: string | undefined;
     bridgeTo?: string | undefined;
-    bridgeVia?: "TREATAS" | "USERELATIONSHIP" | undefined;
+    bridgeVia?: "USERELATIONSHIP" | "TREATAS" | undefined;
     bridgeCovers?: {
-        table: string;
-        column: string;
         kind: "column" | "measure";
         isHidden: boolean;
+        table: string;
+        column: string;
         aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
     }[] | undefined;
 }>;
@@ -145,28 +145,28 @@ export declare const DimSpecSchema: z.ZodObject<{
         aggregation: z.ZodOptional<z.ZodEnum<["sum", "avg", "count", "min", "max"]>>;
         isHidden: z.ZodBoolean;
     }, "strip", z.ZodTypeAny, {
-        table: string;
-        column: string;
         kind: "column" | "measure";
         isHidden: boolean;
+        table: string;
+        column: string;
         aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
     }, {
-        table: string;
-        column: string;
         kind: "column" | "measure";
         isHidden: boolean;
+        table: string;
+        column: string;
         aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
     }>, {
-        table: string;
-        column: string;
         kind: "column" | "measure";
         isHidden: boolean;
+        table: string;
+        column: string;
         aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
     }, {
-        table: string;
-        column: string;
         kind: "column" | "measure";
         isHidden: boolean;
+        table: string;
+        column: string;
         aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
     }>, "many">;
     attributeColumns: z.ZodOptional<z.ZodArray<z.ZodEffects<z.ZodObject<{
@@ -176,62 +176,62 @@ export declare const DimSpecSchema: z.ZodObject<{
         aggregation: z.ZodOptional<z.ZodEnum<["sum", "avg", "count", "min", "max"]>>;
         isHidden: z.ZodBoolean;
     }, "strip", z.ZodTypeAny, {
-        table: string;
-        column: string;
         kind: "column" | "measure";
         isHidden: boolean;
+        table: string;
+        column: string;
         aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
     }, {
-        table: string;
-        column: string;
         kind: "column" | "measure";
         isHidden: boolean;
+        table: string;
+        column: string;
         aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
     }>, {
-        table: string;
-        column: string;
         kind: "column" | "measure";
         isHidden: boolean;
+        table: string;
+        column: string;
         aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
     }, {
-        table: string;
-        column: string;
         kind: "column" | "measure";
         isHidden: boolean;
+        table: string;
+        column: string;
         aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
     }>, "many">>;
 }, "strip", z.ZodTypeAny, {
     name: string;
     keyColumn: string;
     sourceColumns: {
-        table: string;
-        column: string;
         kind: "column" | "measure";
         isHidden: boolean;
+        table: string;
+        column: string;
         aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
     }[];
     attributeColumns?: {
-        table: string;
-        column: string;
         kind: "column" | "measure";
         isHidden: boolean;
+        table: string;
+        column: string;
         aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
     }[] | undefined;
 }, {
     name: string;
     keyColumn: string;
     sourceColumns: {
-        table: string;
-        column: string;
         kind: "column" | "measure";
         isHidden: boolean;
+        table: string;
+        column: string;
         aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
     }[];
     attributeColumns?: {
-        table: string;
-        column: string;
         kind: "column" | "measure";
         isHidden: boolean;
+        table: string;
+        column: string;
         aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
     }[] | undefined;
 }>;
@@ -248,56 +248,56 @@ export declare const BusinessTermSchema: z.ZodObject<{
         aggregation: z.ZodOptional<z.ZodEnum<["sum", "avg", "count", "min", "max"]>>;
         isHidden: z.ZodBoolean;
     }, "strip", z.ZodTypeAny, {
-        table: string;
-        column: string;
         kind: "column" | "measure";
         isHidden: boolean;
+        table: string;
+        column: string;
         aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
     }, {
-        table: string;
-        column: string;
         kind: "column" | "measure";
         isHidden: boolean;
+        table: string;
+        column: string;
         aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
     }>, {
-        table: string;
-        column: string;
         kind: "column" | "measure";
         isHidden: boolean;
+        table: string;
+        column: string;
         aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
     }, {
-        table: string;
-        column: string;
         kind: "column" | "measure";
         isHidden: boolean;
+        table: string;
+        column: string;
         aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
     }>, "many">>;
     caveats: z.ZodOptional<z.ZodArray<z.ZodString, "many">>;
 }, "strip", z.ZodTypeAny, {
-    status: "draft" | "confirmed" | "deprecated";
     name: string;
     definition: string;
+    status: "draft" | "confirmed" | "deprecated";
     aliases?: string[] | undefined;
     owner?: string | undefined;
     sourceRefs?: {
-        table: string;
-        column: string;
         kind: "column" | "measure";
         isHidden: boolean;
+        table: string;
+        column: string;
         aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
     }[] | undefined;
     caveats?: string[] | undefined;
 }, {
-    status: "draft" | "confirmed" | "deprecated";
     name: string;
     definition: string;
+    status: "draft" | "confirmed" | "deprecated";
     aliases?: string[] | undefined;
     owner?: string | undefined;
     sourceRefs?: {
-        table: string;
-        column: string;
         kind: "column" | "measure";
         isHidden: boolean;
+        table: string;
+        column: string;
         aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
     }[] | undefined;
     caveats?: string[] | undefined;
@@ -310,40 +310,40 @@ export declare const MeasureTimeIntelligenceSchema: z.ZodObject<{
         aggregation: z.ZodOptional<z.ZodEnum<["sum", "avg", "count", "min", "max"]>>;
         isHidden: z.ZodBoolean;
     }, "strip", z.ZodTypeAny, {
-        table: string;
-        column: string;
         kind: "column" | "measure";
         isHidden: boolean;
+        table: string;
+        column: string;
         aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
     }, {
-        table: string;
-        column: string;
         kind: "column" | "measure";
         isHidden: boolean;
+        table: string;
+        column: string;
         aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
     }>, {
-        table: string;
-        column: string;
         kind: "column" | "measure";
         isHidden: boolean;
+        table: string;
+        column: string;
         aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
     }, {
-        table: string;
-        column: string;
         kind: "column" | "measure";
         isHidden: boolean;
+        table: string;
+        column: string;
         aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
     }>, {
-        table: string;
-        column: string;
         kind: "column" | "measure";
         isHidden: boolean;
+        table: string;
+        column: string;
         aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
     }, {
-        table: string;
-        column: string;
         kind: "column" | "measure";
         isHidden: boolean;
+        table: string;
+        column: string;
         aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
     }>, "many">>;
     dateTable: z.ZodOptional<z.ZodString>;
@@ -354,31 +354,31 @@ export declare const MeasureTimeIntelligenceSchema: z.ZodObject<{
     calendarPolicy: z.ZodOptional<z.ZodString>;
     incompletePeriodBehavior: z.ZodOptional<z.ZodString>;
 }, "strip", z.ZodTypeAny, {
-    dateRefs?: {
-        table: string;
-        column: string;
-        kind: "column" | "measure";
-        isHidden: boolean;
-        aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
-    }[] | undefined;
     dateTable?: string | undefined;
     dateColumn?: string | undefined;
     period?: string | undefined;
+    dateRefs?: {
+        kind: "column" | "measure";
+        isHidden: boolean;
+        table: string;
+        column: string;
+        aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
+    }[] | undefined;
     comparison?: string | undefined;
     grain?: string | undefined;
     calendarPolicy?: string | undefined;
     incompletePeriodBehavior?: string | undefined;
 }, {
-    dateRefs?: {
-        table: string;
-        column: string;
-        kind: "column" | "measure";
-        isHidden: boolean;
-        aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
-    }[] | undefined;
     dateTable?: string | undefined;
     dateColumn?: string | undefined;
     period?: string | undefined;
+    dateRefs?: {
+        kind: "column" | "measure";
+        isHidden: boolean;
+        table: string;
+        column: string;
+        aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
+    }[] | undefined;
     comparison?: string | undefined;
     grain?: string | undefined;
     calendarPolicy?: string | undefined;
@@ -396,28 +396,28 @@ export declare const MeasureIntentSchema: z.ZodObject<{
         aggregation: z.ZodOptional<z.ZodEnum<["sum", "avg", "count", "min", "max"]>>;
         isHidden: z.ZodBoolean;
     }, "strip", z.ZodTypeAny, {
-        table: string;
-        column: string;
         kind: "column" | "measure";
         isHidden: boolean;
+        table: string;
+        column: string;
         aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
     }, {
-        table: string;
-        column: string;
         kind: "column" | "measure";
         isHidden: boolean;
+        table: string;
+        column: string;
         aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
     }>, {
-        table: string;
-        column: string;
         kind: "column" | "measure";
         isHidden: boolean;
+        table: string;
+        column: string;
         aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
     }, {
-        table: string;
-        column: string;
         kind: "column" | "measure";
         isHidden: boolean;
+        table: string;
+        column: string;
         aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
     }>, "atleastone">;
     grain: z.ZodString;
@@ -435,40 +435,40 @@ export declare const MeasureIntentSchema: z.ZodObject<{
             aggregation: z.ZodOptional<z.ZodEnum<["sum", "avg", "count", "min", "max"]>>;
             isHidden: z.ZodBoolean;
         }, "strip", z.ZodTypeAny, {
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }, {
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }>, {
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }, {
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }>, {
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }, {
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }>, "many">>;
         dateTable: z.ZodOptional<z.ZodString>;
@@ -479,51 +479,51 @@ export declare const MeasureIntentSchema: z.ZodObject<{
         calendarPolicy: z.ZodOptional<z.ZodString>;
         incompletePeriodBehavior: z.ZodOptional<z.ZodString>;
     }, "strip", z.ZodTypeAny, {
-        dateRefs?: {
-            table: string;
-            column: string;
-            kind: "column" | "measure";
-            isHidden: boolean;
-            aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
-        }[] | undefined;
         dateTable?: string | undefined;
         dateColumn?: string | undefined;
         period?: string | undefined;
+        dateRefs?: {
+            kind: "column" | "measure";
+            isHidden: boolean;
+            table: string;
+            column: string;
+            aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
+        }[] | undefined;
         comparison?: string | undefined;
         grain?: string | undefined;
         calendarPolicy?: string | undefined;
         incompletePeriodBehavior?: string | undefined;
     }, {
-        dateRefs?: {
-            table: string;
-            column: string;
-            kind: "column" | "measure";
-            isHidden: boolean;
-            aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
-        }[] | undefined;
         dateTable?: string | undefined;
         dateColumn?: string | undefined;
         period?: string | undefined;
+        dateRefs?: {
+            kind: "column" | "measure";
+            isHidden: boolean;
+            table: string;
+            column: string;
+            aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
+        }[] | undefined;
         comparison?: string | undefined;
         grain?: string | undefined;
         calendarPolicy?: string | undefined;
         incompletePeriodBehavior?: string | undefined;
     }>>;
 }, "strip", z.ZodTypeAny, {
-    status: "draft" | "confirmed";
     definition: string;
+    status: "draft" | "confirmed";
     owner: string;
     sourceRefs: [{
-        table: string;
-        column: string;
         kind: "column" | "measure";
         isHidden: boolean;
+        table: string;
+        column: string;
         aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
     }, ...{
-        table: string;
-        column: string;
         kind: "column" | "measure";
         isHidden: boolean;
+        table: string;
+        column: string;
         aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
     }[]];
     caveats: string[];
@@ -535,36 +535,36 @@ export declare const MeasureIntentSchema: z.ZodObject<{
     unit: string;
     businessTermRefs?: string[] | undefined;
     timeIntelligence?: {
-        dateRefs?: {
-            table: string;
-            column: string;
-            kind: "column" | "measure";
-            isHidden: boolean;
-            aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
-        }[] | undefined;
         dateTable?: string | undefined;
         dateColumn?: string | undefined;
         period?: string | undefined;
+        dateRefs?: {
+            kind: "column" | "measure";
+            isHidden: boolean;
+            table: string;
+            column: string;
+            aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
+        }[] | undefined;
         comparison?: string | undefined;
         grain?: string | undefined;
         calendarPolicy?: string | undefined;
         incompletePeriodBehavior?: string | undefined;
     } | undefined;
 }, {
-    status: "draft" | "confirmed";
     definition: string;
+    status: "draft" | "confirmed";
     owner: string;
     sourceRefs: [{
-        table: string;
-        column: string;
         kind: "column" | "measure";
         isHidden: boolean;
+        table: string;
+        column: string;
         aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
     }, ...{
-        table: string;
-        column: string;
         kind: "column" | "measure";
         isHidden: boolean;
+        table: string;
+        column: string;
         aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
     }[]];
     caveats: string[];
@@ -576,16 +576,16 @@ export declare const MeasureIntentSchema: z.ZodObject<{
     unit: string;
     businessTermRefs?: string[] | undefined;
     timeIntelligence?: {
-        dateRefs?: {
-            table: string;
-            column: string;
-            kind: "column" | "measure";
-            isHidden: boolean;
-            aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
-        }[] | undefined;
         dateTable?: string | undefined;
         dateColumn?: string | undefined;
         period?: string | undefined;
+        dateRefs?: {
+            kind: "column" | "measure";
+            isHidden: boolean;
+            table: string;
+            column: string;
+            aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
+        }[] | undefined;
         comparison?: string | undefined;
         grain?: string | undefined;
         calendarPolicy?: string | undefined;
@@ -603,28 +603,28 @@ export declare const QuestionSpecSchema: z.ZodObject<{
         aggregation: z.ZodOptional<z.ZodEnum<["sum", "avg", "count", "min", "max"]>>;
         isHidden: z.ZodBoolean;
     }, "strip", z.ZodTypeAny, {
-        table: string;
-        column: string;
         kind: "column" | "measure";
         isHidden: boolean;
+        table: string;
+        column: string;
         aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
     }, {
-        table: string;
-        column: string;
         kind: "column" | "measure";
         isHidden: boolean;
+        table: string;
+        column: string;
         aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
     }>, {
-        table: string;
-        column: string;
         kind: "column" | "measure";
         isHidden: boolean;
+        table: string;
+        column: string;
         aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
     }, {
-        table: string;
-        column: string;
         kind: "column" | "measure";
         isHidden: boolean;
+        table: string;
+        column: string;
         aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
     }>>;
     measures: z.ZodOptional<z.ZodArray<z.ZodEffects<z.ZodEffects<z.ZodObject<{
@@ -634,76 +634,76 @@ export declare const QuestionSpecSchema: z.ZodObject<{
         aggregation: z.ZodOptional<z.ZodEnum<["sum", "avg", "count", "min", "max"]>>;
         isHidden: z.ZodBoolean;
     }, "strip", z.ZodTypeAny, {
-        table: string;
-        column: string;
         kind: "column" | "measure";
         isHidden: boolean;
+        table: string;
+        column: string;
         aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
     }, {
-        table: string;
-        column: string;
         kind: "column" | "measure";
         isHidden: boolean;
+        table: string;
+        column: string;
         aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
     }>, {
-        table: string;
-        column: string;
         kind: "column" | "measure";
         isHidden: boolean;
+        table: string;
+        column: string;
         aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
     }, {
-        table: string;
-        column: string;
         kind: "column" | "measure";
         isHidden: boolean;
+        table: string;
+        column: string;
         aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
     }>, {
-        table: string;
-        column: string;
         kind: "column" | "measure";
         isHidden: boolean;
+        table: string;
+        column: string;
         aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
     }, {
-        table: string;
-        column: string;
         kind: "column" | "measure";
         isHidden: boolean;
+        table: string;
+        column: string;
         aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
     }>, "many">>;
 }, "strip", z.ZodTypeAny, {
     q: string;
     visualType: string;
-    axis?: {
-        table: string;
-        column: string;
-        kind: "column" | "measure";
-        isHidden: boolean;
-        aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
-    } | undefined;
     measures?: {
-        table: string;
-        column: string;
         kind: "column" | "measure";
         isHidden: boolean;
+        table: string;
+        column: string;
         aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
     }[] | undefined;
+    axis?: {
+        kind: "column" | "measure";
+        isHidden: boolean;
+        table: string;
+        column: string;
+        aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
+    } | undefined;
 }, {
     q: string;
     visualType: string;
-    axis?: {
-        table: string;
-        column: string;
-        kind: "column" | "measure";
-        isHidden: boolean;
-        aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
-    } | undefined;
     measures?: {
-        table: string;
-        column: string;
         kind: "column" | "measure";
         isHidden: boolean;
+        table: string;
+        column: string;
         aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
     }[] | undefined;
+    axis?: {
+        kind: "column" | "measure";
+        isHidden: boolean;
+        table: string;
+        column: string;
+        aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
+    } | undefined;
 }>;
 export declare const PageSpecSchema: z.ZodObject<{
     pageName: z.ZodString;
@@ -718,28 +718,28 @@ export declare const PageSpecSchema: z.ZodObject<{
             aggregation: z.ZodOptional<z.ZodEnum<["sum", "avg", "count", "min", "max"]>>;
             isHidden: z.ZodBoolean;
         }, "strip", z.ZodTypeAny, {
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }, {
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }>, {
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }, {
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }>>;
         measures: z.ZodOptional<z.ZodArray<z.ZodEffects<z.ZodEffects<z.ZodObject<{
@@ -749,76 +749,76 @@ export declare const PageSpecSchema: z.ZodObject<{
             aggregation: z.ZodOptional<z.ZodEnum<["sum", "avg", "count", "min", "max"]>>;
             isHidden: z.ZodBoolean;
         }, "strip", z.ZodTypeAny, {
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }, {
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }>, {
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }, {
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }>, {
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }, {
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }>, "many">>;
     }, "strip", z.ZodTypeAny, {
         q: string;
         visualType: string;
-        axis?: {
-            table: string;
-            column: string;
-            kind: "column" | "measure";
-            isHidden: boolean;
-            aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
-        } | undefined;
         measures?: {
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }[] | undefined;
+        axis?: {
+            kind: "column" | "measure";
+            isHidden: boolean;
+            table: string;
+            column: string;
+            aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
+        } | undefined;
     }, {
         q: string;
         visualType: string;
-        axis?: {
-            table: string;
-            column: string;
-            kind: "column" | "measure";
-            isHidden: boolean;
-            aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
-        } | undefined;
         measures?: {
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }[] | undefined;
+        axis?: {
+            kind: "column" | "measure";
+            isHidden: boolean;
+            table: string;
+            column: string;
+            aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
+        } | undefined;
     }>, "many">;
 }, "strip", z.ZodTypeAny, {
     pageName: string;
@@ -826,20 +826,20 @@ export declare const PageSpecSchema: z.ZodObject<{
     questions: {
         q: string;
         visualType: string;
-        axis?: {
-            table: string;
-            column: string;
-            kind: "column" | "measure";
-            isHidden: boolean;
-            aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
-        } | undefined;
         measures?: {
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }[] | undefined;
+        axis?: {
+            kind: "column" | "measure";
+            isHidden: boolean;
+            table: string;
+            column: string;
+            aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
+        } | undefined;
     }[];
 }, {
     pageName: string;
@@ -847,20 +847,20 @@ export declare const PageSpecSchema: z.ZodObject<{
     questions: {
         q: string;
         visualType: string;
-        axis?: {
-            table: string;
-            column: string;
-            kind: "column" | "measure";
-            isHidden: boolean;
-            aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
-        } | undefined;
         measures?: {
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }[] | undefined;
+        axis?: {
+            kind: "column" | "measure";
+            isHidden: boolean;
+            table: string;
+            column: string;
+            aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
+        } | undefined;
     }[];
 }>;
 export declare const ClarifyingQuestionSchema: z.ZodObject<{
@@ -896,48 +896,48 @@ export declare const BlockerSchema: z.ZodObject<{
         aggregation: z.ZodOptional<z.ZodEnum<["sum", "avg", "count", "min", "max"]>>;
         isHidden: z.ZodBoolean;
     }, "strip", z.ZodTypeAny, {
-        table: string;
-        column: string;
         kind: "column" | "measure";
         isHidden: boolean;
+        table: string;
+        column: string;
         aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
     }, {
-        table: string;
-        column: string;
         kind: "column" | "measure";
         isHidden: boolean;
+        table: string;
+        column: string;
         aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
     }>, {
-        table: string;
-        column: string;
         kind: "column" | "measure";
         isHidden: boolean;
+        table: string;
+        column: string;
         aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
     }, {
-        table: string;
-        column: string;
         kind: "column" | "measure";
         isHidden: boolean;
+        table: string;
+        column: string;
         aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
     }>, "many">>;
 }, "strip", z.ZodTypeAny, {
     kind: "missing-field" | "missing-relationship" | "grain-mismatch" | "ambiguous-dim" | "other";
     message: string;
     refs?: {
-        table: string;
-        column: string;
         kind: "column" | "measure";
         isHidden: boolean;
+        table: string;
+        column: string;
         aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
     }[] | undefined;
 }, {
     kind: "missing-field" | "missing-relationship" | "grain-mismatch" | "ambiguous-dim" | "other";
     message: string;
     refs?: {
-        table: string;
-        column: string;
         kind: "column" | "measure";
         isHidden: boolean;
+        table: string;
+        column: string;
         aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
     }[] | undefined;
 }>;
@@ -961,28 +961,28 @@ export declare const DashboardSpecSchema: z.ZodEffects<z.ZodObject<{
                 aggregation: z.ZodOptional<z.ZodEnum<["sum", "avg", "count", "min", "max"]>>;
                 isHidden: z.ZodBoolean;
             }, "strip", z.ZodTypeAny, {
-                table: string;
-                column: string;
                 kind: "column" | "measure";
                 isHidden: boolean;
+                table: string;
+                column: string;
                 aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
             }, {
-                table: string;
-                column: string;
                 kind: "column" | "measure";
                 isHidden: boolean;
+                table: string;
+                column: string;
                 aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
             }>, {
-                table: string;
-                column: string;
                 kind: "column" | "measure";
                 isHidden: boolean;
+                table: string;
+                column: string;
                 aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
             }, {
-                table: string;
-                column: string;
                 kind: "column" | "measure";
                 isHidden: boolean;
+                table: string;
+                column: string;
                 aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
             }>>;
             measures: z.ZodOptional<z.ZodArray<z.ZodEffects<z.ZodEffects<z.ZodObject<{
@@ -992,76 +992,76 @@ export declare const DashboardSpecSchema: z.ZodEffects<z.ZodObject<{
                 aggregation: z.ZodOptional<z.ZodEnum<["sum", "avg", "count", "min", "max"]>>;
                 isHidden: z.ZodBoolean;
             }, "strip", z.ZodTypeAny, {
-                table: string;
-                column: string;
                 kind: "column" | "measure";
                 isHidden: boolean;
+                table: string;
+                column: string;
                 aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
             }, {
-                table: string;
-                column: string;
                 kind: "column" | "measure";
                 isHidden: boolean;
+                table: string;
+                column: string;
                 aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
             }>, {
-                table: string;
-                column: string;
                 kind: "column" | "measure";
                 isHidden: boolean;
+                table: string;
+                column: string;
                 aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
             }, {
-                table: string;
-                column: string;
                 kind: "column" | "measure";
                 isHidden: boolean;
+                table: string;
+                column: string;
                 aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
             }>, {
-                table: string;
-                column: string;
                 kind: "column" | "measure";
                 isHidden: boolean;
+                table: string;
+                column: string;
                 aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
             }, {
-                table: string;
-                column: string;
                 kind: "column" | "measure";
                 isHidden: boolean;
+                table: string;
+                column: string;
                 aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
             }>, "many">>;
         }, "strip", z.ZodTypeAny, {
             q: string;
             visualType: string;
-            axis?: {
-                table: string;
-                column: string;
-                kind: "column" | "measure";
-                isHidden: boolean;
-                aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
-            } | undefined;
             measures?: {
-                table: string;
-                column: string;
                 kind: "column" | "measure";
                 isHidden: boolean;
+                table: string;
+                column: string;
                 aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
             }[] | undefined;
+            axis?: {
+                kind: "column" | "measure";
+                isHidden: boolean;
+                table: string;
+                column: string;
+                aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
+            } | undefined;
         }, {
             q: string;
             visualType: string;
-            axis?: {
-                table: string;
-                column: string;
-                kind: "column" | "measure";
-                isHidden: boolean;
-                aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
-            } | undefined;
             measures?: {
-                table: string;
-                column: string;
                 kind: "column" | "measure";
                 isHidden: boolean;
+                table: string;
+                column: string;
                 aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
             }[] | undefined;
+            axis?: {
+                kind: "column" | "measure";
+                isHidden: boolean;
+                table: string;
+                column: string;
+                aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
+            } | undefined;
         }>, "many">;
     }, "strip", z.ZodTypeAny, {
         pageName: string;
@@ -1069,20 +1069,20 @@ export declare const DashboardSpecSchema: z.ZodEffects<z.ZodObject<{
         questions: {
             q: string;
             visualType: string;
-            axis?: {
-                table: string;
-                column: string;
-                kind: "column" | "measure";
-                isHidden: boolean;
-                aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
-            } | undefined;
             measures?: {
-                table: string;
-                column: string;
                 kind: "column" | "measure";
                 isHidden: boolean;
+                table: string;
+                column: string;
                 aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
             }[] | undefined;
+            axis?: {
+                kind: "column" | "measure";
+                isHidden: boolean;
+                table: string;
+                column: string;
+                aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
+            } | undefined;
         }[];
     }, {
         pageName: string;
@@ -1090,20 +1090,20 @@ export declare const DashboardSpecSchema: z.ZodEffects<z.ZodObject<{
         questions: {
             q: string;
             visualType: string;
-            axis?: {
-                table: string;
-                column: string;
-                kind: "column" | "measure";
-                isHidden: boolean;
-                aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
-            } | undefined;
             measures?: {
-                table: string;
-                column: string;
                 kind: "column" | "measure";
                 isHidden: boolean;
+                table: string;
+                column: string;
                 aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
             }[] | undefined;
+            axis?: {
+                kind: "column" | "measure";
+                isHidden: boolean;
+                table: string;
+                column: string;
+                aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
+            } | undefined;
         }[];
     }>, "many">;
     missingMeasures: z.ZodDefault<z.ZodArray<z.ZodEffects<z.ZodObject<{
@@ -1122,92 +1122,92 @@ export declare const DashboardSpecSchema: z.ZodEffects<z.ZodObject<{
             aggregation: z.ZodOptional<z.ZodEnum<["sum", "avg", "count", "min", "max"]>>;
             isHidden: z.ZodBoolean;
         }, "strip", z.ZodTypeAny, {
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }, {
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }>, {
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }, {
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }>, "many">>;
     }, "strip", z.ZodTypeAny, {
-        table: string;
         name: string;
         expression: string;
+        table: string;
         formatString: string;
         description?: string | undefined;
         bridgeFrom?: string | undefined;
         bridgeTo?: string | undefined;
-        bridgeVia?: "TREATAS" | "USERELATIONSHIP" | undefined;
+        bridgeVia?: "USERELATIONSHIP" | "TREATAS" | undefined;
         bridgeCovers?: {
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }[] | undefined;
     }, {
-        table: string;
         name: string;
         expression: string;
+        table: string;
         formatString: string;
         description?: string | undefined;
         bridgeFrom?: string | undefined;
         bridgeTo?: string | undefined;
-        bridgeVia?: "TREATAS" | "USERELATIONSHIP" | undefined;
+        bridgeVia?: "USERELATIONSHIP" | "TREATAS" | undefined;
         bridgeCovers?: {
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }[] | undefined;
     }>, {
-        table: string;
         name: string;
         expression: string;
+        table: string;
         formatString: string;
         description?: string | undefined;
         bridgeFrom?: string | undefined;
         bridgeTo?: string | undefined;
-        bridgeVia?: "TREATAS" | "USERELATIONSHIP" | undefined;
+        bridgeVia?: "USERELATIONSHIP" | "TREATAS" | undefined;
         bridgeCovers?: {
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }[] | undefined;
     }, {
-        table: string;
         name: string;
         expression: string;
+        table: string;
         formatString: string;
         description?: string | undefined;
         bridgeFrom?: string | undefined;
         bridgeTo?: string | undefined;
-        bridgeVia?: "TREATAS" | "USERELATIONSHIP" | undefined;
+        bridgeVia?: "USERELATIONSHIP" | "TREATAS" | undefined;
         bridgeCovers?: {
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }[] | undefined;
     }>, "many">>;
@@ -1221,28 +1221,28 @@ export declare const DashboardSpecSchema: z.ZodEffects<z.ZodObject<{
             aggregation: z.ZodOptional<z.ZodEnum<["sum", "avg", "count", "min", "max"]>>;
             isHidden: z.ZodBoolean;
         }, "strip", z.ZodTypeAny, {
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }, {
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }>, {
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }, {
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }>, "many">;
         attributeColumns: z.ZodOptional<z.ZodArray<z.ZodEffects<z.ZodObject<{
@@ -1252,62 +1252,62 @@ export declare const DashboardSpecSchema: z.ZodEffects<z.ZodObject<{
             aggregation: z.ZodOptional<z.ZodEnum<["sum", "avg", "count", "min", "max"]>>;
             isHidden: z.ZodBoolean;
         }, "strip", z.ZodTypeAny, {
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }, {
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }>, {
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }, {
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }>, "many">>;
     }, "strip", z.ZodTypeAny, {
         name: string;
         keyColumn: string;
         sourceColumns: {
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }[];
         attributeColumns?: {
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }[] | undefined;
     }, {
         name: string;
         keyColumn: string;
         sourceColumns: {
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }[];
         attributeColumns?: {
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }[] | undefined;
     }>, "many">;
@@ -1324,56 +1324,56 @@ export declare const DashboardSpecSchema: z.ZodEffects<z.ZodObject<{
             aggregation: z.ZodOptional<z.ZodEnum<["sum", "avg", "count", "min", "max"]>>;
             isHidden: z.ZodBoolean;
         }, "strip", z.ZodTypeAny, {
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }, {
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }>, {
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }, {
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }>, "many">>;
         caveats: z.ZodOptional<z.ZodArray<z.ZodString, "many">>;
     }, "strip", z.ZodTypeAny, {
-        status: "draft" | "confirmed" | "deprecated";
         name: string;
         definition: string;
+        status: "draft" | "confirmed" | "deprecated";
         aliases?: string[] | undefined;
         owner?: string | undefined;
         sourceRefs?: {
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }[] | undefined;
         caveats?: string[] | undefined;
     }, {
-        status: "draft" | "confirmed" | "deprecated";
         name: string;
         definition: string;
+        status: "draft" | "confirmed" | "deprecated";
         aliases?: string[] | undefined;
         owner?: string | undefined;
         sourceRefs?: {
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }[] | undefined;
         caveats?: string[] | undefined;
@@ -1390,28 +1390,28 @@ export declare const DashboardSpecSchema: z.ZodEffects<z.ZodObject<{
             aggregation: z.ZodOptional<z.ZodEnum<["sum", "avg", "count", "min", "max"]>>;
             isHidden: z.ZodBoolean;
         }, "strip", z.ZodTypeAny, {
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }, {
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }>, {
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }, {
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }>, "atleastone">;
         grain: z.ZodString;
@@ -1429,40 +1429,40 @@ export declare const DashboardSpecSchema: z.ZodEffects<z.ZodObject<{
                 aggregation: z.ZodOptional<z.ZodEnum<["sum", "avg", "count", "min", "max"]>>;
                 isHidden: z.ZodBoolean;
             }, "strip", z.ZodTypeAny, {
-                table: string;
-                column: string;
                 kind: "column" | "measure";
                 isHidden: boolean;
+                table: string;
+                column: string;
                 aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
             }, {
-                table: string;
-                column: string;
                 kind: "column" | "measure";
                 isHidden: boolean;
+                table: string;
+                column: string;
                 aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
             }>, {
-                table: string;
-                column: string;
                 kind: "column" | "measure";
                 isHidden: boolean;
+                table: string;
+                column: string;
                 aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
             }, {
-                table: string;
-                column: string;
                 kind: "column" | "measure";
                 isHidden: boolean;
+                table: string;
+                column: string;
                 aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
             }>, {
-                table: string;
-                column: string;
                 kind: "column" | "measure";
                 isHidden: boolean;
+                table: string;
+                column: string;
                 aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
             }, {
-                table: string;
-                column: string;
                 kind: "column" | "measure";
                 isHidden: boolean;
+                table: string;
+                column: string;
                 aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
             }>, "many">>;
             dateTable: z.ZodOptional<z.ZodString>;
@@ -1473,51 +1473,51 @@ export declare const DashboardSpecSchema: z.ZodEffects<z.ZodObject<{
             calendarPolicy: z.ZodOptional<z.ZodString>;
             incompletePeriodBehavior: z.ZodOptional<z.ZodString>;
         }, "strip", z.ZodTypeAny, {
-            dateRefs?: {
-                table: string;
-                column: string;
-                kind: "column" | "measure";
-                isHidden: boolean;
-                aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
-            }[] | undefined;
             dateTable?: string | undefined;
             dateColumn?: string | undefined;
             period?: string | undefined;
+            dateRefs?: {
+                kind: "column" | "measure";
+                isHidden: boolean;
+                table: string;
+                column: string;
+                aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
+            }[] | undefined;
             comparison?: string | undefined;
             grain?: string | undefined;
             calendarPolicy?: string | undefined;
             incompletePeriodBehavior?: string | undefined;
         }, {
-            dateRefs?: {
-                table: string;
-                column: string;
-                kind: "column" | "measure";
-                isHidden: boolean;
-                aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
-            }[] | undefined;
             dateTable?: string | undefined;
             dateColumn?: string | undefined;
             period?: string | undefined;
+            dateRefs?: {
+                kind: "column" | "measure";
+                isHidden: boolean;
+                table: string;
+                column: string;
+                aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
+            }[] | undefined;
             comparison?: string | undefined;
             grain?: string | undefined;
             calendarPolicy?: string | undefined;
             incompletePeriodBehavior?: string | undefined;
         }>>;
     }, "strip", z.ZodTypeAny, {
-        status: "draft" | "confirmed";
         definition: string;
+        status: "draft" | "confirmed";
         owner: string;
         sourceRefs: [{
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }, ...{
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }[]];
         caveats: string[];
@@ -1529,36 +1529,36 @@ export declare const DashboardSpecSchema: z.ZodEffects<z.ZodObject<{
         unit: string;
         businessTermRefs?: string[] | undefined;
         timeIntelligence?: {
-            dateRefs?: {
-                table: string;
-                column: string;
-                kind: "column" | "measure";
-                isHidden: boolean;
-                aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
-            }[] | undefined;
             dateTable?: string | undefined;
             dateColumn?: string | undefined;
             period?: string | undefined;
+            dateRefs?: {
+                kind: "column" | "measure";
+                isHidden: boolean;
+                table: string;
+                column: string;
+                aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
+            }[] | undefined;
             comparison?: string | undefined;
             grain?: string | undefined;
             calendarPolicy?: string | undefined;
             incompletePeriodBehavior?: string | undefined;
         } | undefined;
     }, {
-        status: "draft" | "confirmed";
         definition: string;
+        status: "draft" | "confirmed";
         owner: string;
         sourceRefs: [{
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }, ...{
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }[]];
         caveats: string[];
@@ -1570,16 +1570,16 @@ export declare const DashboardSpecSchema: z.ZodEffects<z.ZodObject<{
         unit: string;
         businessTermRefs?: string[] | undefined;
         timeIntelligence?: {
-            dateRefs?: {
-                table: string;
-                column: string;
-                kind: "column" | "measure";
-                isHidden: boolean;
-                aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
-            }[] | undefined;
             dateTable?: string | undefined;
             dateColumn?: string | undefined;
             period?: string | undefined;
+            dateRefs?: {
+                kind: "column" | "measure";
+                isHidden: boolean;
+                table: string;
+                column: string;
+                aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
+            }[] | undefined;
             comparison?: string | undefined;
             grain?: string | undefined;
             calendarPolicy?: string | undefined;
@@ -1619,57 +1619,57 @@ export declare const DashboardSpecSchema: z.ZodEffects<z.ZodObject<{
             aggregation: z.ZodOptional<z.ZodEnum<["sum", "avg", "count", "min", "max"]>>;
             isHidden: z.ZodBoolean;
         }, "strip", z.ZodTypeAny, {
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }, {
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }>, {
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }, {
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }>, "many">>;
     }, "strip", z.ZodTypeAny, {
         kind: "missing-field" | "missing-relationship" | "grain-mismatch" | "ambiguous-dim" | "other";
         message: string;
         refs?: {
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }[] | undefined;
     }, {
         kind: "missing-field" | "missing-relationship" | "grain-mismatch" | "ambiguous-dim" | "other";
         message: string;
         refs?: {
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }[] | undefined;
     }>, "many">>;
 }, "strip", z.ZodTypeAny, {
-    status: "ready" | "needs-user-input" | "blocked";
+    modelPath: string;
+    status: "blocked" | "ready" | "needs-user-input";
     intent: string;
     audience: "exec" | "analyst" | "ops" | "unspecified";
     dateRange: string;
-    modelPath: string;
     reportPath: string;
     pages: {
         pageName: string;
@@ -1677,36 +1677,36 @@ export declare const DashboardSpecSchema: z.ZodEffects<z.ZodObject<{
         questions: {
             q: string;
             visualType: string;
-            axis?: {
-                table: string;
-                column: string;
-                kind: "column" | "measure";
-                isHidden: boolean;
-                aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
-            } | undefined;
             measures?: {
-                table: string;
-                column: string;
                 kind: "column" | "measure";
                 isHidden: boolean;
+                table: string;
+                column: string;
                 aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
             }[] | undefined;
+            axis?: {
+                kind: "column" | "measure";
+                isHidden: boolean;
+                table: string;
+                column: string;
+                aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
+            } | undefined;
         }[];
     }[];
     missingMeasures: {
-        table: string;
         name: string;
         expression: string;
+        table: string;
         formatString: string;
         description?: string | undefined;
         bridgeFrom?: string | undefined;
         bridgeTo?: string | undefined;
-        bridgeVia?: "TREATAS" | "USERELATIONSHIP" | undefined;
+        bridgeVia?: "USERELATIONSHIP" | "TREATAS" | undefined;
         bridgeCovers?: {
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }[] | undefined;
     }[];
@@ -1714,17 +1714,17 @@ export declare const DashboardSpecSchema: z.ZodEffects<z.ZodObject<{
         name: string;
         keyColumn: string;
         sourceColumns: {
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }[];
         attributeColumns?: {
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }[] | undefined;
     }[];
@@ -1733,35 +1733,35 @@ export declare const DashboardSpecSchema: z.ZodEffects<z.ZodObject<{
         answer: string;
     }[];
     businessTerms?: {
-        status: "draft" | "confirmed" | "deprecated";
         name: string;
         definition: string;
+        status: "draft" | "confirmed" | "deprecated";
         aliases?: string[] | undefined;
         owner?: string | undefined;
         sourceRefs?: {
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }[] | undefined;
         caveats?: string[] | undefined;
     }[] | undefined;
     measureIntents?: {
-        status: "draft" | "confirmed";
         definition: string;
+        status: "draft" | "confirmed";
         owner: string;
         sourceRefs: [{
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }, ...{
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }[]];
         caveats: string[];
@@ -1773,16 +1773,16 @@ export declare const DashboardSpecSchema: z.ZodEffects<z.ZodObject<{
         unit: string;
         businessTermRefs?: string[] | undefined;
         timeIntelligence?: {
-            dateRefs?: {
-                table: string;
-                column: string;
-                kind: "column" | "measure";
-                isHidden: boolean;
-                aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
-            }[] | undefined;
             dateTable?: string | undefined;
             dateColumn?: string | undefined;
             period?: string | undefined;
+            dateRefs?: {
+                kind: "column" | "measure";
+                isHidden: boolean;
+                table: string;
+                column: string;
+                aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
+            }[] | undefined;
             comparison?: string | undefined;
             grain?: string | undefined;
             calendarPolicy?: string | undefined;
@@ -1798,19 +1798,19 @@ export declare const DashboardSpecSchema: z.ZodEffects<z.ZodObject<{
         kind: "missing-field" | "missing-relationship" | "grain-mismatch" | "ambiguous-dim" | "other";
         message: string;
         refs?: {
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }[] | undefined;
     }[] | undefined;
 }, {
-    status: "ready" | "needs-user-input" | "blocked";
+    modelPath: string;
+    status: "blocked" | "ready" | "needs-user-input";
     intent: string;
     audience: "exec" | "analyst" | "ops" | "unspecified";
     dateRange: string;
-    modelPath: string;
     reportPath: string;
     pages: {
         pageName: string;
@@ -1818,37 +1818,37 @@ export declare const DashboardSpecSchema: z.ZodEffects<z.ZodObject<{
         questions: {
             q: string;
             visualType: string;
-            axis?: {
-                table: string;
-                column: string;
-                kind: "column" | "measure";
-                isHidden: boolean;
-                aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
-            } | undefined;
             measures?: {
-                table: string;
-                column: string;
                 kind: "column" | "measure";
                 isHidden: boolean;
+                table: string;
+                column: string;
                 aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
             }[] | undefined;
+            axis?: {
+                kind: "column" | "measure";
+                isHidden: boolean;
+                table: string;
+                column: string;
+                aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
+            } | undefined;
         }[];
     }[];
     missingDims: {
         name: string;
         keyColumn: string;
         sourceColumns: {
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }[];
         attributeColumns?: {
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }[] | undefined;
     }[];
@@ -1857,52 +1857,52 @@ export declare const DashboardSpecSchema: z.ZodEffects<z.ZodObject<{
         answer: string;
     }[];
     missingMeasures?: {
-        table: string;
         name: string;
         expression: string;
+        table: string;
         formatString: string;
         description?: string | undefined;
         bridgeFrom?: string | undefined;
         bridgeTo?: string | undefined;
-        bridgeVia?: "TREATAS" | "USERELATIONSHIP" | undefined;
+        bridgeVia?: "USERELATIONSHIP" | "TREATAS" | undefined;
         bridgeCovers?: {
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }[] | undefined;
     }[] | undefined;
     businessTerms?: {
-        status: "draft" | "confirmed" | "deprecated";
         name: string;
         definition: string;
+        status: "draft" | "confirmed" | "deprecated";
         aliases?: string[] | undefined;
         owner?: string | undefined;
         sourceRefs?: {
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }[] | undefined;
         caveats?: string[] | undefined;
     }[] | undefined;
     measureIntents?: {
-        status: "draft" | "confirmed";
         definition: string;
+        status: "draft" | "confirmed";
         owner: string;
         sourceRefs: [{
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }, ...{
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }[]];
         caveats: string[];
@@ -1914,16 +1914,16 @@ export declare const DashboardSpecSchema: z.ZodEffects<z.ZodObject<{
         unit: string;
         businessTermRefs?: string[] | undefined;
         timeIntelligence?: {
-            dateRefs?: {
-                table: string;
-                column: string;
-                kind: "column" | "measure";
-                isHidden: boolean;
-                aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
-            }[] | undefined;
             dateTable?: string | undefined;
             dateColumn?: string | undefined;
             period?: string | undefined;
+            dateRefs?: {
+                kind: "column" | "measure";
+                isHidden: boolean;
+                table: string;
+                column: string;
+                aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
+            }[] | undefined;
             comparison?: string | undefined;
             grain?: string | undefined;
             calendarPolicy?: string | undefined;
@@ -1939,19 +1939,19 @@ export declare const DashboardSpecSchema: z.ZodEffects<z.ZodObject<{
         kind: "missing-field" | "missing-relationship" | "grain-mismatch" | "ambiguous-dim" | "other";
         message: string;
         refs?: {
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }[] | undefined;
     }[] | undefined;
 }>, {
-    status: "ready" | "needs-user-input" | "blocked";
+    modelPath: string;
+    status: "blocked" | "ready" | "needs-user-input";
     intent: string;
     audience: "exec" | "analyst" | "ops" | "unspecified";
     dateRange: string;
-    modelPath: string;
     reportPath: string;
     pages: {
         pageName: string;
@@ -1959,36 +1959,36 @@ export declare const DashboardSpecSchema: z.ZodEffects<z.ZodObject<{
         questions: {
             q: string;
             visualType: string;
-            axis?: {
-                table: string;
-                column: string;
-                kind: "column" | "measure";
-                isHidden: boolean;
-                aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
-            } | undefined;
             measures?: {
-                table: string;
-                column: string;
                 kind: "column" | "measure";
                 isHidden: boolean;
+                table: string;
+                column: string;
                 aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
             }[] | undefined;
+            axis?: {
+                kind: "column" | "measure";
+                isHidden: boolean;
+                table: string;
+                column: string;
+                aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
+            } | undefined;
         }[];
     }[];
     missingMeasures: {
-        table: string;
         name: string;
         expression: string;
+        table: string;
         formatString: string;
         description?: string | undefined;
         bridgeFrom?: string | undefined;
         bridgeTo?: string | undefined;
-        bridgeVia?: "TREATAS" | "USERELATIONSHIP" | undefined;
+        bridgeVia?: "USERELATIONSHIP" | "TREATAS" | undefined;
         bridgeCovers?: {
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }[] | undefined;
     }[];
@@ -1996,17 +1996,17 @@ export declare const DashboardSpecSchema: z.ZodEffects<z.ZodObject<{
         name: string;
         keyColumn: string;
         sourceColumns: {
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }[];
         attributeColumns?: {
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }[] | undefined;
     }[];
@@ -2015,35 +2015,35 @@ export declare const DashboardSpecSchema: z.ZodEffects<z.ZodObject<{
         answer: string;
     }[];
     businessTerms?: {
-        status: "draft" | "confirmed" | "deprecated";
         name: string;
         definition: string;
+        status: "draft" | "confirmed" | "deprecated";
         aliases?: string[] | undefined;
         owner?: string | undefined;
         sourceRefs?: {
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }[] | undefined;
         caveats?: string[] | undefined;
     }[] | undefined;
     measureIntents?: {
-        status: "draft" | "confirmed";
         definition: string;
+        status: "draft" | "confirmed";
         owner: string;
         sourceRefs: [{
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }, ...{
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }[]];
         caveats: string[];
@@ -2055,16 +2055,16 @@ export declare const DashboardSpecSchema: z.ZodEffects<z.ZodObject<{
         unit: string;
         businessTermRefs?: string[] | undefined;
         timeIntelligence?: {
-            dateRefs?: {
-                table: string;
-                column: string;
-                kind: "column" | "measure";
-                isHidden: boolean;
-                aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
-            }[] | undefined;
             dateTable?: string | undefined;
             dateColumn?: string | undefined;
             period?: string | undefined;
+            dateRefs?: {
+                kind: "column" | "measure";
+                isHidden: boolean;
+                table: string;
+                column: string;
+                aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
+            }[] | undefined;
             comparison?: string | undefined;
             grain?: string | undefined;
             calendarPolicy?: string | undefined;
@@ -2080,19 +2080,19 @@ export declare const DashboardSpecSchema: z.ZodEffects<z.ZodObject<{
         kind: "missing-field" | "missing-relationship" | "grain-mismatch" | "ambiguous-dim" | "other";
         message: string;
         refs?: {
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }[] | undefined;
     }[] | undefined;
 }, {
-    status: "ready" | "needs-user-input" | "blocked";
+    modelPath: string;
+    status: "blocked" | "ready" | "needs-user-input";
     intent: string;
     audience: "exec" | "analyst" | "ops" | "unspecified";
     dateRange: string;
-    modelPath: string;
     reportPath: string;
     pages: {
         pageName: string;
@@ -2100,37 +2100,37 @@ export declare const DashboardSpecSchema: z.ZodEffects<z.ZodObject<{
         questions: {
             q: string;
             visualType: string;
-            axis?: {
-                table: string;
-                column: string;
-                kind: "column" | "measure";
-                isHidden: boolean;
-                aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
-            } | undefined;
             measures?: {
-                table: string;
-                column: string;
                 kind: "column" | "measure";
                 isHidden: boolean;
+                table: string;
+                column: string;
                 aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
             }[] | undefined;
+            axis?: {
+                kind: "column" | "measure";
+                isHidden: boolean;
+                table: string;
+                column: string;
+                aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
+            } | undefined;
         }[];
     }[];
     missingDims: {
         name: string;
         keyColumn: string;
         sourceColumns: {
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }[];
         attributeColumns?: {
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }[] | undefined;
     }[];
@@ -2139,52 +2139,52 @@ export declare const DashboardSpecSchema: z.ZodEffects<z.ZodObject<{
         answer: string;
     }[];
     missingMeasures?: {
-        table: string;
         name: string;
         expression: string;
+        table: string;
         formatString: string;
         description?: string | undefined;
         bridgeFrom?: string | undefined;
         bridgeTo?: string | undefined;
-        bridgeVia?: "TREATAS" | "USERELATIONSHIP" | undefined;
+        bridgeVia?: "USERELATIONSHIP" | "TREATAS" | undefined;
         bridgeCovers?: {
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }[] | undefined;
     }[] | undefined;
     businessTerms?: {
-        status: "draft" | "confirmed" | "deprecated";
         name: string;
         definition: string;
+        status: "draft" | "confirmed" | "deprecated";
         aliases?: string[] | undefined;
         owner?: string | undefined;
         sourceRefs?: {
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }[] | undefined;
         caveats?: string[] | undefined;
     }[] | undefined;
     measureIntents?: {
-        status: "draft" | "confirmed";
         definition: string;
+        status: "draft" | "confirmed";
         owner: string;
         sourceRefs: [{
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }, ...{
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }[]];
         caveats: string[];
@@ -2196,16 +2196,16 @@ export declare const DashboardSpecSchema: z.ZodEffects<z.ZodObject<{
         unit: string;
         businessTermRefs?: string[] | undefined;
         timeIntelligence?: {
-            dateRefs?: {
-                table: string;
-                column: string;
-                kind: "column" | "measure";
-                isHidden: boolean;
-                aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
-            }[] | undefined;
             dateTable?: string | undefined;
             dateColumn?: string | undefined;
             period?: string | undefined;
+            dateRefs?: {
+                kind: "column" | "measure";
+                isHidden: boolean;
+                table: string;
+                column: string;
+                aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
+            }[] | undefined;
             comparison?: string | undefined;
             grain?: string | undefined;
             calendarPolicy?: string | undefined;
@@ -2221,10 +2221,10 @@ export declare const DashboardSpecSchema: z.ZodEffects<z.ZodObject<{
         kind: "missing-field" | "missing-relationship" | "grain-mismatch" | "ambiguous-dim" | "other";
         message: string;
         refs?: {
-            table: string;
-            column: string;
             kind: "column" | "measure";
             isHidden: boolean;
+            table: string;
+            column: string;
             aggregation?: "sum" | "avg" | "count" | "min" | "max" | undefined;
         }[] | undefined;
     }[] | undefined;

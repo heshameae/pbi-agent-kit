@@ -201,7 +201,7 @@ describe('Claude model-operation contracts', () => {
   });
 
   it('allows ordinary non-Python development commands', () => {
-    const result = runGuard('pnpm --filter pbi-modeling-mcp test');
+    const result = runGuard('npm run test --workspace pbi-modeling-mcp');
     expect(result.status).toBe(0);
     expect(result.stderr).toBe('');
   });
@@ -523,8 +523,8 @@ describe('Claude model-operation contracts', () => {
     expect(mcp.mcpServers?.['pbi-report']).toBeUndefined();
 
     const readme = readRepoFile('README.md');
-    expect(readme).toContain('pnpm install');
-    expect(readme).toContain('pnpm build');
+    expect(readme).toContain('npm install');
+    expect(readme).toContain('npm run build');
 
     const rootPackage = readRepoFile('package.json');
     expect(rootPackage).toContain('node scripts/write-build-marker.mjs');
@@ -532,7 +532,7 @@ describe('Claude model-operation contracts', () => {
     expect(mcpPackage).not.toContain('write-build-marker.mjs');
 
     const launcher = readRepoFile('scripts/start-mcp.mjs');
-    expect(launcher).toContain("spawnSync('pnpm', ['build']");
+    expect(launcher).toContain("spawnSync('npm', ['run', 'build']");
     expect(launcher).toContain("stdio: ['ignore', 'pipe', 'pipe']");
     expect(launcher).toContain('isBuildStale');
     expect(launcher).toContain('build-fingerprint.mjs');
