@@ -1,0 +1,6 @@
+# Force LF on all text files so the content-hash build marker is byte-stable
+# across operating systems. A Windows checkout with core.autocrlf=true would
+# otherwise rewrite files to CRLF, change their bytes, and make the offline
+# launcher's fingerprint check falsely report the prebuilt server as "stale"
+# and fail closed on a correct bundle.
+* text=auto eol=lf
